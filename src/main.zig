@@ -10,26 +10,28 @@ pub fn main() !void {
     var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
     const allocator = debug_allocator.allocator();
 
-    var dataframe = Dataframe.init(allocator);
+    var dataframe = try Dataframe.create(allocator);
     defer dataframe.deinit();
 
-    var series = try Series(i32).init(allocator);
-    // defer series.deinit();
+    var series = try dataframe.create_series(i32);
 
-    try series.rename("UWU");
-
+    try series.rename("My Series");
     try series.append(15);
     try series.append(20);
     try series.append(30);
 
-    try dataframe.add_series(series.as_series_type());
-
     series.print();
+
+    const same_series = dataframe.get_series("My Series").?;
+
+    same_series.print();
 
     std.debug.print("Series created with {} values\n", .{series.values.items.len});
 }
 
-const SeriesType = union(enum) {
+const VariantSeries = union(enum) {
+    const Self = @This();
+
     // bool: *Series(bool),
     // byte: *Series(u8),
     // int16: *Series(i16),
@@ -47,7 +49,7 @@ const SeriesType = union(enum) {
     // dict: *Series(dict),
     // custom: *Series(anyopaque), I dont know if this is a good idea.
 
-    pub fn deinit(self: SeriesType) void {
+    pub fn deinit(self: Self) void {
         switch (self) {
             inline else => |ptr| {
                 const Type = std.meta.Child(@TypeOf(ptr));
@@ -62,30 +64,79 @@ const SeriesType = union(enum) {
             },
         }
     }
+
+    pub fn print(self: Self) void {
+        switch (self) {
+            inline else => |ptr| {
+                const Type = std.meta.Child(@TypeOf(ptr));
+                std.debug.print("Deinitializing series of type {s}\n", .{@typeName(Type)});
+
+                // Check if the type has a deinit method
+                if (comptime @hasDecl(Type, "print")) {
+                    ptr.print();
+                } else {
+                    @compileError("Type " ++ @typeName(Type) ++ " does not have a deinit method");
+                }
+            },
+        }
+    }
 };
 
 const Dataframe = struct {
     const Self = @This();
 
     allocator: std.mem.Allocator,
-    series: std.ArrayList(SeriesType),
+    series: std.ArrayList(VariantSeries),
 
     pub fn init(allocator: std.mem.Allocator) Self {
         return Dataframe{
             .allocator = allocator,
-            .series = std.ArrayList(SeriesType).init(allocator),
+            .series = std.ArrayList(VariantSeries).init(allocator),
         };
     }
 
-    pub fn deinit(self: Self) void {
+    pub fn create(allocator: std.mem.Allocator) !*Self {
+        const dataframe_ptr = try allocator.create(Self);
+        errdefer allocator.destroy(dataframe_ptr);
+
+        // Initialize fields directly, avoiding stack allocation
+        dataframe_ptr.allocator = allocator;
+        dataframe_ptr.series = std.ArrayList(VariantSeries).init(allocator);
+
+        return dataframe_ptr;
+    }
+
+    pub fn deinit(self: *Self) void {
         for (self.series.items) |series| {
             series.deinit();
         }
         self.series.deinit();
     }
 
-    pub fn add_series(self: *Self, series: SeriesType) !void {
+    pub fn create_series(self: *Self, comptime T: type) !*Series(T) {
+        const series = try Series(T).create(self.allocator);
+        try self.series.append(series.as_series_type());
+
+        return series;
+    }
+
+    pub fn add_series(self: *Self, series: VariantSeries) !void {
         try self.series.append(series);
+    }
+
+    pub fn get_series(self: *Self, name: []const u8) ?*VariantSeries {
+        for (self.series.items) |*series_type| {
+            std.debug.print("The type is {}", .{@TypeOf(series_type)});
+
+            switch (series_type.*) {
+                inline else => |ptr| {
+                    if (std.mem.eql(u8, ptr.name, name)) {
+                        return series_type;
+                    }
+                },
+            }
+        }
+        return null;
     }
 };
 
@@ -103,6 +154,18 @@ pub fn Series(comptime T: type) type {
                 .name = try allocator.alloc(u8, 0),
                 .values = std.ArrayList(T).init(allocator),
             };
+        }
+
+        pub fn create(allocator: std.mem.Allocator) !*Self {
+            const series_ptr = try allocator.create(Self);
+            errdefer allocator.destroy(series_ptr);
+
+            // Initialize fields directly, avoiding stack allocation
+            series_ptr.allocator = allocator;
+            series_ptr.name = try allocator.alloc(u8, 0);
+            series_ptr.values = std.ArrayList(T).init(allocator);
+
+            return series_ptr;
         }
 
         pub fn rename(self: *Self, new_name: []const u8) !void {
@@ -128,9 +191,9 @@ pub fn Series(comptime T: type) type {
             try self.values.append(value);
         }
 
-        pub fn as_series_type(self: Self) SeriesType {
+        pub fn as_series_type(self: *Self) VariantSeries {
             return switch (T) {
-                i32 => SeriesType{ .int32 = &self },
+                i32 => VariantSeries{ .int32 = self },
                 // bool => SeriesType.bool(self),
                 // byte => SeriesType.byte(self),
                 // int16 => SeriesType.int16(self),
