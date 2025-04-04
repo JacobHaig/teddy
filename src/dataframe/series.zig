@@ -2,22 +2,14 @@ const std = @import("std");
 const VariantSeries = @import("variant_series.zig").VariantSeries;
 
 pub fn Series(comptime T: type) type {
-    const TypedSeries = struct {
+    return struct {
         const Self = @This();
 
         allocator: std.mem.Allocator,
         name: []u8,
         values: std.ArrayList(T),
 
-        pub fn init(allocator: std.mem.Allocator) !Self {
-            return Self{
-                .allocator = allocator,
-                .name = try allocator.alloc(u8, 0),
-                .values = std.ArrayList(T).init(allocator),
-            };
-        }
-
-        pub fn create(allocator: std.mem.Allocator) !*Self {
+        pub fn init(allocator: std.mem.Allocator) !*Self {
             const series_ptr = try allocator.create(Self);
             errdefer allocator.destroy(series_ptr);
 
@@ -35,9 +27,10 @@ pub fn Series(comptime T: type) type {
             std.mem.copyForwards(u8, self.name, new_name);
         }
 
-        pub fn deinit(self: Self) void {
+        pub fn deinit(self: *Self) void {
             self.allocator.free(self.name);
             self.values.deinit();
+            self.allocator.destroy(self);
         }
 
         pub fn print(self: Self) void {
@@ -54,12 +47,21 @@ pub fn Series(comptime T: type) type {
 
         pub fn as_series_type(self: *Self) VariantSeries {
             return switch (T) {
+                bool => VariantSeries{ .bool = self },
+                u8 => VariantSeries{ .uint8 = self },
+                u16 => VariantSeries{ .uint16 = self },
+                u32 => VariantSeries{ .uint32 = self },
+                u64 => VariantSeries{ .uint64 = self },
+                i8 => VariantSeries{ .int8 = self },
+                i16 => VariantSeries{ .int16 = self },
                 i32 => VariantSeries{ .int32 = self },
+                i64 => VariantSeries{ .int64 = self },
+                f32 => VariantSeries{ .float32 = self },
+                f64 => VariantSeries{ .float64 = self },
+
                 // Add other types as needed
                 else => @compileError("Unsupported type " ++ @typeName(T) ++ " for SeriesType conversion"),
             };
         }
     };
-
-    return TypedSeries;
 }
