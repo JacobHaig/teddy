@@ -1,5 +1,6 @@
 const std = @import("std");
 const VariantSeries = @import("variant_series.zig").VariantSeries;
+const String = @import("variant_series.zig").String;
 
 pub fn Series(comptime T: type) type {
     return struct {
@@ -7,7 +8,7 @@ pub fn Series(comptime T: type) type {
 
         allocator: std.mem.Allocator,
         name: []u8,
-        values: std.ArrayList(T),
+        values: std.ArrayListUnmanaged(T),
 
         pub fn init(allocator: std.mem.Allocator) !*Self {
             const series_ptr = try allocator.create(Self);
@@ -16,7 +17,7 @@ pub fn Series(comptime T: type) type {
             // Initialize fields directly, avoiding stack allocation
             series_ptr.allocator = allocator;
             series_ptr.name = try allocator.alloc(u8, 0);
-            series_ptr.values = std.ArrayList(T).init(allocator);
+            series_ptr.values = try std.ArrayListUnmanaged(T).initCapacity(allocator, 0);
 
             return series_ptr;
         }
@@ -58,6 +59,8 @@ pub fn Series(comptime T: type) type {
                 i64 => VariantSeries{ .int64 = self },
                 f32 => VariantSeries{ .float32 = self },
                 f64 => VariantSeries{ .float64 = self },
+
+                String => VariantSeries{ .string = self },
 
                 // Add other types as needed
                 else => @compileError("Unsupported type " ++ @typeName(T) ++ " for SeriesType conversion"),

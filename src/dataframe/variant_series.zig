@@ -1,5 +1,6 @@
 const std = @import("std");
 const Series = @import("series.zig").Series;
+const String = @import("stringer.zig").String;
 
 pub const VariantSeries = union(enum) {
     const Self = @This();
@@ -15,7 +16,7 @@ pub const VariantSeries = union(enum) {
     int64: *Series(i64),
     float32: *Series(f32),
     float64: *Series(f64),
-    // string: *Series([]u8),
+    string: *Series(String),
 
     pub fn deinit(self: Self) void {
         switch (self) {
