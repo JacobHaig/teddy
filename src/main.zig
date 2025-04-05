@@ -8,15 +8,18 @@ pub fn main() !void {
     var df = try dataframe.Dataframe.init(allocator);
     defer df.deinit();
 
-    // var series = try df.create_series(dataframe.String);
-    // try series.rename("Name");
+    var series = try df.create_series(std.ArrayListUnmanaged(u8));
+    try series.rename("Name");
 
-    // const name = dataframe.String.
+    var name = try std.ArrayListUnmanaged(u8).initCapacity(allocator, 0);
+    try name.appendSlice(allocator, "Hello!");
+    try series.append(name);
 
-    // try series.append("Andrew");
-    // try series.append("Bob");
+    var name2 = try std.ArrayListUnmanaged(u8).initCapacity(allocator, 0);
+    try name2.appendSlice(allocator, "Bob");
+    try series.append(name2);
     // try series.append("Jacob");
-    // series.print();
+    series.print();
 
     var series2 = try df.create_series(f32);
     try series2.rename("Salary");
