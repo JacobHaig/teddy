@@ -1,6 +1,8 @@
 const std = @import("std");
 const dataframe = @import("dataframe.zig");
 
+const variant_series = @import("dataframe/variant_series.zig");
+
 pub fn main() !void {
     var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
     const allocator = debug_allocator.allocator();
@@ -8,17 +10,11 @@ pub fn main() !void {
     var df = try dataframe.Dataframe.init(allocator);
     defer df.deinit();
 
-    var series = try df.create_series(std.ArrayListUnmanaged(u8));
+    var series = try df.create_series(dataframe.String);
     try series.rename("Name");
-
-    var name = try std.ArrayListUnmanaged(u8).initCapacity(allocator, 0);
-    try name.appendSlice(allocator, "Hello!");
-    try series.append(name);
-
-    var name2 = try std.ArrayListUnmanaged(u8).initCapacity(allocator, 0);
-    try name2.appendSlice(allocator, "Bob");
-    try series.append(name2);
-    // try series.append("Jacob");
+    try series.append(try variant_series.stringer(allocator, "Bob"));
+    try series.append(try variant_series.stringer(allocator, "Alice"));
+    try series.try_append(dataframe.String, "Gary");
     series.print();
 
     var series2 = try df.create_series(f32);

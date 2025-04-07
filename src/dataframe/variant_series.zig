@@ -1,6 +1,16 @@
 const std = @import("std");
 const Series = @import("series.zig").Series;
 
+pub const String = std.ArrayListUnmanaged(u8);
+
+pub fn stringer(allocator: std.mem.Allocator, str: []const u8) !String {
+    var name = try String.initCapacity(allocator, str.len);
+    errdefer name.deinit(allocator);
+
+    name.appendSliceAssumeCapacity(str);
+    return name;
+}
+
 pub const VariantSeries = union(enum) {
     const Self = @This();
 
@@ -15,7 +25,7 @@ pub const VariantSeries = union(enum) {
     int64: *Series(i64),
     float32: *Series(f32),
     float64: *Series(f64),
-    string: *Series(std.ArrayListUnmanaged(u8)),
+    string: *Series(String),
 
     pub fn deinit(self: Self) void {
         switch (self) {

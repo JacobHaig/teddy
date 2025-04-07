@@ -1,5 +1,6 @@
 const std = @import("std");
 const VariantSeries = @import("variant_series.zig").VariantSeries;
+const String = @import("variant_series.zig").String;
 
 pub fn Series(comptime T: type) type {
     return struct {
@@ -40,20 +41,35 @@ pub fn Series(comptime T: type) type {
                 for (self.values.items) |value| {
                     std.debug.print("{s}\n", .{value.items});
                 }
+                std.debug.print("\n", .{});
             } else {
                 std.debug.print("{s}\n{s}\n--------\n", .{ self.name, @typeName(T) });
 
                 for (self.values.items) |value| {
                     std.debug.print("{}\n", .{value});
                 }
+                std.debug.print("\n", .{});
             }
         }
 
         pub fn append(self: *Self, value: T) !void {
             if (comptime T == std.ArrayListUnmanaged(u8)) {
-                var copy: T = .{};
-                try copy.appendSlice(self.allocator, value.items);
-                try self.values.append(copy); // No allocator here
+                // var copy: T = .{};
+                // try copy.appendSlice(self.allocator, value.items);
+                // try self.values.append(copy); // No allocator here
+                try self.values.append(value);
+            } else {
+                try self.values.append(value);
+            }
+        }
+
+        pub fn try_append(self: *Self, comptime WantedType: type, value: []const u8) !void {
+            if (comptime WantedType == std.ArrayListUnmanaged(u8)) {
+                var naw_value = try String.initCapacity(self.allocator, value.len);
+                errdefer naw_value.deinit(self.allocator);
+
+                naw_value.appendSliceAssumeCapacity(value);
+                try self.values.append(naw_value);
             } else {
                 try self.values.append(value);
             }
