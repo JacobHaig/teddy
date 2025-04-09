@@ -22,6 +22,7 @@ pub fn main() !void {
     try series2.rename("Salary");
     try series2.append(15000);
     try series2.append(75000.0);
+    try series2.append(110000.0);
     series2.print();
 
     const a = "asdad";
@@ -31,11 +32,15 @@ pub fn main() !void {
     try series3.rename("Age");
     try series3.append(15);
     try series3.append(20);
+    try series3.append(30);
     series3.print();
 
-    df.drop_series("Age");
+    // df.drop_series("Age");
+    // print("height: {} width: {}\n", .{ df.height(), df.width() });
 
-    print("height: {} width: {}", .{ df.height(), df.width() });
+    df.drop_row(0);
+
+    print("height: {} width: {}\n", .{ df.height(), df.width() });
 
     // std.debug.print("Series created with {} values\n", .{series.values.items.len});
 }

@@ -92,6 +92,16 @@ pub fn Series(comptime T: type) type {
             }
         }
 
+        pub fn drop_row(self: *Self, index: usize) void {
+            switch (T) {
+                String => {
+                    var a = self.values.orderedRemove(index);
+                    a.deinit(self.allocator);
+                },
+                inline else => _ = self.values.orderedRemove(index),
+            }
+        }
+
         pub fn as_series_type(self: *Self) VariantSeries {
             return switch (T) {
                 bool => VariantSeries{ .bool = self },

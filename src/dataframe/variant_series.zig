@@ -50,4 +50,27 @@ pub const VariantSeries = union(enum) {
             inline else => |p| return p.name,
         }
     }
+
+    pub fn drop_row(self: *Self, index: usize) void {
+        switch (self.*) {
+            inline else => |p| p.drop_row(index),
+        }
+    }
+
+    pub fn get_type(self: *Self) type {
+        switch (self.*) {
+            .bool => return bool,
+            .uint8 => return u8,
+            .uint16 => return u16,
+            .uint32 => return u32,
+            .uint64 => return u64,
+            .int8 => return i8,
+            .int16 => return i16,
+            .int32 => return i32,
+            .int64 => return i64,
+            .float32 => return f32,
+            .float64 => return f64,
+            .string => return String,
+        }
+    }
 };
