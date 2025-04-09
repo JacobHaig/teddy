@@ -1,6 +1,7 @@
 const std = @import("std");
-const dataframe = @import("dataframe.zig");
+const print = std.debug.print;
 
+const dataframe = @import("dataframe.zig");
 const variant_series = @import("dataframe/variant_series.zig");
 
 pub fn main() !void {
@@ -12,16 +13,15 @@ pub fn main() !void {
 
     var series = try df.create_series(dataframe.String);
     try series.rename("Name");
-    try series.append(try variant_series.stringer(allocator, "Bob"));
     try series.append(try variant_series.stringer(allocator, "Alice"));
-    try series.try_append(dataframe.String, "Gary");
+    try series.try_append(try variant_series.stringer(allocator, "Gary"));
+    try series.try_append("Bob");
     series.print();
 
     var series2 = try df.create_series(f32);
     try series2.rename("Salary");
     try series2.append(15000);
     try series2.append(75000.0);
-    try series2.append(120000.0);
     series2.print();
 
     const a = "asdad";
@@ -31,8 +31,11 @@ pub fn main() !void {
     try series3.rename("Age");
     try series3.append(15);
     try series3.append(20);
-    try series3.append(30);
     series3.print();
+
+    df.drop_series("Age");
+
+    print("height: {} width: {}", .{ df.height(), df.width() });
 
     // std.debug.print("Series created with {} values\n", .{series.values.items.len});
 }

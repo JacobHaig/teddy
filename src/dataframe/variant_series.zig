@@ -27,15 +27,27 @@ pub const VariantSeries = union(enum) {
     float64: *Series(f64),
     string: *Series(String),
 
-    pub fn deinit(self: Self) void {
-        switch (self) {
+    pub fn deinit(self: *Self) void {
+        switch (self.*) {
             inline else => |p| p.deinit(),
         }
     }
 
-    pub fn print(self: Self) void {
-        switch (self) {
+    pub fn print(self: *Self) void {
+        switch (self.*) {
             inline else => |p| p.print(),
+        }
+    }
+
+    pub fn len(self: *Self) usize {
+        switch (self.*) {
+            inline else => |p| return p.len(),
+        }
+    }
+
+    pub fn name(self: *Self) []const u8 {
+        switch (self.*) {
+            inline else => |p| return p.name,
         }
     }
 };

@@ -2,6 +2,15 @@ const std = @import("std");
 const VariantSeries = @import("variant_series.zig").VariantSeries;
 const String = @import("variant_series.zig").String;
 
+fn canBeSlice(comptime T: type) bool {
+    return @typeInfo(T) == .pointer and
+        @typeInfo(T).pointer.is_const and
+        @typeInfo(T).pointer.size == .one and
+        @typeInfo(@typeInfo(T).pointer.child) == .array and
+        @typeInfo(@typeInfo(T).pointer.child).array.child == u8 and
+        @typeInfo(@typeInfo(T).pointer.child).array.sentinel_ptr != null;
+}
+
 pub fn Series(comptime T: type) type {
     return struct {
         const Self = @This();
@@ -34,7 +43,7 @@ pub fn Series(comptime T: type) type {
             self.allocator.destroy(self);
         }
 
-        pub fn print(self: Self) void {
+        pub fn print(self: *Self) void {
             if (comptime T == std.ArrayListUnmanaged(u8)) {
                 std.debug.print("{s}\n{s}\n--------\n", .{ self.name, "Bytes" });
 
@@ -52,26 +61,34 @@ pub fn Series(comptime T: type) type {
             }
         }
 
-        pub fn append(self: *Self, value: T) !void {
-            if (comptime T == std.ArrayListUnmanaged(u8)) {
-                // var copy: T = .{};
-                // try copy.appendSlice(self.allocator, value.items);
-                // try self.values.append(copy); // No allocator here
-                try self.values.append(value);
-            } else {
-                try self.values.append(value);
-            }
+        pub fn len(self: *Self) usize {
+            return self.values.items.len;
         }
 
-        pub fn try_append(self: *Self, comptime WantedType: type, value: []const u8) !void {
-            if (comptime WantedType == std.ArrayListUnmanaged(u8)) {
-                var naw_value = try String.initCapacity(self.allocator, value.len);
-                errdefer naw_value.deinit(self.allocator);
+        pub fn append(self: *Self, value: T) !void {
+            try self.values.append(value);
+        }
 
-                naw_value.appendSliceAssumeCapacity(value);
-                try self.values.append(naw_value);
-            } else {
+        // try_append takes a value of any type and appends it to the series.
+        // It checks the type at compile time and ensures it matches the series type.
+        // If the type is not compatible, it raises a compile-time error.
+        pub fn try_append(self: *Self, value: anytype) !void {
+            if (comptime T == String and @TypeOf(value) == []const u8) {
+                var new_value = try String.initCapacity(self.allocator, value.len);
+                errdefer new_value.deinit(self.allocator);
+
+                new_value.appendSliceAssumeCapacity(value);
+                try self.values.append(new_value);
+            } else if (comptime T == String and canBeSlice(@TypeOf(value))) {
+                var new_value = try String.initCapacity(self.allocator, value.len);
+                errdefer new_value.deinit(self.allocator);
+
+                new_value.appendSliceAssumeCapacity(value[0..]);
+                try self.values.append(new_value);
+            } else if (comptime T == String and @TypeOf(value) == String) {
                 try self.values.append(value);
+            } else {
+                @compileError("Type mismatch in try_append(), expected String but got " ++ @typeName(@TypeOf(value)));
             }
         }
 

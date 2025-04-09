@@ -20,7 +20,7 @@ pub const Dataframe = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        for (self.series.items) |series| {
+        for (self.series.items) |*series| {
             series.deinit();
         }
         self.series.deinit();
@@ -31,6 +31,17 @@ pub const Dataframe = struct {
         try self.series.append(series.as_series_type());
 
         return series;
+    }
+
+    pub fn width(self: *Self) usize {
+        return self.series.items.len;
+    }
+
+    pub fn height(self: *Self) usize {
+        if (self.width() == 0) {
+            return 0;
+        }
+        return self.series.items.ptr[0].len();
     }
 
     pub fn add_series(self: *Self, series: VariantSeries) !void {
@@ -48,5 +59,18 @@ pub const Dataframe = struct {
             }
         }
         return null;
+    }
+
+    pub fn drop_series(self: *Self, column: []const u8) void {
+        for (self.series.items, 0..) |*item, index| {
+            if (std.mem.eql(u8, item.name(), column)) {
+                // std.debug.print("{}\n", .{index});
+
+                var series = self.series.orderedRemove(index);
+                series.deinit();
+                return;
+            }
+        }
+        // Error handling may not be required as the column does not exist.
     }
 };
