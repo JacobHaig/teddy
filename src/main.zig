@@ -7,6 +7,14 @@ const variant_series = @import("dataframe/variant_series.zig");
 pub fn main() !void {
     var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
     const allocator = debug_allocator.allocator();
+    defer {
+        const leaked = debug_allocator.deinit();
+        if (leaked == .leak) {
+            print("Memory leaks detected!\n", .{});
+        } else {
+            print("No memory leaks detected.\n", .{});
+        }
+    }
 
     var df = try dataframe.Dataframe.init(allocator);
     defer df.deinit();
@@ -25,9 +33,6 @@ pub fn main() !void {
     try series2.append(110000.0);
     series2.print();
 
-    const a = "asdad";
-    _ = a;
-
     var series3 = try df.create_series(i32);
     try series3.rename("Age");
     try series3.append(15);
@@ -35,12 +40,9 @@ pub fn main() !void {
     try series3.append(30);
     series3.print();
 
-    // df.drop_series("Age");
+    df.drop_series("Age");
     // print("height: {} width: {}\n", .{ df.height(), df.width() });
-
-    df.drop_row(0);
+    df.drop_row(1);
 
     print("height: {} width: {}\n", .{ df.height(), df.width() });
-
-    // std.debug.print("Series created with {} values\n", .{series.values.items.len});
 }

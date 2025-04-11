@@ -20,10 +20,11 @@ pub const Dataframe = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        for (self.series.items) |*series| {
-            series.deinit();
+        for (self.series.items) |*item| {
+            item.deinit();
         }
         self.series.deinit();
+        self.allocator.destroy(self);
     }
 
     pub fn create_series(self: *Self, comptime T: type) !*Series(T) {

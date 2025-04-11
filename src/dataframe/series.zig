@@ -38,8 +38,17 @@ pub fn Series(comptime T: type) type {
         }
 
         pub fn deinit(self: *Self) void {
+            switch (T) { // Deinit each item in the list
+                String => {
+                    for (self.values.items) |*item| {
+                        item.deinit(self.allocator);
+                    }
+                },
+                inline else => {},
+            }
+            self.values.deinit(); // Deinit the List
+
             self.allocator.free(self.name);
-            self.values.deinit();
             self.allocator.destroy(self);
         }
 
