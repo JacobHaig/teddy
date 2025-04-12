@@ -81,17 +81,13 @@ pub const Dataframe = struct {
         }
     }
 
-    pub fn apply_to_series_inplace(self: *Self, name: []const u8, comptime T: type, func: fn (x: T) T) void {
+    pub fn apply_to_series_inplace(self: *Self, name: []const u8, comptime T: type, comptime func: fn (x: T) T) void {
         const series = self.get_series(name) orelse return;
 
-        switch (series.*) {
-            inline else => |s| {
-                if (comptime *Series(T) == @TypeOf(s)) {
-                    for (s.values.items) |*value| {
-                        value.* = func(value.*);
-                    }
-                }
-            },
+        if (comptime *Series(T) == @TypeOf(series.*)) {
+            for (series.*.values.items) |*value| {
+                value.* = func(value.*);
+            }
         }
     }
 };
