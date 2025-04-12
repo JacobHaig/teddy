@@ -29,8 +29,9 @@ pub const Dataframe = struct {
 
     pub fn create_series(self: *Self, comptime T: type) !*Series(T) {
         const series = try Series(T).init(self.allocator);
-        try self.series.append(series.as_series_type());
+        errdefer series.deinit();
 
+        try self.series.append(series.as_series_type());
         return series;
     }
 
@@ -79,4 +80,25 @@ pub const Dataframe = struct {
             item.drop_row(index);
         }
     }
+
+    pub fn apply_to_series_inplace(self: *Self, name: []const u8, comptime T: type, func: fn (x: T) T) void {
+        const series = self.get_series(name) orelse return;
+
+        switch (series.*) {
+            inline else => |s| {
+                if (comptime *Series(T) == @TypeOf(s)) {
+                    for (s.values.items) |*value| {
+                        value.* = func(value.*);
+                    }
+                }
+            },
+        }
+    }
 };
+
+fn print_type_info(something: anytype) void {
+    const t = @TypeOf(something);
+    // std.debug.print("Type: ", .{t});
+    std.debug.print("TypeName: {s}\n", .{@typeName(t)});
+    std.debug.print("TypeInfo: {}\n", .{@typeInfo(t)});
+}

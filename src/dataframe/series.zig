@@ -53,20 +53,28 @@ pub fn Series(comptime T: type) type {
         }
 
         pub fn print(self: *Self) void {
-            if (comptime T == std.ArrayListUnmanaged(u8)) {
-                std.debug.print("{s}\n{s}\n--------\n", .{ self.name, "Bytes" });
-
-                for (self.values.items) |value| {
-                    std.debug.print("{s}\n", .{value.items});
-                }
-                std.debug.print("\n", .{});
-            } else {
-                std.debug.print("{s}\n{s}\n--------\n", .{ self.name, @typeName(T) });
-
-                for (self.values.items) |value| {
-                    std.debug.print("{}\n", .{value});
-                }
-                std.debug.print("\n", .{});
+            switch (comptime T) {
+                String => {
+                    std.debug.print("{s}\n{s}\n--------\n", .{ self.name, "Bytes" });
+                    for (self.values.items) |value| {
+                        std.debug.print("{s}\n", .{value.items});
+                    }
+                    std.debug.print("\n", .{});
+                },
+                f32, f64 => {
+                    std.debug.print("{s}\n{s}\n--------\n", .{ self.name, "Float" });
+                    for (self.values.items) |value| {
+                        std.debug.print("{d}\n", .{value});
+                    }
+                    std.debug.print("\n", .{});
+                },
+                else => {
+                    std.debug.print("{s}\n{s}\n--------\n", .{ self.name, @typeName(T) });
+                    for (self.values.items) |value| {
+                        std.debug.print("{}\n", .{value});
+                    }
+                    std.debug.print("\n", .{});
+                },
             }
         }
 

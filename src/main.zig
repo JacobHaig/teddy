@@ -33,6 +33,14 @@ pub fn main() !void {
     try series2.append(110000.0);
     series2.print();
 
+    df.apply_to_series_inplace("Salary", f32, struct {
+        fn call(x: f32) f32 {
+            return x / 52 / 40;
+        }
+    }.call);
+
+    series2.print();
+
     var series3 = try df.create_series(i32);
     try series3.rename("Age");
     try series3.append(15);
@@ -40,9 +48,23 @@ pub fn main() !void {
     try series3.append(30);
     series3.print();
 
+    df.apply_to_series_inplace("Age", i32, add_ten);
+
+    df.apply_to_series_inplace("Age", i32, struct {
+        fn call(x: i32) i32 {
+            return x + 10;
+        }
+    }.call);
+
+    series3.print();
+
     df.drop_series("Age");
     // print("height: {} width: {}\n", .{ df.height(), df.width() });
     df.drop_row(1);
 
     print("height: {} width: {}\n", .{ df.height(), df.width() });
+}
+
+fn add_ten(x: i32) i32 {
+    return x + 10;
 }
