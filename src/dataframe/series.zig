@@ -125,17 +125,33 @@ pub fn Series(comptime T: type) type {
             }
         }
 
-        // pub fn deep_copy(self: *Self) !*Self {
-        //     const new_series = try Self.init(self.allocator);
-        //     errdefer new_series.deinit();
+        // deep_copy creates a deep copy of the Series.
+        // It allocates a new Series and copies the values from the original Series.
+        // If the type is String, it also copies the string data to the new Series as well.
+        pub fn deep_copy(self: *Self) !*Self {
+            const new_series = try Self.init(self.allocator);
+            errdefer new_series.deinit();
 
-        //     try new_series.rename(self.name);
-        //     for (self.values.items) |*value| {
-        //         try new_series.append(value.*);
-        //     }
+            try new_series.rename(self.name);
+            try new_series.values.ensureTotalCapacity(self.values.items.len);
 
-        //     return new_series;
-        // }
+            for (self.values.items) |*value| {
+                switch (comptime T) {
+                    String => {
+                        var new_value = try String.initCapacity(self.allocator, value.items.len);
+                        errdefer new_value.deinit(self.allocator);
+
+                        new_value.appendSliceAssumeCapacity(value.items);
+                        try new_series.values.append(new_value);
+                    },
+                    inline else => {
+                        try new_series.append(value.*);
+                    },
+                }
+            }
+
+            return new_series;
+        }
 
         pub fn limit(self: *Self, n_limit: usize) void {
             if (n_limit >= self.values.items.len) return;
@@ -148,10 +164,11 @@ pub fn Series(comptime T: type) type {
                 },
                 else => {},
             }
+
             self.values.shrinkAndFree(n_limit);
         }
 
-        pub fn as_series_type(self: *Self) VariantSeries {
+        pub fn to_variant_series(self: *Self) VariantSeries {
             return switch (T) {
                 bool => VariantSeries{ .bool = self },
 
@@ -159,11 +176,13 @@ pub fn Series(comptime T: type) type {
                 u16 => VariantSeries{ .uint16 = self },
                 u32 => VariantSeries{ .uint32 = self },
                 u64 => VariantSeries{ .uint64 = self },
+                u128 => VariantSeries{ .uint128 = self },
 
                 i8 => VariantSeries{ .int8 = self },
                 i16 => VariantSeries{ .int16 = self },
                 i32 => VariantSeries{ .int32 = self },
                 i64 => VariantSeries{ .int64 = self },
+                i128 => VariantSeries{ .int128 = self },
 
                 f32 => VariantSeries{ .float32 = self },
                 f64 => VariantSeries{ .float64 = self },

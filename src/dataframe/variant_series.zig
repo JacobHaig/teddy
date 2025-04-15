@@ -70,11 +70,14 @@ pub const VariantSeries = union(enum) {
         }
     }
 
-    // pub fn deep_copy(self: *Self) !*Self {
-    //     switch (self.*) {
-    //         inline else => |s| return s.*.deep_copy(),
-    //     }
-    // }
+    pub fn deep_copy(self: *Self) !Self {
+        switch (self.*) {
+            inline else => |s| {
+                const series = try s.*.deep_copy();
+                return series.to_variant_series();
+            },
+        }
+    }
 
     pub fn limit(self: *Self, n_limit: usize) void {
         switch (self.*) {

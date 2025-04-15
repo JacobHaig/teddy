@@ -58,7 +58,8 @@ pub fn main() !void {
 
     series3.print();
 
-    // var df2 = try df.deep_copy();
+    var df2 = try df.deep_copy();
+    defer df2.deinit();
 
     df.drop_series("Age");
     // print("height: {} width: {}\n", .{ df.height(), df.width() });
@@ -66,7 +67,10 @@ pub fn main() !void {
     df.limit(2);
 
     print("height: {} width: {}\n", .{ df.height(), df.width() });
-    // print("height: {} width: {}\n", .{ df2.height(), df2.width() });
+    print("height: {} width: {}\n", .{ df2.height(), df2.width() });
+
+    const series22 = df2.get_series("Age") orelse return;
+    series22.*.print();
 }
 
 fn add_ten(x: i32) i32 {

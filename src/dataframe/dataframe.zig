@@ -31,7 +31,7 @@ pub const Dataframe = struct {
         const series = try Series(T).init(self.allocator);
         errdefer series.deinit();
 
-        try self.series.append(series.as_series_type());
+        try self.series.append(series.to_variant_series());
         return series;
     }
 
@@ -87,19 +87,19 @@ pub const Dataframe = struct {
         series.*.apply_inplace(T, func);
     }
 
-    // pub fn deep_copy(self: *Self) !*Self {
-    //     const new_dataframe = try Self.init(self.allocator);
-    //     errdefer new_dataframe.deinit();
+    pub fn deep_copy(self: *Self) !*Self {
+        const new_dataframe = try Self.init(self.allocator);
+        errdefer new_dataframe.deinit();
 
-    //     for (self.series.items) |*item| {
-    //         const new_series = try item.*.deep_copy();
-    //         errdefer new_series.deinit();
+        for (self.series.items) |*series| {
+            var new_series = try series.*.deep_copy();
+            errdefer new_series.deinit();
 
-    //         try new_dataframe.series.append(new_series);
-    //     }
+            try new_dataframe.series.append(new_series);
+        }
 
-    //     return new_dataframe;
-    // }
+        return new_dataframe;
+    }
 
     pub fn limit(self: *Self, n_limit: usize) void {
         for (self.series.items) |*item| {
