@@ -119,6 +119,38 @@ pub fn Series(comptime T: type) type {
             }
         }
 
+        pub fn apply_inplace(self: *Self, comptime func: fn (x: T) T) void {
+            for (self.values.items) |*value| {
+                value.* = func(value.*);
+            }
+        }
+
+        // pub fn deep_copy(self: *Self) !*Self {
+        //     const new_series = try Self.init(self.allocator);
+        //     errdefer new_series.deinit();
+
+        //     try new_series.rename(self.name);
+        //     for (self.values.items) |*value| {
+        //         try new_series.append(value.*);
+        //     }
+
+        //     return new_series;
+        // }
+
+        pub fn limit(self: *Self, n_limit: usize) void {
+            if (n_limit >= self.values.items.len) return;
+
+            switch (comptime T) {
+                String => {
+                    for (n_limit..self.values.items.len) |i| {
+                        self.values.items[i].deinit(self.allocator);
+                    }
+                },
+                else => {},
+            }
+            self.values.shrinkAndFree(n_limit);
+        }
+
         pub fn as_series_type(self: *Self) VariantSeries {
             return switch (T) {
                 bool => VariantSeries{ .bool = self },

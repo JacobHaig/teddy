@@ -81,13 +81,29 @@ pub const Dataframe = struct {
         }
     }
 
-    pub fn apply_to_series_inplace(self: *Self, name: []const u8, comptime T: type, comptime func: fn (x: T) T) void {
+    pub fn apply_inplace(self: *Self, name: []const u8, comptime T: type, comptime func: fn (x: T) T) void {
         const series = self.get_series(name) orelse return;
 
-        if (comptime *Series(T) == @TypeOf(series.*)) {
-            for (series.*.values.items) |*value| {
-                value.* = func(value.*);
-            }
+        series.*.apply_inplace(T, func);
+    }
+
+    // pub fn deep_copy(self: *Self) !*Self {
+    //     const new_dataframe = try Self.init(self.allocator);
+    //     errdefer new_dataframe.deinit();
+
+    //     for (self.series.items) |*item| {
+    //         const new_series = try item.*.deep_copy();
+    //         errdefer new_series.deinit();
+
+    //         try new_dataframe.series.append(new_series);
+    //     }
+
+    //     return new_dataframe;
+    // }
+
+    pub fn limit(self: *Self, n_limit: usize) void {
+        for (self.series.items) |*item| {
+            item.limit(n_limit);
         }
     }
 };

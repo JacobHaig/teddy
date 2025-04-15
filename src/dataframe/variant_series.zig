@@ -59,6 +59,29 @@ pub const VariantSeries = union(enum) {
         }
     }
 
+    pub fn apply_inplace(self: *Self, comptime T: type, comptime func: fn (x: T) T) void {
+        switch (self.*) {
+            inline else => |s| {
+                // std.debug.print("Type: {}\n", .{@TypeOf(s)});
+                if (comptime *Series(T) == @TypeOf(s)) {
+                    s.*.apply_inplace(func);
+                }
+            },
+        }
+    }
+
+    // pub fn deep_copy(self: *Self) !*Self {
+    //     switch (self.*) {
+    //         inline else => |s| return s.*.deep_copy(),
+    //     }
+    // }
+
+    pub fn limit(self: *Self, n_limit: usize) void {
+        switch (self.*) {
+            inline else => |s| s.*.limit(n_limit),
+        }
+    }
+
     pub fn get_type(self: *Self) type {
         switch (self.*) {
             .bool => return bool,

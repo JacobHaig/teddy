@@ -33,7 +33,7 @@ pub fn main() !void {
     try series2.append(110000.0);
     series2.print();
 
-    df.apply_to_series_inplace("Salary", f32, struct {
+    df.apply_inplace("Salary", f32, struct {
         fn call(x: f32) f32 {
             return x / 52 / 40;
         }
@@ -48,9 +48,9 @@ pub fn main() !void {
     try series3.append(30);
     series3.print();
 
-    df.apply_to_series_inplace("Age", i32, add_ten);
+    df.apply_inplace("Age", i32, add_ten);
 
-    df.apply_to_series_inplace("Age", i32, struct {
+    df.apply_inplace("Age", i32, struct {
         fn call(x: i32) i32 {
             return x + 10;
         }
@@ -58,11 +58,15 @@ pub fn main() !void {
 
     series3.print();
 
+    // var df2 = try df.deep_copy();
+
     df.drop_series("Age");
     // print("height: {} width: {}\n", .{ df.height(), df.width() });
-    df.drop_row(1);
+    // df.drop_row(1);
+    df.limit(2);
 
     print("height: {} width: {}\n", .{ df.height(), df.width() });
+    // print("height: {} width: {}\n", .{ df2.height(), df2.width() });
 }
 
 fn add_ten(x: i32) i32 {
