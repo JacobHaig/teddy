@@ -28,3 +28,7 @@ extras/documentation
 
 # zig out
 zig-out
+
+
+# Data
+data/
