@@ -151,23 +151,32 @@ pub fn main() !void {
     // // Print it to stdout
     // std.debug.print("Current working directory: {s}\n", .{cwd_path});
 
-    const file = try std.fs.cwd().openFile("./data/addresses.csv", .{});
+    const file = try std.fs.cwd().openFile("./addresses.csv", .{});
     defer file.close();
 
     const content = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
     defer allocator.free(content);
 
-    print("{s}\n", .{content});
+    var tokenizer = try CsvTokenizer.init(allocator, content);
 
-    var tokenizer = try CsvTokenizer.init(allocator, "Hello there!,     \"I am a test\"");
+    const a = try tokenizer.read_all();
 
-    while (true) {
-        const token = tokenizer.next() orelse break;
-        print("{s}\n", .{token});
+    std.debug.print("\nFinal Output:\n", .{});
+    for (a.items) |item| {
+        for (item.items) |ele| {
+            std.debug.print("{s},", .{ele});
+        }
+        std.debug.print("\n", .{});
     }
 }
 
 pub const CsvTokenizer = struct {
+    const CsvError = error{
+        EndOfFile,
+        EndOfLine,
+        ParsingError,
+    };
+
     const Self = @This();
     const Row = std.ArrayList([]const u8);
 
@@ -194,106 +203,108 @@ pub const CsvTokenizer = struct {
 
         while (true) {
             const row = self.read_row() catch |err| {
-                if (err == std.io.Eof) {
+                if (err == CsvError.EndOfFile) {
                     break;
-                } else {
-                    std.debug.print("Error reading row: {}\n", .{err});
-                    return rows;
                 }
+                return err;
             };
-
             try rows.append(row);
         }
-
         return rows;
     }
 
-    fn read_row(self: *Self) Row {
+    fn read_row(self: *Self) !Row {
         var row = Row.init(self.allocator);
         errdefer row.deinit();
 
-        while (self.next()) |token| {
+        while (true) {
+            const token = self.next() catch |err| {
+                if (err == CsvError.EndOfFile) {
+                    if (row.items.len == 0) {
+                        return err;
+                    }
+                    break; // In this Case,
+                }
+                if (err == CsvError.EndOfLine) {
+                    break;
+                }
+                return err;
+            };
+            print("{s}\n", .{token});
             try row.append(token);
         }
-
         return row;
     }
 
-    fn next(self: *Self) ?[]const u8 {
+    fn next(self: *Self) ![]const u8 {
         if (self.index >= self.content.len) {
-            return null;
+            return CsvError.EndOfFile;
         }
+
         var start = self.index;
-        var reached_content = false;
+        const inside_quotes = self.content[start] == '"';
 
-        while (self.index < self.content.len) {
-            const char = self.peek_char() orelse return null;
-
-            print("char: {c}\n", .{char});
-
-            if (reached_content == false and char == ' ') {
-                start += 1;
-                self.index += 1;
-                continue;
-            } else {
-                reached_content = true;
-            }
-
-            if (char == '"' and self.inside_quotes == false) {
-                self.inside_quotes = !self.inside_quotes;
-                start += 1;
-                self.index += 1;
-                continue;
-            }
-
-            if (char == '"' and self.inside_quotes == true) {
-                if ((self.peek_next_char() orelse ' ') != '"') {
-                    self.inside_quotes = !self.inside_quotes;
-                    break;
-                } else {
-                    self.index += 1; // Skip the second quote
-                }
-            }
-
-            // if (char == '"' and self.inside_quotes == false) {
-            //     self.inside_quotes = !self.inside_quotes;
-            //     start += 1;
-            // }
-
-            // if (char == '"' and self.inside_quotes == true) {
-            //     if (self.index + 1 < self.content.len and self.content[self.index + 1] != '"') {
-            //         self.inside_quotes = !self.inside_quotes;
-
-            //         // const token = self.content[start..self.index];
-            //         // return token;
-            //     }
-            // }
-
-            if (self.content[self.index] == ',' and !self.inside_quotes) {
-                break;
-            }
-
+        if (self.content[start] == '\n') {
             self.index += 1;
+            return CsvError.EndOfLine;
+        }
+        if (self.content[start] == '\r') {
+            self.index += 1;
+            return CsvError.EndOfLine;
         }
 
-        const token = self.content[start..self.index];
-        self.index += 1; // Skip the comma
-        return token;
-    }
+        if (!inside_quotes) {
+            while (self.index < self.content.len) {
+                const char = self.content[self.index];
+                // std.debug.print("{c}\n", .{char});
 
-    fn peek_char(self: *Self) ?u8 {
-        if (self.index >= self.content.len) {
-            return null;
+                if (char == ',' or char == '\n') {
+                    const token = self.content[start..self.index];
+                    if (char == ',') {
+                        self.index += 1; // Skip the comma, leave the \n for next time if it exists
+                    }
+                    // std.debug.print("{s}\n", .{token});
+                    return token;
+                }
+                self.index += 1; // Move the index forward
+            }
+
+            const token = self.content[start..self.index];
+            self.index += 1;
+
+            return token;
         }
 
-        return self.content[self.index];
-    }
+        if (inside_quotes) {
+            start += 1;
+            self.index += 1;
 
-    fn peek_next_char(self: *Self) ?u8 {
-        if (self.index + 1 >= self.content.len) {
-            return null;
+            while (self.index < self.content.len) {
+                const char = self.content[self.index];
+                // std.debug.print("-{c}\n", .{char});
+
+                if (char == '\"') {
+                    // Handle double quotes in strings
+                    const next_char = self.content[self.index + 1];
+                    if (next_char == '\"') {
+                        self.index += 1; // Skip first the Quote
+                        self.index += 1; // Skip the Quote
+                        continue;
+                    }
+
+                    const token = self.content[start..self.index];
+                    self.index += 1; // Ignore the ending Quote
+
+                    if (next_char == ',') {
+                        self.index += 1; // Skip the comma, leave the \n for next time
+                    }
+                    // std.debug.print("{s}\n", .{token});
+                    return token;
+                }
+                self.index += 1;
+            }
         }
 
-        return self.content[self.index + 1];
+        return CsvError.ParsingError;
     }
 };
