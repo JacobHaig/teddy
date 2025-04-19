@@ -151,42 +151,32 @@ pub fn main() !void {
     // // Print it to stdout
     // std.debug.print("Current working directory: {s}\n", .{cwd_path});
 
-    const file = try std.fs.cwd().openFile("./addresses.csv", .{});
+    const file = try std.fs.cwd().openFile("./data_hidden/output copy.csv", .{});
     defer file.close();
 
     const content = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
     defer allocator.free(content);
 
-    var tokenizer = try CsvTokenizer.init(allocator, content);
+    var tokenizer = try CsvTokenizer.init(allocator, content, .{});
 
-    const a = try tokenizer.read_all();
+    try tokenizer.print();
 
-    std.debug.print("\nFinal Output:\n", .{});
-    for (a.items) |item| {
-        for (item.items) |ele| {
-            std.debug.print("{s},", .{ele});
-        }
-        std.debug.print("\n", .{});
-    }
+    // const a = try tokenizer.read_all();
 }
 
 pub const CsvTokenizer = struct {
-    const CsvError = error{
-        EndOfFile,
-        EndOfLine,
-        ParsingError,
-    };
-
     const Self = @This();
     const Row = std.ArrayList([]const u8);
+    const CsvError = error{ EndOfFile, EndOfLine, ParsingError };
+    const CsvTokenizerFlags = struct { delimiter: u8 = ',' };
 
     allocator: std.mem.Allocator,
     content: []const u8,
     index: u32,
 
-    inside_quotes: bool = false,
+    flags: CsvTokenizerFlags,
 
-    pub fn init(allocator: std.mem.Allocator, content: []const u8) !*Self {
+    pub fn init(allocator: std.mem.Allocator, content: []const u8, csvFlags: CsvTokenizerFlags) !*Self {
         const ptr_csv_tokenizer = try allocator.create(Self);
         errdefer allocator.destroy(ptr_csv_tokenizer);
 
@@ -194,7 +184,50 @@ pub const CsvTokenizer = struct {
         ptr_csv_tokenizer.content = content;
         ptr_csv_tokenizer.index = 0;
 
+        ptr_csv_tokenizer.flags = csvFlags;
+
         return ptr_csv_tokenizer;
+    }
+
+    fn validation(self: *Self) !void {
+        const rows = try self.read_all();
+
+        std.debug.print("\n", .{});
+
+        if (rows.items.len == 0) {
+            return CsvError.ParsingError;
+        }
+
+        std.debug.print("ROWS {} ", .{rows.items.len});
+
+        // const expected_row_len = rows.items[0].len;
+
+        for (rows.items, 0..) |row, index| {
+            // if (row.len != expected_row_len) {
+            // return CsvError.ParsingError;
+            // }
+            std.debug.print("{} {}\n", .{ index + 1, row.items.len });
+        }
+    }
+
+    fn print(self: *Self) !void {
+        const rows = try self.read_all();
+
+        // for (rows.items, 0..) |item, index| {
+        //     std.debug.print("{}: ", .{index + 1});
+
+        //     for (item.items) |ele| {
+        //         std.debug.print("{s}{c}", .{ ele, self.flags.delimiter });
+        //     }
+        //     std.debug.print("\n", .{});
+        // }
+
+        for (rows.items) |row| {
+            for (row.items) |ele| {
+                std.debug.print("{s}{c}", .{ ele, self.flags.delimiter });
+            }
+            std.debug.print("\n", .{});
+        }
     }
 
     fn read_all(self: *Self) !std.ArrayList(Row) {
@@ -219,20 +252,23 @@ pub const CsvTokenizer = struct {
 
         while (true) {
             const token = self.next() catch |err| {
+                // std.debug.print("{}\n", .{err});
                 if (err == CsvError.EndOfFile) {
                     if (row.items.len == 0) {
                         return err;
                     }
-                    break; // In this Case,
+
+                    // break; // In this Case, we have a row to return
                 }
                 if (err == CsvError.EndOfLine) {
                     break;
                 }
                 return err;
             };
-            print("{s}\n", .{token});
+            // std.debug.print("{s}\n", .{token});
             try row.append(token);
         }
+
         return row;
     }
 
@@ -241,70 +277,35 @@ pub const CsvTokenizer = struct {
             return CsvError.EndOfFile;
         }
 
-        var start = self.index;
-        const inside_quotes = self.content[start] == '"';
-
-        if (self.content[start] == '\n') {
-            self.index += 1;
-            return CsvError.EndOfLine;
-        }
-        if (self.content[start] == '\r') {
-            self.index += 1;
-            return CsvError.EndOfLine;
-        }
-
-        if (!inside_quotes) {
-            while (self.index < self.content.len) {
-                const char = self.content[self.index];
-                // std.debug.print("{c}\n", .{char});
-
-                if (char == ',' or char == '\n') {
-                    const token = self.content[start..self.index];
-                    if (char == ',') {
-                        self.index += 1; // Skip the comma, leave the \n for next time if it exists
-                    }
-                    // std.debug.print("{s}\n", .{token});
-                    return token;
-                }
-                self.index += 1; // Move the index forward
-            }
-
-            const token = self.content[start..self.index];
-            self.index += 1;
-
-            return token;
-        }
-
-        if (inside_quotes) {
-            start += 1;
-            self.index += 1;
-
-            while (self.index < self.content.len) {
-                const char = self.content[self.index];
-                // std.debug.print("-{c}\n", .{char});
-
-                if (char == '\"') {
-                    // Handle double quotes in strings
-                    const next_char = self.content[self.index + 1];
-                    if (next_char == '\"') {
-                        self.index += 1; // Skip first the Quote
-                        self.index += 1; // Skip the Quote
-                        continue;
-                    }
-
-                    const token = self.content[start..self.index];
-                    self.index += 1; // Ignore the ending Quote
-
-                    if (next_char == ',') {
-                        self.index += 1; // Skip the comma, leave the \n for next time
-                    }
-                    // std.debug.print("{s}\n", .{token});
-                    return token;
-                }
+        if (self.content[self.index] == '\r') {
+            if (self.content[self.index + 1] == '\n') {
+                self.index += 2;
+            } else {
                 self.index += 1;
             }
+            return CsvError.EndOfLine;
+        }
+        if (self.content[self.index] == '\n') {
+            self.index += 1;
+            return CsvError.EndOfLine;
         }
 
-        return CsvError.ParsingError;
+        const start = self.index;
+
+        while (self.index < self.content.len) {
+            const char = self.content[self.index];
+
+            if (char == self.flags.delimiter or char == '\n' or char == '\r') {
+                const token = self.content[start..self.index];
+                if (char == ',') {
+                    self.index += 1; // Skip the comma, leaving the \n or \r to create a new row
+                }
+                return token;
+            }
+
+            self.index += 1; // Move the index forward
+        }
+
+        return CsvError.EndOfFile;
     }
 };
