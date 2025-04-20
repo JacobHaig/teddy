@@ -159,5 +159,7 @@ pub fn main() !void {
 
     var tokenizer = try dataframe.CsvTokenizer.init(allocator, content, .{});
 
+    try tokenizer.read_all();
     try tokenizer.print();
+    try tokenizer.validation();
 }

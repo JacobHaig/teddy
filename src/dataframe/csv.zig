@@ -3,6 +3,7 @@ const std = @import("std");
 pub const CsvTokenizer = struct {
     const Self = @This();
     const Row = std.ArrayList([]const u8);
+    const Rows = std.ArrayList(Row);
     const CsvError = error{ EndOfFile, EndOfLine, ParsingError };
     const CsvTokenizerFlags = struct { delimiter: u8 = ',' };
 
@@ -10,6 +11,7 @@ pub const CsvTokenizer = struct {
     content: []const u8,
     index: u32,
     flags: CsvTokenizerFlags,
+    rows: Rows,
 
     pub fn init(allocator: std.mem.Allocator, content: []const u8, csvFlags: CsvTokenizerFlags) !*Self {
         const ptr_csv_tokenizer = try allocator.create(Self);
@@ -24,34 +26,35 @@ pub const CsvTokenizer = struct {
     }
 
     pub fn validation(self: *Self) !void {
-        const rows = try self.read_all();
-
-        if (rows.items.len == 0) {
+        if (self.rows.items.len == 0) {
             return CsvError.ParsingError;
         }
 
-        const expected_row_len: usize = rows.items.ptr[0].items.len;
+        const expected_row_len: usize = self.rows.items.ptr[0].items.len;
 
-        for (rows.items, 0..) |row, index| {
+        for (self.rows.items, 0..) |row, index| {
             if (row.items.len != expected_row_len) {
-                std.debug.print("Row: {} Expected Row of Len: {} Got: {}\n", .{ index + 1, expected_row_len, row.items.len });
+                std.debug.print("\nRow: {} Expected Row of Len: {} Got: {}\n", .{ index + 1, expected_row_len, row.items.len });
+
                 return CsvError.ParsingError;
             }
         }
     }
 
     pub fn print(self: *Self) !void {
-        const rows = try self.read_all();
-
-        for (rows.items) |row| {
-            for (row.items) |ele| {
-                std.debug.print("{s}{c}", .{ ele, self.flags.delimiter });
+        for (self.rows.items) |row| {
+            std.debug.print("Row: ", .{});
+            for (row.items, 0..) |ele, index| {
+                if (index != 0) {
+                    std.debug.print("{c}", .{self.flags.delimiter});
+                }
+                std.debug.print("{s}", .{ele});
             }
             std.debug.print("\n", .{});
         }
     }
 
-    pub fn read_all(self: *Self) !std.ArrayList(Row) {
+    pub fn read_all(self: *Self) !void {
         var rows = std.ArrayList(Row).init(self.allocator);
         errdefer rows.deinit();
 
@@ -64,7 +67,7 @@ pub const CsvTokenizer = struct {
             };
             try rows.append(row);
         }
-        return rows;
+        self.rows = rows;
     }
 
     fn read_row(self: *Self) !Row {
@@ -73,20 +76,16 @@ pub const CsvTokenizer = struct {
 
         while (true) {
             const token = self.next() catch |err| {
-                // std.debug.print("{}\n", .{err});
                 if (err == CsvError.EndOfFile) {
                     if (row.items.len == 0) {
                         return err;
                     }
-
-                    // break; // In this Case, we have a row to return
                 }
                 if (err == CsvError.EndOfLine) {
                     break;
                 }
                 return err;
             };
-            // std.debug.print("{s}\n", .{token});
             try row.append(token);
         }
 
@@ -99,20 +98,15 @@ pub const CsvTokenizer = struct {
         }
 
         // Handle \r\n and \n line endings
-        if (self.content[self.index] == '\r') {
-            if (self.index + 1 >= self.content.len) {
-                return CsvError.EndOfFile;
+        if (self.content[self.index] == '\r' or self.content[self.index] == '\n') {
+            self.index += 1;
+
+            if (self.index < self.content.len) {
+                if (self.content[self.index] == '\n') {
+                    self.index += 1;
+                }
             }
 
-            if (self.content[self.index + 1] == '\n') {
-                self.index += 2;
-            } else {
-                self.index += 1;
-            }
-            return CsvError.EndOfLine;
-        }
-        if (self.content[self.index] == '\n') {
-            self.index += 1;
             return CsvError.EndOfLine;
         }
 
@@ -126,25 +120,26 @@ pub const CsvTokenizer = struct {
                 const char = self.content[self.index];
 
                 if (char == '\"') {
-                    // If the char after the first quote is a quote, move forward twice
                     if (self.index + 1 < self.content.len) {
                         const next_char = self.content[self.index + 1];
+
+                        // If the char after the first quote is a quote, move forward twice
                         if (next_char == '\"') {
                             self.index += 2; // Skip the escaped quote
                             continue;
                         }
-                    }
 
-                    // If the char after the closing quote is a delimiter, return the token
-                    if (self.index + 1 < self.content.len) {
-                        const next_char = self.content[self.index + 1];
+                        // If there is no second quote, must be the end...
+                        const token = self.content[start .. self.index + 1];
 
-                        if (next_char == ',') {
-                            const token = self.content[start .. self.index + 1];
-
-                            self.index += 2; // Skip the escaped quote and the delimiter
-                            return token;
+                        if (next_char == self.flags.delimiter) {
+                            self.index += 1; // Skip the comma, leaving the \n or \r to create a new row
+                        } else if (next_char != '\n' and next_char != '\r') {
+                            return CsvError.ParsingError;
                         }
+
+                        self.index += 1; // Skip the escaped quote and the delimiter
+                        return token;
                     }
                 }
 
@@ -170,3 +165,17 @@ pub const CsvTokenizer = struct {
         return CsvError.EndOfFile;
     }
 };
+
+fn print_char(c: u8) void {
+    switch (c) {
+        'a'...'z' => std.debug.print("'{c}'\n", .{c}),
+        'A'...'Z' => std.debug.print("'{c}'\n", .{c}),
+        '0'...'9' => std.debug.print("'{c}'\n", .{c}),
+        '"' => std.debug.print("'{c}'\n", .{c}),
+        ' ' => std.debug.print("'{c}'\n", .{c}),
+        ',' => std.debug.print("'{c}'\n", .{c}),
+        '\n' => std.debug.print("'\\n'\n", .{}),
+        '\r' => std.debug.print("'\\r'\n", .{}),
+        else => std.debug.print("? '{c}' '{}'\n", .{ c, c }),
+    }
+}
