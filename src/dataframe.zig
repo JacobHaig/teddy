@@ -4,3 +4,6 @@ pub const VariantSeries = @import("dataframe/variant_series.zig").VariantSeries;
 pub const String = @import("dataframe/variant_series.zig").String;
 pub const Reader = @import("dataframe/reader.zig").Reader;
 pub const FileType = @import("dataframe/reader.zig").FileType;
+pub const CsvTokenizer = @import("dataframe/csv.zig").CsvTokenizer;
+pub const CsvTokenizerFlags = @import("dataframe/csv.zig").CsvTokenizerFlags;
+pub const CsvError = @import("dataframe/csv.zig").CsvError;
