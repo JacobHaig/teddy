@@ -4,7 +4,7 @@ const print = std.debug.print;
 const dataframe = @import("dataframe.zig");
 const variant_series = @import("dataframe/variant_series.zig");
 
-pub fn main2() !void {
+pub fn main() !void {
     var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
     const allocator = debug_allocator.allocator();
     defer {
@@ -97,67 +97,4 @@ pub fn main2() !void {
 
 fn add_ten(x: i32) i32 {
     return x + 10;
-}
-
-test "parse_csv" {
-    var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
-    const allocator = debug_allocator.allocator();
-    defer {
-        const leaked = debug_allocator.deinit();
-        if (leaked == .leak) {
-            print("Memory leaks detected!\n", .{});
-        } else {
-            print("No memory leaks detected.\n", .{});
-        }
-    }
-
-    const content =
-        \\First Name,Last Name,Age,Address,City,State,Zip
-        \\John,Doe,52,120 jefferson st.,Riverside, NJ, 08075
-        \\Jack,McGinnis,23,220 hobo Av.,Phila, PA,09119
-        \\"John ""Da Man""",Repici,38,120 Jefferson St.,Riverside, NJ,"08075"
-        \\Stephen,Tyler,96,"7452, Terrace ""At the Plaza"" road",SomeTown,SD," 91234"
-        \\,Blankman,14,,SomeTown, SD, 00298
-        \\"Joan ""the bone"", Anne",Jet,56,"9th, at Terrace plc",Desert City,CO,00123
-    ;
-    defer allocator.free(content);
-
-    var tokenizer = try dataframe.CsvTokenizer.init(allocator, content, .{ .delimiter = ',' });
-    defer tokenizer.deinit();
-
-    try tokenizer.read_all();
-    // try tokenizer.print();
-    try tokenizer.validation();
-}
-
-pub fn main() !void {
-    var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
-    const allocator = debug_allocator.allocator();
-    defer {
-        const leaked = debug_allocator.deinit();
-        if (leaked == .leak) {
-            print("Memory leaks detected!\n", .{});
-        } else {
-            print("No memory leaks detected.\n", .{});
-        }
-    }
-
-    const cwd_path = try std.fs.cwd().realpathAlloc(allocator, ".");
-    defer allocator.free(cwd_path);
-
-    // Print it to stdout
-    std.debug.print("Current working directory: {s}\n", .{cwd_path});
-
-    const file = try std.fs.cwd().openFile("./data_hidden/1millionrows.csv", .{});
-    defer file.close();
-
-    const content = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
-    defer allocator.free(content);
-
-    var tokenizer = try dataframe.CsvTokenizer.init(allocator, content, .{ .delimiter = ';' });
-    defer tokenizer.deinit();
-
-    try tokenizer.read_all();
-    // try tokenizer.print();
-    try tokenizer.validation();
 }

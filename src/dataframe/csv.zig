@@ -206,3 +206,28 @@ fn print_char(c: u8) void {
         else => std.debug.print("? '{c}' '{}'\n", .{ c, c }),
     }
 }
+
+test "parse_csv_text" {
+    var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
+    const allocator = debug_allocator.allocator();
+    defer {
+        const leaked = debug_allocator.deinit();
+        if (leaked == .leak) std.debug.print("Memory leaks detected!\n", .{});
+    }
+
+    const content =
+        \\First Name,Last Name,Age,Address,City,State,Zip
+        \\John,Doe,52,120 jefferson st.,Riverside, NJ, 08075
+        \\Jack,McGinnis,23,220 hobo Av.,Phila, PA,09119
+        \\"John ""Da Man""",Repici,38,120 Jefferson St.,Riverside, NJ,"08075"
+        \\Stephen,Tyler,96,"7452, Terrace ""At the Plaza"" road",SomeTown,SD," 91234"
+        \\,Blankman,14,,SomeTown, SD, 00298
+        \\"Joan ""the bone"", Anne",Jet,56,"9th, at Terrace plc",Desert City,CO,00123
+    ;
+
+    var tokenizer = try dataframe.CsvTokenizer.init(allocator, content, .{ .delimiter = ',' });
+    defer tokenizer.deinit();
+
+    try tokenizer.read_all();
+    try tokenizer.validation();
+}
