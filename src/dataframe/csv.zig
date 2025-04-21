@@ -1,4 +1,6 @@
 const std = @import("std");
+const dataframe = @import("dataframe.zig");
+const variant_series = @import("variant_series.zig");
 
 pub const CsvTokenizer = struct {
     const Self = @This();
@@ -25,6 +27,13 @@ pub const CsvTokenizer = struct {
         return ptr_csv_tokenizer;
     }
 
+    pub fn deinit(self: *Self) void {
+        for (self.rows.items) |*row| row.deinit();
+
+        self.rows.deinit();
+        self.allocator.destroy(self);
+    }
+
     pub fn validation(self: *Self) !void {
         if (self.rows.items.len == 0) {
             return CsvError.ParsingError;
@@ -44,6 +53,7 @@ pub const CsvTokenizer = struct {
     pub fn print(self: *Self) !void {
         for (self.rows.items) |row| {
             std.debug.print("Row: ", .{});
+
             for (row.items, 0..) |ele, index| {
                 if (index != 0) {
                     std.debug.print("{c}", .{self.flags.delimiter});
@@ -52,6 +62,23 @@ pub const CsvTokenizer = struct {
             }
             std.debug.print("\n", .{});
         }
+    }
+
+    pub fn to_dataframe(self: *Self) !*dataframe.Dataframe {
+        const df = try dataframe.Dataframe.init(self.allocator);
+        errdefer df.deinit();
+
+        const w = self.rows.items.ptr[0].items.len;
+        const h = self.rows.items.len;
+
+        for (0..w) |dw| {
+            var series = try df.create_series([]const u8);
+            for (0..h) |dh| {
+                try series.append(self.rows.items[dh].items[dw]);
+            }
+        }
+
+        return df;
     }
 
     pub fn read_all(self: *Self) !void {
@@ -152,7 +179,7 @@ pub const CsvTokenizer = struct {
 
                 if (char == self.flags.delimiter or char == '\n' or char == '\r') {
                     const token = self.content[start..self.index];
-                    if (char == ',') {
+                    if (char == self.flags.delimiter) {
                         self.index += 1; // Skip the comma, leaving the \n or \r to create a new row
                     }
                     return token;

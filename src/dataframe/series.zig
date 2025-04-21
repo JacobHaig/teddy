@@ -26,7 +26,19 @@ pub fn Series(comptime T: type) type {
             // Initialize fields directly, avoiding stack allocation
             series_ptr.allocator = allocator;
             series_ptr.name = try allocator.alloc(u8, 0);
-            series_ptr.values = try std.ArrayList(T).initCapacity(allocator, 0);
+            series_ptr.values = try std.ArrayList(T).init(allocator);
+
+            return series_ptr;
+        }
+
+        pub fn initWithCapasity(allocator: std.mem.Allocator, cap: usize) !*Self {
+            const series_ptr = try allocator.create(Self);
+            errdefer allocator.destroy(series_ptr);
+
+            // Initialize fields directly, avoiding stack allocation
+            series_ptr.allocator = allocator;
+            series_ptr.name = try allocator.alloc(u8, 0);
+            series_ptr.values = try std.ArrayList(T).initCapacity(allocator, cap);
 
             return series_ptr;
         }
