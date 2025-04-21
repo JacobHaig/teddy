@@ -1,6 +1,8 @@
 const std = @import("std");
 const Series = @import("series.zig").Series;
 const VariantSeries = @import("variant_series.zig").VariantSeries;
+const String = @import("variant_series.zig").String;
+const stringer = @import("variant_series.zig").stringer;
 
 pub const Dataframe = struct {
     const Self = @This();
@@ -113,4 +115,75 @@ fn print_type_info(something: anytype) void {
     // std.debug.print("Type: ", .{t});
     std.debug.print("TypeName: {s}\n", .{@typeName(t)});
     std.debug.print("TypeInfo: {}\n", .{@typeInfo(t)});
+}
+
+test "basic manipulations" {
+    var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
+    const allocator = debug_allocator.allocator();
+    defer {
+        const leaked = debug_allocator.deinit();
+        if (leaked == .leak) {
+            std.debug.print("Memory leaks detected!\n", .{});
+        }
+    }
+
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var series = try df.create_series(String);
+    try series.rename("Name");
+    try series.append(try stringer(allocator, "Alice"));
+    try series.try_append(try stringer(allocator, "Gary"));
+    try series.try_append("Bob");
+    // series.print();
+
+    var series2 = try df.create_series(f32);
+    try series2.rename("Salary");
+    try series2.append(15000);
+    try series2.append(75000.0);
+    try series2.append(110000.0);
+    // series2.print();
+
+    df.apply_inplace("Salary", f32, struct {
+        fn call(x: f32) f32 {
+            return x / 52 / 40;
+        }
+    }.call);
+    // series2.print();
+
+    var series3 = try df.create_series(i32);
+    try series3.rename("Age");
+    try series3.append(15);
+    try series3.append(20);
+    try series3.append(30);
+    // series3.print();
+
+    df.apply_inplace("Age", i32, add_ten);
+
+    df.apply_inplace("Age", i32, struct {
+        fn call(x: i32) i32 {
+            return x + 10;
+        }
+    }.call);
+    // series3.print();
+
+    var df2 = try df.deep_copy();
+    defer df2.deinit();
+
+    df.drop_series("Age");
+    // print("height: {} width: {}\n", .{ df.height(), df.width() });
+    // df.drop_row(1);
+    df.limit(2);
+
+    // std.debug.print("height: {} width: {}\n", .{ df.height(), df.width() });
+    // std.debug.print("height: {} width: {}\n", .{ df2.height(), df2.width() });
+
+    try std.testing.expectEqual(2, df.height());
+    try std.testing.expectEqual(2, df.width());
+    try std.testing.expectEqual(3, df2.height());
+    try std.testing.expectEqual(3, df2.width());
+}
+
+fn add_ten(x: i32) i32 {
+    return x + 10;
 }

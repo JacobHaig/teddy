@@ -11,8 +11,6 @@ pub fn main() !void {
         const leaked = debug_allocator.deinit();
         if (leaked == .leak) {
             print("Memory leaks detected!\n", .{});
-        } else {
-            print("No memory leaks detected.\n", .{});
         }
     }
 
@@ -82,11 +80,8 @@ pub fn main() !void {
     // df.drop_row(1);
     df.limit(2);
 
-    print("height: {} width: {}\n", .{ df.height(), df.width() });
-    print("height: {} width: {}\n", .{ df2.height(), df2.width() });
-
-    const series22 = df2.get_series("Age") orelse return;
-    series22.*.print();
+    std.debug.print("height: {} width: {}\n", .{ df.height(), df.width() });
+    std.debug.print("height: {} width: {}\n", .{ df2.height(), df2.width() });
 
     const cwd_path = try std.fs.cwd().realpathAlloc(allocator, ".");
     defer allocator.free(cwd_path);
