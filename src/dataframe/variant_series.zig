@@ -70,6 +70,12 @@ pub const VariantSeries = union(enum) {
         }
     }
 
+    pub fn rename(self: *Self, new_name: []const u8) !void {
+        switch (self.*) {
+            inline else => |s| try s.rename(new_name),
+        }
+    }
+
     pub fn deep_copy(self: *Self) !Self {
         switch (self.*) {
             inline else => |s| {

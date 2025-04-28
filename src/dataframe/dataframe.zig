@@ -33,7 +33,8 @@ pub const Dataframe = struct {
         const series = try Series(T).init(self.allocator);
         errdefer series.deinit();
 
-        try self.series.append(series.to_variant_series());
+        const new_series_var = series.*.to_variant_series();
+        try self.series.append(new_series_var);
         return series;
     }
 
@@ -89,6 +90,21 @@ pub const Dataframe = struct {
         series.*.apply_inplace(T, func);
     }
 
+    pub fn apply_new(self: *Self, new_name: []const u8, name: []const u8, comptime T: type, comptime func: fn (x: T) T) !void {
+        const series = self.get_series(name) orelse return;
+        var new_series = try series.deep_copy();
+
+        new_series.apply_inplace(T, func);
+        try new_series.rename(new_name);
+
+        try self.add_series(new_series);
+    }
+
+    pub fn rename(self: *Self, name: []const u8, new_name: []const u8) void {
+        const series = self.get_series(name) orelse return;
+        try series.rename(new_name);
+    }
+
     pub fn deep_copy(self: *Self) !*Self {
         const new_dataframe = try Self.init(self.allocator);
         errdefer new_dataframe.deinit();
@@ -120,12 +136,7 @@ fn print_type_info(something: anytype) void {
 test "basic manipulations" {
     var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
     const allocator = debug_allocator.allocator();
-    defer {
-        const leaked = debug_allocator.deinit();
-        if (leaked == .leak) {
-            std.debug.print("Memory leaks detected!\n", .{});
-        }
-    }
+    defer if (debug_allocator.deinit() == .ok) std.debug.print("Memory leaks detected!\n", .{});
 
     var df = try Dataframe.init(allocator);
     defer df.deinit();
@@ -158,7 +169,7 @@ test "basic manipulations" {
     try series3.append(30);
     // series3.print();
 
-    df.apply_inplace("Age", i32, add_ten);
+    df.apply_inplace("Age", i32, add_five);
 
     df.apply_inplace("Age", i32, struct {
         fn call(x: i32) i32 {
@@ -184,6 +195,6 @@ test "basic manipulations" {
     try std.testing.expectEqual(3, df2.width());
 }
 
-fn add_ten(x: i32) i32 {
+fn add_five(x: i32) i32 {
     return x + 10;
 }

@@ -75,6 +75,12 @@ pub fn main() !void {
     var df2 = try df.deep_copy();
     defer df2.deinit();
 
+    try df.apply_new("new_age", "Age", i32, add_ten);
+    df.apply_inplace("new_age", i32, add_ten);
+    df.apply_inplace("new_age", i32, add_ten);
+    const new_age = df.get_series("new_age") orelse return;
+    new_age.print();
+
     df.drop_series("Age");
     // print("height: {} width: {}\n", .{ df.height(), df.width() });
     // df.drop_row(1);
