@@ -165,6 +165,11 @@ test "basic manipulations" {
     try series3.append(30);
     // series3.print();
 
+    const add_five = struct {
+        fn call(x: i32) i32 {
+            return x + 5;
+        }
+    }.call;
     df.apply_inplace("Age", i32, add_five);
 
     df.apply_inplace("Age", i32, struct {
@@ -172,25 +177,15 @@ test "basic manipulations" {
             return x + 10;
         }
     }.call);
-    // series3.print();
 
     var df2 = try df.deep_copy();
     defer df2.deinit();
 
     df.drop_series("Age");
-    // print("height: {} width: {}\n", .{ df.height(), df.width() });
-    // df.drop_row(1);
     df.limit(2);
-
-    // std.debug.print("height: {} width: {}\n", .{ df.height(), df.width() });
-    // std.debug.print("height: {} width: {}\n", .{ df2.height(), df2.width() });
 
     try std.testing.expectEqual(2, df.height());
     try std.testing.expectEqual(2, df.width());
     try std.testing.expectEqual(3, df2.height());
     try std.testing.expectEqual(3, df2.width());
-}
-
-fn add_five(x: i32) i32 {
-    return x + 10;
 }
