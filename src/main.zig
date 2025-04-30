@@ -14,29 +14,31 @@ pub fn main() !void {
         }
     }
 
-    // var df_reader = try dataframe.Reader.init(allocator);
-    // defer df_reader.deinit();
+    var df_reader = try dataframe.Reader.init(allocator);
+    defer df_reader.deinit();
 
-    // var df3 = df_reader
-    //     .set_file_type(dataframe.FileType.csv("test.csv"))
-    //     .set_delimiter(',')
-    //     .set_has_header(true)
-    //     .set_skip_rows(0)
-    //     .load() catch |err|
-    //     {
-    //         print("Error loading CSV file: {}\n", .{err});
-    //         return err;
-    //     };
+    var df3 = df_reader
+        .set_file_type(.csv)
+        .set_path("data\\addresses.csv")
+        .set_delimiter(',')
+        .set_has_header(true)
+        .set_skip_rows(0)
+        .load() catch |err| {
+        print("Error loading CSV file: {}\n", .{err});
+        return err;
+    };
+    defer df3.deinit();
+    print("height: {} width: {}\n", .{ df3.height(), df3.width() });
+}
 
-    // print("height: {} width: {}\n", .{ df3.height(), df3.width() });
-
-    var df = try dataframe.Dataframe.init(allocator);
+test "manual dataframe" {
+    var df = try dataframe.Dataframe.init(std.testing.allocator);
     defer df.deinit();
 
     var series = try df.create_series(dataframe.String);
     try series.rename("Name");
-    try series.append(try variant_series.stringer(allocator, "Alice"));
-    try series.try_append(try variant_series.stringer(allocator, "Gary"));
+    try series.append(try variant_series.stringer(std.testing.allocator, "Alice"));
+    try series.try_append(try variant_series.stringer(std.testing.allocator, "Gary"));
     try series.try_append("Bob");
     series.print();
 
@@ -62,6 +64,11 @@ pub fn main() !void {
     try series3.append(30);
     series3.print();
 
+    const add_ten = struct {
+        fn call(x: i32) i32 {
+            return x + 10;
+        }
+    }.call;
     df.apply_inplace("Age", i32, add_ten);
 
     df.apply_inplace("Age", i32, struct {
@@ -82,20 +89,8 @@ pub fn main() !void {
     new_age.print();
 
     df.drop_series("Age");
-    // print("height: {} width: {}\n", .{ df.height(), df.width() });
-    // df.drop_row(1);
     df.limit(2);
 
     std.debug.print("height: {} width: {}\n", .{ df.height(), df.width() });
     std.debug.print("height: {} width: {}\n", .{ df2.height(), df2.width() });
-
-    const cwd_path = try std.fs.cwd().realpathAlloc(allocator, ".");
-    defer allocator.free(cwd_path);
-
-    // Print it to stdout
-    std.debug.print("Current working directory: {s}\n", .{cwd_path});
-}
-
-fn add_ten(x: i32) i32 {
-    return x + 10;
 }

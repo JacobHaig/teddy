@@ -1,20 +1,22 @@
 const std = @import("std");
 
 const dataframe = @import("dataframe.zig");
+const csv = @import("csv.zig");
 
-const FileType = union(enum) {
+pub const FileType = union(enum) {
     none,
-    csv: []const u8,
-    json: []const u8,
-    parquet: []const u8,
+    csv,
+    json,
+    parquet,
 };
 
 pub const Reader = struct {
     const Self = @This();
 
-    allocator: *std.mem.Allocator,
+    allocator: std.mem.Allocator,
 
     file_type: FileType,
+    path: ?[]const u8,
     delimiter: u8,
     has_header: bool,
     skip_rows: usize,
@@ -24,7 +26,7 @@ pub const Reader = struct {
     // column_count: usize,
     // row_count: usize,
 
-    pub fn init(allocator: *std.mem.Allocator) !*Self {
+    pub fn init(allocator: std.mem.Allocator) !*Self {
         const reader_ptr = try allocator.create(Reader);
         errdefer allocator.destroy(reader_ptr);
 
@@ -44,31 +46,38 @@ pub const Reader = struct {
 
     pub fn set_file_type(self: *Self, file_type: FileType) *Self {
         self.file_type = file_type;
+        return self;
+    }
+
+    pub fn set_path(self: *Self, path: []const u8) *Self {
+        self.path = path;
+        return self;
     }
 
     pub fn set_delimiter(self: *Self, delimiter: u8) *Self {
         self.delimiter = delimiter;
+        return self;
     }
 
     pub fn set_has_header(self: *Self, has_header: bool) *Self {
         self.has_header = has_header;
+        return self;
     }
 
     pub fn set_skip_rows(self: *Self, skip_rows: usize) *Self {
         self.skip_rows = skip_rows;
+        return self;
     }
 
-    pub fn load(self: *Self) dataframe.Dataframe {
+    pub fn load(self: *Self) !*dataframe.Dataframe {
         switch (self.file_type) {
-            .csv => self.read_csv(),
-            .json => self.read_json(),
-            .parquet => self.read_parquet(),
-            else => @compileError("Unsupported file type"),
+            .csv => return self.read_csv(),
+            else => return error.InvalidFileType,
         }
     }
 
-    fn read_csv(self: *Self) void {
-        const filename = self.file_type.csv;
+    fn read_csv(self: *Self) !*dataframe.Dataframe {
+        const filename = self.path orelse return error.InvalidFilePath;
 
         const file = try std.fs.cwd().openFile(filename, .{});
         defer file.close();
@@ -76,7 +85,16 @@ pub const Reader = struct {
         const content = try file.readToEndAlloc(self.allocator, std.math.maxInt(usize));
         defer self.*.allocator.free(content);
 
-        // std.mem.spli
+        const tokenizer = try csv.CsvTokenizer.init(self.allocator, content, .{ .delimiter = self.delimiter });
+        defer tokenizer.deinit();
+
+        try tokenizer.read_all();
+        try tokenizer.validation();
+
+        const df = try tokenizer.to_dataframe();
+        errdefer df.deinit();
+
+        return df;
     }
 
     fn read_json(self: *Self) void {

@@ -134,17 +134,13 @@ fn print_type_info(something: anytype) void {
 }
 
 test "basic manipulations" {
-    var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
-    const allocator = debug_allocator.allocator();
-    defer if (debug_allocator.deinit() == .ok) std.debug.print("Memory leaks detected!\n", .{});
-
-    var df = try Dataframe.init(allocator);
+    var df = try Dataframe.init(std.testing.allocator);
     defer df.deinit();
 
     var series = try df.create_series(String);
     try series.rename("Name");
-    try series.append(try stringer(allocator, "Alice"));
-    try series.try_append(try stringer(allocator, "Gary"));
+    try series.append(try stringer(std.testing.allocator, "Alice"));
+    try series.try_append(try stringer(std.testing.allocator, "Gary"));
     try series.try_append("Bob");
     // series.print();
 

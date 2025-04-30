@@ -65,9 +65,16 @@ pub fn Series(comptime T: type) type {
         pub fn print(self: *Self) void {
             switch (comptime T) {
                 String => {
-                    std.debug.print("{s}\n{s}\n--------\n", .{ self.name, "Bytes" });
+                    std.debug.print("{s}\n{s}\n--------\n", .{ self.name, "String" });
                     for (self.values.items) |value| {
                         std.debug.print("{s}\n", .{value.items});
+                    }
+                    std.debug.print("\n", .{});
+                },
+                []const u8 => {
+                    std.debug.print("{s}\n{s}\n--------\n", .{ self.name, "ConstString" });
+                    for (self.values.items) |value| {
+                        std.debug.print("{s}\n", .{value});
                     }
                     std.debug.print("\n", .{});
                 },
@@ -197,6 +204,7 @@ pub fn Series(comptime T: type) type {
                 f32 => VariantSeries{ .float32 = self },
                 f64 => VariantSeries{ .float64 = self },
 
+                []const u8 => VariantSeries{ .conststring = self },
                 std.ArrayListUnmanaged(u8) => VariantSeries{ .string = self },
 
                 // Add other types as needed

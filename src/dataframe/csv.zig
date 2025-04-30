@@ -64,6 +64,8 @@ pub const CsvTokenizer = struct {
         }
     }
 
+    // TODO: Consider parsing the datatypes of each column here.
+    // This could reduce the overall memory footprint of the dataframe.
     pub fn to_dataframe(self: *Self) !*dataframe.Dataframe {
         const df = try dataframe.Dataframe.init(self.allocator);
         errdefer df.deinit();
@@ -208,13 +210,6 @@ fn print_char(c: u8) void {
 }
 
 test "parse_csv_text" {
-    var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
-    const allocator = debug_allocator.allocator();
-    defer {
-        const leaked = debug_allocator.deinit();
-        if (leaked == .leak) std.debug.print("Memory leaks detected!\n", .{});
-    }
-
     const content =
         \\First Name,Last Name,Age,Address,City,State,Zip
         \\John,Doe,52,120 jefferson st.,Riverside, NJ, 08075
@@ -225,7 +220,7 @@ test "parse_csv_text" {
         \\"Joan ""the bone"", Anne",Jet,56,"9th, at Terrace plc",Desert City,CO,00123
     ;
 
-    var tokenizer = try dataframe.CsvTokenizer.init(allocator, content, .{ .delimiter = ',' });
+    var tokenizer = try CsvTokenizer.init(std.testing.allocator, content, .{ .delimiter = ',' });
     defer tokenizer.deinit();
 
     try tokenizer.read_all();
