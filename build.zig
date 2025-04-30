@@ -23,12 +23,12 @@ pub fn build(b: *std.Build) void {
     // Add Libs
     const dataframe_lib = b.addLibrary(.{
         .linkage = .static,
-        .name = "zeddy",
+        .name = "teddy",
         .root_module = dataframe_mod,
     });
 
     const exe = b.addExecutable(.{
-        .name = "zeddy",
+        .name = "teddy",
         .root_module = exe_mod,
     });
 

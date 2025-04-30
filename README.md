@@ -1,6 +1,7 @@
-# Zeddy
+# Teddy
 
-Zeddy is a data manipulation and analysis library for Zig, designed to provide efficient and type-safe operations on structured data.
+Teddy is a data manipulation and analysis library for Zig, designed to provide efficient and type-safe operations on structured data.
+
 
 ## Features
 
@@ -17,7 +18,7 @@ This project is in early development. The API is not yet stable and is subject t
 
 ## Building
 
-Zeddy uses the standard Zig build system. To build the project:
+Teddy uses the standard Zig build system. To build the project:
 
 ```
 zig build
@@ -32,7 +33,7 @@ zig build test
 To run the example application:
 
 ```
-zig build run
+zig build run --release=fast
 ```
 
 ## Project Structure
