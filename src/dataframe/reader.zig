@@ -70,10 +70,10 @@ pub const Reader = struct {
     }
 
     pub fn load(self: *Self) !*dataframe.Dataframe {
-        switch (self.file_type) {
-            .csv => return self.read_csv(),
-            else => return error.InvalidFileType,
-        }
+        return switch (self.file_type) {
+            .csv => self.read_csv(),
+            else => error.FileDoesNotExist,
+        };
     }
 
     fn read_csv(self: *Self) !*dataframe.Dataframe {
@@ -85,16 +85,14 @@ pub const Reader = struct {
         const content = try file.readToEndAlloc(self.allocator, std.math.maxInt(usize));
         defer self.*.allocator.free(content);
 
-        const tokenizer = try csv.CsvTokenizer.init(self.allocator, content, .{ .delimiter = self.delimiter });
+        const tokenizer = try csv.CsvTokenizer.init(self.allocator, content, .{ .delimiter = self.delimiter, .has_header = self.has_header, .skip_rows = self.skip_rows });
         defer tokenizer.deinit();
 
         try tokenizer.read_all();
         try tokenizer.validation();
+        // try tokenizer.print();
 
-        const df = try tokenizer.to_dataframe();
-        errdefer df.deinit();
-
-        return df;
+        return try tokenizer.to_dataframe();
     }
 
     fn read_json(self: *Self) void {

@@ -7,7 +7,11 @@ pub const CsvTokenizer = struct {
     const Row = std.ArrayList([]const u8);
     const Rows = std.ArrayList(Row);
     const CsvError = error{ EndOfFile, EndOfLine, ParsingError };
-    const CsvTokenizerFlags = struct { delimiter: u8 = ',' };
+    const CsvTokenizerFlags = struct {
+        delimiter: u8 = ',',
+        skip_rows: usize = 0,
+        has_header: bool = true,
+    };
 
     allocator: std.mem.Allocator,
     content: []const u8,
@@ -74,9 +78,19 @@ pub const CsvTokenizer = struct {
         const h = self.rows.items.len;
 
         for (0..w) |dw| {
-            var series = try df.create_series([]const u8);
-            for (0..h) |dh| {
-                try series.append(self.rows.items[dh].items[dw]);
+            var series = try df.create_series(variant_series.String);
+            var starting_feild: usize = 0;
+
+            if (self.flags.has_header) {
+                try series.rename(self.rows.items[0].items[dw]);
+                starting_feild += 1;
+            }
+
+            starting_feild += self.flags.skip_rows;
+
+            for (starting_feild..h) |dh| {
+                const string = try variant_series.stringer(self.allocator, self.rows.items[dh].items[dw]);
+                try series.append(string);
             }
         }
 

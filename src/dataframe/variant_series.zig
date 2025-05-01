@@ -37,19 +37,19 @@ pub const VariantSeries = union(enum) {
         }
     }
 
-    pub fn print(self: *Self) void {
+    pub fn print(self: *const Self) void {
         switch (self.*) {
             inline else => |p| p.print(),
         }
     }
 
-    pub fn len(self: *Self) usize {
+    pub fn len(self: *const Self) usize {
         switch (self.*) {
             inline else => |p| return p.len(),
         }
     }
 
-    pub fn name(self: *Self) []const u8 {
+    pub fn name(self: *const Self) []const u8 {
         switch (self.*) {
             inline else => |p| return p.name,
         }
@@ -90,6 +90,12 @@ pub const VariantSeries = union(enum) {
     pub fn limit(self: *Self, n_limit: usize) void {
         switch (self.*) {
             inline else => |s| s.*.limit(n_limit),
+        }
+    }
+
+    pub fn print_at(self: *Self, n: usize) void {
+        switch (self.*) {
+            inline else => |s| s.*.print_at(n),
         }
     }
 

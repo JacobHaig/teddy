@@ -124,6 +124,28 @@ pub const Dataframe = struct {
             item.limit(n_limit);
         }
     }
+
+    pub fn print(self: *Self) void {
+        const max_rows = 10;
+        const wwidth = self.width();
+        const hheight = self.height();
+
+        const print_rows = if (hheight > max_rows) max_rows else hheight;
+
+        for (0..wwidth) |w| {
+            var varseries = self.series.items[w];
+            std.debug.print("{s} ", .{varseries.name()});
+        }
+        std.debug.print("\n", .{});
+
+        for (0..print_rows) |h| {
+            for (0..wwidth) |w| {
+                var varseries = self.series.items[w];
+                varseries.print_at(h);
+            }
+            std.debug.print("\n", .{});
+        }
+    }
 };
 
 fn print_type_info(something: anytype) void {

@@ -95,6 +95,17 @@ pub fn Series(comptime T: type) type {
             }
         }
 
+        pub fn print_at(self: *Self, n: usize) void {
+            // TODO: Check if n is < len
+
+            switch (comptime T) {
+                String => std.debug.print("{s}", .{self.values.items[n].items}),
+                []const u8 => std.debug.print("{s}", .{self.values.items[n]}),
+                f32, f64 => std.debug.print("{d}", .{self.values.items[n]}),
+                else => std.debug.print("{}", .{self.values.items[n]}),
+            }
+        }
+
         pub fn len(self: *Self) usize {
             return self.values.items.len;
         }
