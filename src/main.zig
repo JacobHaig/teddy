@@ -23,7 +23,7 @@ pub fn main() !void {
     defer df3.deinit();
 
     std.debug.print("height: {} width: {}\n", .{ df3.height(), df3.width() });
-    df3.print();
+    try df3.print();
 
     // const s = df3.get_series("First Name") orelse return error.doesntExist;
     // s.print();

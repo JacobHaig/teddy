@@ -1,7 +1,8 @@
 const std = @import("std");
 const Series = @import("series.zig").Series;
 const VariantSeries = @import("variant_series.zig").VariantSeries;
-const String = @import("variant_series.zig").String;
+const UnmanagedString = @import("variant_series.zig").UnmanagedString;
+const ManagedString = @import("variant_series.zig").ManagedString;
 const stringer = @import("variant_series.zig").stringer;
 
 pub const Dataframe = struct {
@@ -125,25 +126,73 @@ pub const Dataframe = struct {
         }
     }
 
-    pub fn print(self: *Self) void {
-        const max_rows = 10;
+    pub fn print(self: *Self) !void {
+        const max_rows = 100;
         const wwidth = self.width();
         const hheight = self.height();
 
         const print_rows = if (hheight > max_rows) max_rows else hheight;
 
-        for (0..wwidth) |w| {
-            var varseries = self.series.items[w];
-            std.debug.print("{s} ", .{varseries.name()});
-        }
-        std.debug.print("\n", .{});
+        // Get string representation of each series. Name, Type, Values (up to max_rows)
+        // Count the number of characters to get the max width for each column
+        // Also include the header and datatype in the width calculation
 
-        for (0..print_rows) |h| {
-            for (0..wwidth) |w| {
-                var varseries = self.series.items[w];
-                varseries.print_at(h);
+        var all_series: std.ArrayList(std.ArrayList(ManagedString)) = std.ArrayList(std.ArrayList(ManagedString)).init(self.allocator);
+        errdefer all_series.deinit();
+
+        // Create a series of strings.
+        for (0..wwidth) |w| {
+            var string_series = std.ArrayList(ManagedString).init(self.allocator);
+            var varseries = self.series.items[w];
+
+            try string_series.append(try varseries.name_as_string()); // Name
+            try string_series.append(try varseries.type_as_string()); // Type
+            for (0..print_rows) |h| {
+                try string_series.append(try varseries.as_string_at(h)); // Value
             }
-            std.debug.print("\n", .{});
+
+            try all_series.append(string_series);
+        }
+
+        // Deinit the series of strings after use
+        defer {
+            for (all_series.items) |series| {
+                for (series.items) |str| {
+                    str.deinit();
+                }
+                series.deinit();
+            }
+            all_series.deinit();
+        }
+
+        // Calculate the max width for each column
+        var max_widths = std.ArrayList(usize).init(self.allocator);
+        defer max_widths.deinit();
+
+        for (0..wwidth) |w| {
+            var max_width: usize = 0;
+            const series: std.ArrayList(ManagedString) = all_series.items[w];
+
+            for (series.items) |str| {
+                const len = str.items.len;
+                if (len > max_width) {
+                    max_width = len;
+                }
+            }
+            try max_widths.append(max_width);
+        }
+
+        // Print the Table to stdout
+        const writer = std.io.getStdOut().writer();
+        // Print the header, type, and values. The header and type require us to include the +2
+        for (0..print_rows + 2) |h| {
+            for (0..wwidth) |w| {
+                const str: []u8 = all_series.items[w].items[h].items;
+                const custom_width = max_widths.items[w];
+
+                try std.fmt.format(writer, "| {s:[width]} ", .{ .s = str, .width = custom_width });
+            }
+            try std.fmt.format(writer, "|\n", .{});
         }
     }
 };
@@ -159,7 +208,7 @@ test "basic manipulations" {
     var df = try Dataframe.init(std.testing.allocator);
     defer df.deinit();
 
-    var series = try df.create_series(String);
+    var series = try df.create_series(UnmanagedString);
     try series.rename("Name");
     try series.append(try stringer(std.testing.allocator, "Alice"));
     try series.try_append(try stringer(std.testing.allocator, "Gary"));

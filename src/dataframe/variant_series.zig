@@ -1,10 +1,11 @@
 const std = @import("std");
 const Series = @import("series.zig").Series;
 
-pub const String = std.ArrayListUnmanaged(u8);
+pub const UnmanagedString = std.ArrayListUnmanaged(u8);
+pub const ManagedString = std.ArrayList(u8);
 
-pub fn stringer(allocator: std.mem.Allocator, str: []const u8) !String {
-    var name = try String.initCapacity(allocator, str.len);
+pub fn stringer(allocator: std.mem.Allocator, str: []const u8) !UnmanagedString {
+    var name = try UnmanagedString.initCapacity(allocator, str.len);
     errdefer name.deinit(allocator);
 
     name.appendSliceAssumeCapacity(str);
@@ -29,7 +30,7 @@ pub const VariantSeries = union(enum) {
     float64: *Series(f64),
 
     conststring: *Series([]const u8),
-    string: *Series(String),
+    string: *Series(UnmanagedString),
 
     pub fn deinit(self: *Self) void {
         switch (self.*) {
@@ -99,6 +100,24 @@ pub const VariantSeries = union(enum) {
         }
     }
 
+    pub fn as_string_at(self: *Self, n: usize) !ManagedString {
+        switch (self.*) {
+            inline else => |s| return s.*.as_string_at(n),
+        }
+    }
+
+    pub fn name_as_string(self: *const Self) !ManagedString {
+        switch (self.*) {
+            inline else => |p| return p.name_as_string(),
+        }
+    }
+
+    pub fn type_as_string(self: *Self) !ManagedString {
+        switch (self.*) {
+            inline else => |s| return s.*.type_as_string(),
+        }
+    }
+
     pub fn get_type(self: *Self) type {
         switch (self.*) {
             .bool => return bool,
@@ -112,7 +131,7 @@ pub const VariantSeries = union(enum) {
             .int64 => return i64,
             .float32 => return f32,
             .float64 => return f64,
-            .string => return String,
+            .string => return UnmanagedString,
         }
     }
 };

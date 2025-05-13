@@ -78,7 +78,7 @@ pub const CsvTokenizer = struct {
         const h = self.rows.items.len;
 
         for (0..w) |dw| {
-            var series = try df.create_series(variant_series.String);
+            var series = try df.create_series(variant_series.UnmanagedString);
             var starting_feild: usize = 0;
 
             if (self.flags.has_header) {
