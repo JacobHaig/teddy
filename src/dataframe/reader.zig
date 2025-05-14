@@ -92,6 +92,7 @@ pub const Reader = struct {
         try tokenizer.validation();
         // try tokenizer.print();
 
+        // return error.TEST; // Placeholder for Dataframe creation
         return try tokenizer.to_dataframe();
     }
 

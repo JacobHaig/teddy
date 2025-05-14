@@ -1,10 +1,12 @@
 const std = @import("std");
 const dataframe = @import("dataframe.zig");
 const variant_series = @import("variant_series.zig");
+const ManagedString = @import("variant_series.zig").ManagedString;
+const UnmanagedString = @import("variant_series.zig").UnmanagedString;
 
 pub const CsvTokenizer = struct {
     const Self = @This();
-    const Row = std.ArrayList([]const u8);
+    const Row = std.ArrayList(CSVType);
     const Rows = std.ArrayList(Row);
     const CsvError = error{ EndOfFile, EndOfLine, ParsingError };
     const CsvTokenizerFlags = struct {
@@ -56,13 +58,12 @@ pub const CsvTokenizer = struct {
 
     pub fn print(self: *Self) !void {
         for (self.rows.items) |row| {
-            std.debug.print("Row: ", .{});
-
-            for (row.items, 0..) |ele, index| {
-                if (index != 0) {
-                    std.debug.print("{c}", .{self.flags.delimiter});
+            for (row.items) |item| {
+                switch (item) {
+                    .value => |v| std.debug.print("'{s}' ", .{v}),
+                    .quoted_value => |v| std.debug.print("'{s}' ", .{v}),
+                    else => std.debug.print("", .{}),
                 }
-                std.debug.print("{s}", .{ele});
             }
             std.debug.print("\n", .{});
         }
@@ -82,14 +83,15 @@ pub const CsvTokenizer = struct {
             var starting_feild: usize = 0;
 
             if (self.flags.has_header) {
-                try series.rename(self.rows.items[0].items[dw]);
+                const string = try self.rows.items[0].items[dw].to_string(self.allocator);
+                try series.rename(string.items);
                 starting_feild += 1;
             }
 
             starting_feild += self.flags.skip_rows;
 
             for (starting_feild..h) |dh| {
-                const string = try variant_series.stringer(self.allocator, self.rows.items[dh].items[dw]);
+                const string = try self.rows.items[dh].items[dw].to_string(self.allocator);
                 try series.append(string);
             }
         }
@@ -97,47 +99,96 @@ pub const CsvTokenizer = struct {
         return df;
     }
 
+    const CSVType = union(enum) {
+        value: []const u8,
+        quoted_value: []const u8,
+        end_of_line: void,
+        end_of_file: void,
+        parsing_error: void,
+
+        fn print(self: CSVType) void {
+            switch (self) {
+                .value => |v| std.debug.print("Value:{s}\n", .{v}),
+                .quoted_value => |v| std.debug.print("QuotedValue:{s}\n", .{v}),
+                .end_of_line => std.debug.print("End of Line\n", .{}),
+                .end_of_file => std.debug.print("End of File\n", .{}),
+                .parsing_error => std.debug.print("Parsing Error\n", .{}),
+            }
+        }
+
+        fn to_string(self: CSVType, allocator: std.mem.Allocator) !UnmanagedString {
+            switch (self) {
+                .value => |v| {
+                    const str: UnmanagedString = try variant_series.stringer(allocator, v);
+                    return str;
+                },
+                .quoted_value => |v| {
+                    var str: UnmanagedString = try variant_series.stringer(allocator, v);
+                    std.debug.print("Quoted Value: {s}\n", .{str.items});
+                    _ = str.orderedRemove(0);
+                    _ = str.orderedRemove(str.items.len - 1);
+                    std.debug.print("Quoted Value: {s}\n", .{str.items});
+                    return str;
+                },
+                else => {
+                    unreachable;
+                },
+            }
+        }
+    };
+
     pub fn read_all(self: *Self) !void {
         var rows = std.ArrayList(Row).init(self.allocator);
         errdefer rows.deinit();
 
         while (true) {
-            const row = self.read_row() catch |err| {
-                if (err == CsvError.EndOfFile) {
-                    break;
+            var row = Row.init(self.allocator);
+            errdefer row.deinit();
+
+            const err = try self.read_row(&row);
+
+            if (err == .end_of_file) {
+                if (row.items.len != 0) {
+                    try rows.append(row);
                 }
-                return err;
-            };
+                break;
+            }
+
+            if (err == .parsing_error) {
+                return CsvError.ParsingError;
+            }
+
             try rows.append(row);
         }
+
         self.rows = rows;
     }
 
-    fn read_row(self: *Self) !Row {
-        var row = Row.init(self.allocator);
-        errdefer row.deinit();
-
+    fn read_row(self: *Self, row: *Row) !CSVType {
         while (true) {
-            const token = self.next() catch |err| {
-                if (err == CsvError.EndOfFile) {
-                    if (row.items.len == 0) {
-                        return err;
-                    }
-                }
-                if (err == CsvError.EndOfLine) {
-                    break;
-                }
-                return err;
-            };
-            try row.append(token);
-        }
+            const csv_token_type = self.next();
 
-        return row;
+            if (csv_token_type == .parsing_error) {
+                return .parsing_error;
+            }
+
+            if (csv_token_type == .end_of_file) {
+                return .end_of_file;
+            }
+
+            if (csv_token_type == .end_of_line) {
+                return .end_of_line;
+            }
+
+            // If we have some value, append it to the row
+            try row.append(csv_token_type);
+        }
+        return .end_of_file;
     }
 
-    fn next(self: *Self) ![]const u8 {
+    fn next(self: *Self) CSVType {
         if (self.index >= self.content.len) {
-            return CsvError.EndOfFile;
+            return .end_of_file;
         }
 
         // Handle \r\n and \n line endings
@@ -150,7 +201,7 @@ pub const CsvTokenizer = struct {
                 }
             }
 
-            return CsvError.EndOfLine;
+            return .end_of_line;
         }
 
         // Handle non quoted strings
@@ -178,15 +229,20 @@ pub const CsvTokenizer = struct {
                         if (next_char == self.flags.delimiter) {
                             self.index += 1; // Skip the comma, leaving the \n or \r to create a new row
                         } else if (next_char != '\n' and next_char != '\r') {
-                            return CsvError.ParsingError;
+                            return .parsing_error;
                         }
 
                         self.index += 1; // Skip the escaped quote and the delimiter
-                        return token;
+                        return .{ .quoted_value = token };
                     }
                 }
 
                 self.index += 1; // Move the index forward
+            }
+            // If we reach the end of the content, we need to return the last token
+            if (start != self.index) {
+                const token = self.content[start..self.index];
+                return .{ .value = token };
             }
         } else {
             // If there is no quote, we can just read until the delimiter or end of line
@@ -198,14 +254,19 @@ pub const CsvTokenizer = struct {
                     if (char == self.flags.delimiter) {
                         self.index += 1; // Skip the comma, leaving the \n or \r to create a new row
                     }
-                    return token;
+                    return .{ .value = token };
                 }
 
                 self.index += 1; // Move the index forward
             }
+            // If we reach the end of the content, we need to return the last token
+            if (start != self.index) {
+                const token = self.content[start..self.index];
+                return .{ .value = token };
+            }
         }
 
-        return CsvError.EndOfFile;
+        return .end_of_line;
     }
 };
 
