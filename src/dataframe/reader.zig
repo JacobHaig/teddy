@@ -44,39 +44,39 @@ pub const Reader = struct {
         self.allocator.destroy(self);
     }
 
-    pub fn set_file_type(self: *Self, file_type: FileType) *Self {
+    pub fn setFileType(self: *Self, file_type: FileType) *Self {
         self.file_type = file_type;
         return self;
     }
 
-    pub fn set_path(self: *Self, path: []const u8) *Self {
+    pub fn setPath(self: *Self, path: []const u8) *Self {
         self.path = path;
         return self;
     }
 
-    pub fn set_delimiter(self: *Self, delimiter: u8) *Self {
+    pub fn setDelimiter(self: *Self, delimiter: u8) *Self {
         self.delimiter = delimiter;
         return self;
     }
 
-    pub fn set_has_header(self: *Self, has_header: bool) *Self {
+    pub fn setHasHeader(self: *Self, has_header: bool) *Self {
         self.has_header = has_header;
         return self;
     }
 
-    pub fn set_skip_rows(self: *Self, skip_rows: usize) *Self {
+    pub fn setSkipRows(self: *Self, skip_rows: usize) *Self {
         self.skip_rows = skip_rows;
         return self;
     }
 
     pub fn load(self: *Self) !*dataframe.Dataframe {
         return switch (self.file_type) {
-            .csv => self.read_csv(),
+            .csv => self.readCsv(),
             else => error.FileDoesNotExist,
         };
     }
 
-    fn read_csv(self: *Self) !*dataframe.Dataframe {
+    fn readCsv(self: *Self) !*dataframe.Dataframe {
         const filename = self.path orelse return error.InvalidFilePath;
 
         const file = try std.fs.cwd().openFile(filename, .{});
@@ -97,12 +97,12 @@ pub const Reader = struct {
         return df;
     }
 
-    fn read_json(self: *Self) void {
+    fn readJson(self: *Self) void {
         // Implement JSON reading logic here
         _ = self;
     }
 
-    fn read_parquet(self: *Self) void {
+    fn readParquet(self: *Self) void {
         // Implement Parquet reading logic here
         _ = self;
     }

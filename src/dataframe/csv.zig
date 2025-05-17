@@ -4,6 +4,53 @@ const variant_series = @import("variant_series.zig");
 const ManagedString = @import("variant_series.zig").ManagedString;
 const UnmanagedString = @import("variant_series.zig").UnmanagedString;
 
+const CSVType = union(enum) {
+    value: []const u8,
+    quoted_value: []const u8,
+    end_of_line: void,
+    end_of_file: void,
+    parsing_error: void,
+
+    fn print(self: CSVType) void {
+        switch (self) {
+            .value => |v| std.debug.print("Value:{s}\n", .{v}),
+            .quoted_value => |v| std.debug.print("QuotedValue:{s}\n", .{v}),
+            .end_of_line => std.debug.print("End of Line\n", .{}),
+            .end_of_file => std.debug.print("End of File\n", .{}),
+            .parsing_error => std.debug.print("Parsing Error\n", .{}),
+        }
+    }
+
+    // Returns an UnmanagedString
+    fn createString(self: CSVType, allocator: std.mem.Allocator) !UnmanagedString {
+        switch (self) {
+            .value => |v| {
+                const str: UnmanagedString = try variant_series.stringer(allocator, v);
+                return str;
+            },
+            .quoted_value => |v| {
+                var string: UnmanagedString = try variant_series.stringer(allocator, v);
+                defer string.deinit(allocator);
+
+                // Remove the first and last quotes from the string
+                _ = string.orderedRemove(0);
+                _ = string.orderedRemove(string.items.len - 1);
+
+                // Replace double quotes with a single quote. There may be the opportunity to optimize this further.
+                const new_str: []u8 = try std.mem.replaceOwned(u8, allocator, string.items, "\"\"", "\"");
+                defer allocator.free(new_str);
+
+                const new_string: UnmanagedString = try variant_series.stringer(allocator, new_str);
+
+                return new_string;
+            },
+            else => {
+                unreachable;
+            },
+        }
+    }
+};
+
 pub const CsvTokenizer = struct {
     const Self = @This();
     const Row = std.ArrayList(CSVType);
@@ -102,53 +149,6 @@ pub const CsvTokenizer = struct {
 
         return df;
     }
-
-    const CSVType = union(enum) {
-        value: []const u8,
-        quoted_value: []const u8,
-        end_of_line: void,
-        end_of_file: void,
-        parsing_error: void,
-
-        fn print(self: CSVType) void {
-            switch (self) {
-                .value => |v| std.debug.print("Value:{s}\n", .{v}),
-                .quoted_value => |v| std.debug.print("QuotedValue:{s}\n", .{v}),
-                .end_of_line => std.debug.print("End of Line\n", .{}),
-                .end_of_file => std.debug.print("End of File\n", .{}),
-                .parsing_error => std.debug.print("Parsing Error\n", .{}),
-            }
-        }
-
-        // Returns an UnmanagedString
-        fn createString(self: CSVType, allocator: std.mem.Allocator) !UnmanagedString {
-            switch (self) {
-                .value => |v| {
-                    const str: UnmanagedString = try variant_series.stringer(allocator, v);
-                    return str;
-                },
-                .quoted_value => |v| {
-                    var string: UnmanagedString = try variant_series.stringer(allocator, v);
-                    defer string.deinit(allocator);
-
-                    // Remove the first and last quotes from the string
-                    _ = string.orderedRemove(0);
-                    _ = string.orderedRemove(string.items.len - 1);
-
-                    // Replace double quotes with a single quote. There may be the opportunity to optimize this further.
-                    const new_str: []u8 = try std.mem.replaceOwned(u8, allocator, string.items, "\"\"", "\"");
-                    defer allocator.free(new_str);
-
-                    const new_string: UnmanagedString = try variant_series.stringer(allocator, new_str);
-
-                    return new_string;
-                },
-                else => {
-                    unreachable;
-                },
-            }
-        }
-    };
 
     pub fn readAll(self: *Self) !void {
         var rows = std.ArrayList(Row).init(self.allocator);

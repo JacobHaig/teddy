@@ -14,11 +14,11 @@ pub fn main() !void {
     defer df_reader.deinit();
 
     var df3 = try df_reader
-        .set_file_type(.csv)
-        .set_path("data\\addresses.csv")
-        .set_delimiter(',')
-        .set_has_header(true)
-        .set_skip_rows(0)
+        .setFileType(.csv)
+        .setPath("data\\addresses.csv")
+        .setDelimiter(',')
+        .setHasHeader(true)
+        .setSkipRows(0)
         .load();
     defer df3.deinit();
 
