@@ -34,7 +34,9 @@ pub const CsvTokenizer = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        for (self.rows.items) |*row| row.deinit();
+        for (self.rows.items) |*row| {
+            row.deinit();
+        }
 
         self.rows.deinit();
         self.allocator.destroy(self);
@@ -83,15 +85,17 @@ pub const CsvTokenizer = struct {
             var starting_feild: usize = 0;
 
             if (self.flags.has_header) {
-                const string = try self.rows.items[0].items[dw].to_string(self.allocator);
-                try series.rename(string.items);
+                const csv_str: CSVType = self.rows.items[starting_feild].items[dw];
+                const header_string: UnmanagedString = try csv_str.to_string(self.allocator);
+                try series.rename(header_string.items);
                 starting_feild += 1;
             }
 
             starting_feild += self.flags.skip_rows;
 
             for (starting_feild..h) |dh| {
-                const string = try self.rows.items[dh].items[dw].to_string(self.allocator);
+                const csv_str: CSVType = self.rows.items[dh].items[dw];
+                const string: UnmanagedString = try csv_str.to_string(self.allocator);
                 try series.append(string);
             }
         }
@@ -116,6 +120,7 @@ pub const CsvTokenizer = struct {
             }
         }
 
+        // Returns an Unmanaged Owned String
         fn to_string(self: CSVType, allocator: std.mem.Allocator) !UnmanagedString {
             switch (self) {
                 .value => |v| {
@@ -123,12 +128,20 @@ pub const CsvTokenizer = struct {
                     return str;
                 },
                 .quoted_value => |v| {
-                    var str: UnmanagedString = try variant_series.stringer(allocator, v);
-                    std.debug.print("Quoted Value: {s}\n", .{str.items});
-                    _ = str.orderedRemove(0);
-                    _ = str.orderedRemove(str.items.len - 1);
-                    std.debug.print("Quoted Value: {s}\n", .{str.items});
-                    return str;
+                    var string: UnmanagedString = try variant_series.stringer(allocator, v);
+                    defer string.deinit(allocator);
+
+                    // Remove the first and last quotes from the string
+                    _ = string.orderedRemove(0);
+                    _ = string.orderedRemove(string.items.len - 1);
+
+                    // Replace double quotes with a single quote. There may be the opportunity to optimize this further.
+                    const new_str: []u8 = try std.mem.replaceOwned(u8, allocator, string.items, "\"\"", "\"");
+                    defer allocator.free(new_str);
+
+                    const new_string: UnmanagedString = try variant_series.stringer(allocator, new_str);
+
+                    return new_string;
                 },
                 else => {
                     unreachable;

@@ -23,8 +23,8 @@ pub const Dataframe = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        for (self.series.items) |*item| {
-            item.deinit();
+        for (self.series.items) |*seriesItem| {
+            seriesItem.deinit();
         }
         self.series.deinit();
         self.allocator.destroy(self);

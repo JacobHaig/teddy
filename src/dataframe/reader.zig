@@ -92,8 +92,9 @@ pub const Reader = struct {
         try tokenizer.validation();
         // try tokenizer.print();
 
-        // return error.TEST; // Placeholder for Dataframe creation
-        return try tokenizer.to_dataframe();
+        const df = try tokenizer.to_dataframe();
+
+        return df;
     }
 
     fn read_json(self: *Self) void {
