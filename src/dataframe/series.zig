@@ -17,7 +17,7 @@ pub fn Series(comptime T: type) type {
         const Self = @This();
 
         allocator: std.mem.Allocator,
-        name: []u8,
+        name: UnmanagedString,
         values: std.ArrayList(T),
 
         pub fn init(allocator: std.mem.Allocator) !*Self {
@@ -25,7 +25,7 @@ pub fn Series(comptime T: type) type {
             errdefer allocator.destroy(series_ptr);
 
             series_ptr.allocator = allocator;
-            series_ptr.name = try allocator.alloc(u8, 0);
+            series_ptr.name = try UnmanagedString.initCapacity(allocator, 0);
             series_ptr.values = std.ArrayList(T).init(allocator);
 
             return series_ptr;
@@ -36,16 +36,26 @@ pub fn Series(comptime T: type) type {
             errdefer allocator.destroy(series_ptr);
 
             series_ptr.allocator = allocator;
-            series_ptr.name = try allocator.alloc(u8, 0);
+            series_ptr.name = try UnmanagedString.initCapacity(allocator, 0);
             series_ptr.values = try std.ArrayList(T).initCapacity(allocator, cap);
 
             return series_ptr;
         }
 
         pub fn rename(self: *Self, new_name: []const u8) !void {
-            self.allocator.free(self.name);
-            self.name = try self.allocator.alloc(u8, new_name.len);
-            std.mem.copyForwards(u8, self.name, new_name);
+            self.name.clearRetainingCapacity();
+            try self.name.appendSlice(self.allocator, new_name);
+        }
+
+        // rename_from renames the series using an UnmanagedString.
+        // It uses the passed in UnmanagedString and takes ownership of it.
+        pub fn rename_from(self: *Self, new_name: UnmanagedString) !void {
+            if (self.name.items.len > 0) {
+                self.name.deinit(self.allocator);
+            }
+
+            // Take ownership of the new name
+            self.name = new_name;
         }
 
         pub fn deinit(self: *Self) void {
@@ -57,37 +67,38 @@ pub fn Series(comptime T: type) type {
                 },
                 inline else => {},
             }
+            self.name.deinit(self.allocator); // Deinit the name
             self.values.deinit(); // Deinit the List
 
-            self.allocator.free(self.name);
+            // self.allocator.free(self.name);
             self.allocator.destroy(self);
         }
 
         pub fn print(self: *Self) void {
             switch (comptime T) {
                 UnmanagedString => {
-                    std.debug.print("{s}\n{s}\n--------\n", .{ self.name, "String" });
+                    std.debug.print("{s}\n{s}\n--------\n", .{ self.name.items, "String" });
                     for (self.values.items) |value| {
                         std.debug.print("{s}\n", .{value.items});
                     }
                     std.debug.print("\n", .{});
                 },
                 []const u8 => {
-                    std.debug.print("{s}\n{s}\n--------\n", .{ self.name, "ConstString" });
+                    std.debug.print("{s}\n{s}\n--------\n", .{ self.name.items, "ConstString" });
                     for (self.values.items) |value| {
                         std.debug.print("{s}\n", .{value});
                     }
                     std.debug.print("\n", .{});
                 },
                 f32, f64 => {
-                    std.debug.print("{s}\n{s}\n--------\n", .{ self.name, "Float" });
+                    std.debug.print("{s}\n{s}\n--------\n", .{ self.name.items, "Float" });
                     for (self.values.items) |value| {
                         std.debug.print("{d}\n", .{value});
                     }
                     std.debug.print("\n", .{});
                 },
                 else => {
-                    std.debug.print("{s}\n{s}\n--------\n", .{ self.name, @typeName(T) });
+                    std.debug.print("{s}\n{s}\n--------\n", .{ self.name.items, @typeName(T) });
                     for (self.values.items) |value| {
                         std.debug.print("{}\n", .{value});
                     }
@@ -110,29 +121,25 @@ pub fn Series(comptime T: type) type {
         // as_string_at returns a string representation of the value at index n.
         // It uses the allocator to create a new string and formats the value.
         // The owner of the string is responsible for deallocating it.
-        pub fn as_string_at(self: *Self, n: usize) !ManagedString {
-            var string = ManagedString.init(self.allocator);
+        pub fn as_string_at(self: *Self, n: usize) !UnmanagedString {
+            var string = try UnmanagedString.initCapacity(self.allocator, 0);
 
             switch (comptime T) {
-                UnmanagedString => try string.writer().print("{s}", .{self.values.items[n].items}),
-                []const u8 => try string.writer().print("{s}", .{self.values.items[n]}),
-                f32, f64 => try string.writer().print("{d}", .{self.values.items[n]}),
-                else => try string.writer().print("{}", .{self.values.items[n]}),
+                UnmanagedString => try string.writer(self.allocator).print("{s}", .{self.values.items[n].items}),
+                []const u8 => try string.writer(self.allocator).print("{s}", .{self.values.items[n]}),
+                f32, f64 => try string.writer(self.allocator).print("{d}", .{self.values.items[n]}),
+                else => try string.writer(self.allocator).print("{}", .{self.values.items[n]}),
             }
 
             return string;
         }
 
-        pub fn name_as_string(self: *Self) !ManagedString {
-            var name = try ManagedString.initCapacity(self.allocator, self.name.len);
-            errdefer name.deinit();
-
-            name.appendSliceAssumeCapacity(self.name);
-            return name;
+        pub fn name_as_string(self: *Self) !UnmanagedString {
+            return try self.name.clone(self.allocator);
         }
 
-        pub fn type_as_string(self: *Self) !ManagedString {
-            var string = ManagedString.init(self.allocator);
+        pub fn type_as_string(self: *Self) !UnmanagedString {
+            var string = try UnmanagedString.initCapacity(self.allocator, 0);
 
             const value = switch (T) {
                 UnmanagedString => "String",
@@ -151,7 +158,7 @@ pub fn Series(comptime T: type) type {
                 else => @typeName(T),
             };
 
-            try string.writer().print("{s}", .{value});
+            try string.writer(self.allocator).print("{s}", .{value});
 
             return string;
         }

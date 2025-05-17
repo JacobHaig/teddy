@@ -87,7 +87,7 @@ pub const CsvTokenizer = struct {
             if (self.flags.has_header) {
                 const csv_str: CSVType = self.rows.items[starting_feild].items[dw];
                 const header_string: UnmanagedString = try csv_str.to_string(self.allocator);
-                try series.rename(header_string.items);
+                try series.rename_from(header_string);
                 starting_feild += 1;
             }
 

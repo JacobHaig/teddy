@@ -137,12 +137,12 @@ pub const Dataframe = struct {
         // Count the number of characters to get the max width for each column
         // Also include the header and datatype in the width calculation
 
-        var all_series: std.ArrayList(std.ArrayList(ManagedString)) = std.ArrayList(std.ArrayList(ManagedString)).init(self.allocator);
+        var all_series: std.ArrayList(std.ArrayList(UnmanagedString)) = std.ArrayList(std.ArrayList(UnmanagedString)).init(self.allocator);
         errdefer all_series.deinit();
 
         // Create a series of strings.
         for (0..wwidth) |w| {
-            var string_series = std.ArrayList(ManagedString).init(self.allocator);
+            var string_series = std.ArrayList(UnmanagedString).init(self.allocator);
             var varseries = self.series.items[w];
 
             try string_series.append(try varseries.name_as_string()); // Name
@@ -156,11 +156,12 @@ pub const Dataframe = struct {
 
         // Deinit the series of strings after use
         defer {
-            for (all_series.items) |series| {
-                for (series.items) |str| {
-                    str.deinit();
+            for (all_series.items) |string_series| {
+                for (string_series.items) |*str| {
+                    // var str1: UnmanagedString = str;
+                    str.deinit(self.allocator);
                 }
-                series.deinit();
+                string_series.deinit();
             }
             all_series.deinit();
         }
@@ -171,7 +172,7 @@ pub const Dataframe = struct {
 
         for (0..wwidth) |w| {
             var max_width: usize = 0;
-            const series: std.ArrayList(ManagedString) = all_series.items[w];
+            const series: std.ArrayList(UnmanagedString) = all_series.items[w];
 
             for (series.items) |str| {
                 const len = str.items.len;

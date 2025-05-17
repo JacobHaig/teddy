@@ -100,19 +100,19 @@ pub const VariantSeries = union(enum) {
         }
     }
 
-    pub fn as_string_at(self: *Self, n: usize) !ManagedString {
+    pub fn as_string_at(self: *Self, n: usize) !UnmanagedString {
         switch (self.*) {
             inline else => |s| return s.*.as_string_at(n),
         }
     }
 
-    pub fn name_as_string(self: *const Self) !ManagedString {
+    pub fn name_as_string(self: *const Self) !UnmanagedString {
         switch (self.*) {
             inline else => |p| return p.name_as_string(),
         }
     }
 
-    pub fn type_as_string(self: *Self) !ManagedString {
+    pub fn type_as_string(self: *Self) !UnmanagedString {
         switch (self.*) {
             inline else => |s| return s.*.type_as_string(),
         }
