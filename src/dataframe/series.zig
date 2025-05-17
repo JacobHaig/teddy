@@ -42,19 +42,20 @@ pub fn Series(comptime T: type) type {
             return series_ptr;
         }
 
+        // rename renames the series using a slice of u8.
+        //
         pub fn rename(self: *Self, new_name: []const u8) !void {
             self.name.clearRetainingCapacity();
             try self.name.appendSlice(self.allocator, new_name);
         }
 
-        // rename_from renames the series using an UnmanagedString.
-        // It uses the passed in UnmanagedString and takes ownership of it.
-        pub fn rename_from(self: *Self, new_name: UnmanagedString) !void {
+        // owned renames the series using an UnmanagedString.
+        // Takes ownership, caller no longer owns.
+        pub fn renameOwned(self: *Self, new_name: UnmanagedString) !void {
             if (self.name.items.len > 0) {
                 self.name.deinit(self.allocator);
             }
 
-            // Take ownership of the new name
             self.name = new_name;
         }
 
@@ -107,7 +108,7 @@ pub fn Series(comptime T: type) type {
             }
         }
 
-        pub fn print_at(self: *Self, n: usize) void {
+        pub fn printAt(self: *Self, n: usize) void {
             // TODO: Check if n is < len
 
             switch (comptime T) {
@@ -134,11 +135,11 @@ pub fn Series(comptime T: type) type {
             return string;
         }
 
-        pub fn name_as_string(self: *Self) !UnmanagedString {
+        pub fn getNameOwned(self: *Self) !UnmanagedString {
             return try self.name.clone(self.allocator);
         }
 
-        pub fn type_as_string(self: *Self) !UnmanagedString {
+        pub fn getTypeToString(self: *Self) !UnmanagedString {
             var string = try UnmanagedString.initCapacity(self.allocator, 0);
 
             const value = switch (T) {
@@ -171,10 +172,10 @@ pub fn Series(comptime T: type) type {
             try self.values.append(value);
         }
 
-        // try_append takes a value of any type and appends it to the series.
+        // tryAppend takes a value of any type and appends it to the series.
         // It checks the type at compile time and ensures it matches the series type.
         // If the type is not compatible, it raises a compile-time error.
-        pub fn try_append(self: *Self, value: anytype) !void {
+        pub fn tryAppend(self: *Self, value: anytype) !void {
             if (comptime T == UnmanagedString and @TypeOf(value) == []const u8) {
                 var new_value = try UnmanagedString.initCapacity(self.allocator, value.len);
                 errdefer new_value.deinit(self.allocator);
@@ -190,11 +191,11 @@ pub fn Series(comptime T: type) type {
             } else if (comptime T == UnmanagedString and @TypeOf(value) == UnmanagedString) {
                 try self.values.append(value);
             } else {
-                @compileError("Type mismatch in try_append(), expected String but got " ++ @typeName(@TypeOf(value)));
+                @compileError("Type mismatch in tryAppend(), expected String but got " ++ @typeName(@TypeOf(value)));
             }
         }
 
-        pub fn drop_row(self: *Self, index: usize) void {
+        pub fn dropRow(self: *Self, index: usize) void {
             switch (T) {
                 UnmanagedString => {
                     var a = self.values.orderedRemove(index);
@@ -204,7 +205,7 @@ pub fn Series(comptime T: type) type {
             }
         }
 
-        pub fn apply_inplace(self: *Self, comptime func: fn (x: T) T) void {
+        pub fn applyInplace(self: *Self, comptime func: fn (x: T) T) void {
             for (self.values.items) |*value| {
                 value.* = func(value.*);
             }

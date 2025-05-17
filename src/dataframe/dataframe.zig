@@ -30,7 +30,7 @@ pub const Dataframe = struct {
         self.allocator.destroy(self);
     }
 
-    pub fn create_series(self: *Self, comptime T: type) !*Series(T) {
+    pub fn createSeries(self: *Self, comptime T: type) !*Series(T) {
         const series = try Series(T).init(self.allocator);
         errdefer series.deinit();
 
@@ -50,11 +50,11 @@ pub const Dataframe = struct {
         return self.series.items.ptr[0].len();
     }
 
-    pub fn add_series(self: *Self, series: VariantSeries) !void {
+    pub fn addSeries(self: *Self, series: VariantSeries) !void {
         try self.series.append(series);
     }
 
-    pub fn get_series(self: *Self, name: []const u8) ?*VariantSeries {
+    pub fn getSeries(self: *Self, name: []const u8) ?*VariantSeries {
         for (self.series.items) |*series_type| {
             switch (series_type.*) {
                 inline else => |ptr| {
@@ -67,7 +67,7 @@ pub const Dataframe = struct {
         return null;
     }
 
-    pub fn drop_series(self: *Self, column: []const u8) void {
+    pub fn dropSeries(self: *Self, column: []const u8) void {
         for (self.series.items, 0..) |*item, index| {
             if (std.mem.eql(u8, item.name(), column)) {
                 var series = self.series.orderedRemove(index);
@@ -79,39 +79,39 @@ pub const Dataframe = struct {
         // Error handling may not be required as the column does not exist.
     }
 
-    pub fn drop_row(self: *Self, index: usize) void {
+    pub fn dropRow(self: *Self, index: usize) void {
         for (self.series.items) |*item| {
-            item.drop_row(index);
+            item.dropRow(index);
         }
     }
 
-    pub fn apply_inplace(self: *Self, name: []const u8, comptime T: type, comptime func: fn (x: T) T) void {
-        const series = self.get_series(name) orelse return;
+    pub fn applyInplace(self: *Self, name: []const u8, comptime T: type, comptime func: fn (x: T) T) void {
+        const series = self.getSeries(name) orelse return;
 
-        series.*.apply_inplace(T, func);
+        series.*.applyInplace(T, func);
     }
 
-    pub fn apply_new(self: *Self, new_name: []const u8, name: []const u8, comptime T: type, comptime func: fn (x: T) T) !void {
-        const series = self.get_series(name) orelse return;
-        var new_series = try series.deep_copy();
+    pub fn applyNew(self: *Self, new_name: []const u8, name: []const u8, comptime T: type, comptime func: fn (x: T) T) !void {
+        const series = self.getSeries(name) orelse return;
+        var new_series = try series.deepCopy();
 
         new_series.apply_inplace(T, func);
         try new_series.rename(new_name);
 
-        try self.add_series(new_series);
+        try self.addSeries(new_series);
     }
 
     pub fn rename(self: *Self, name: []const u8, new_name: []const u8) void {
-        const series = self.get_series(name) orelse return;
+        const series = self.getSeries(name) orelse return;
         try series.rename(new_name);
     }
 
-    pub fn deep_copy(self: *Self) !*Self {
+    pub fn deepCopy(self: *Self) !*Self {
         const new_dataframe = try Self.init(self.allocator);
         errdefer new_dataframe.deinit();
 
         for (self.series.items) |*series| {
-            var new_series = try series.*.deep_copy();
+            var new_series = try series.*.deepCopy();
             errdefer new_series.deinit();
 
             try new_dataframe.series.append(new_series);
@@ -145,8 +145,8 @@ pub const Dataframe = struct {
             var string_series = std.ArrayList(UnmanagedString).init(self.allocator);
             var varseries = self.series.items[w];
 
-            try string_series.append(try varseries.name_as_string()); // Name
-            try string_series.append(try varseries.type_as_string()); // Type
+            try string_series.append(try varseries.getNameOwned()); // Name
+            try string_series.append(try varseries.getTypeToString()); // Type
             for (0..print_rows) |h| {
                 try string_series.append(try varseries.as_string_at(h)); // Value
             }
@@ -158,7 +158,6 @@ pub const Dataframe = struct {
         defer {
             for (all_series.items) |string_series| {
                 for (string_series.items) |*str| {
-                    // var str1: UnmanagedString = str;
                     str.deinit(self.allocator);
                 }
                 string_series.deinit();
@@ -198,7 +197,7 @@ pub const Dataframe = struct {
     }
 };
 
-fn print_type_info(something: anytype) void {
+fn printTypeInfo(something: anytype) void {
     const t = @TypeOf(something);
     // std.debug.print("Type: ", .{t});
     std.debug.print("TypeName: {s}\n", .{@typeName(t)});
@@ -209,14 +208,14 @@ test "basic manipulations" {
     var df = try Dataframe.init(std.testing.allocator);
     defer df.deinit();
 
-    var series = try df.create_series(UnmanagedString);
+    var series = try df.createSeries(UnmanagedString);
     try series.rename("Name");
     try series.append(try stringer(std.testing.allocator, "Alice"));
-    try series.try_append(try stringer(std.testing.allocator, "Gary"));
-    try series.try_append("Bob");
+    try series.tryAppend(try stringer(std.testing.allocator, "Gary"));
+    try series.tryAppend("Bob");
     // series.print();
 
-    var series2 = try df.create_series(f32);
+    var series2 = try df.createSeries(f32);
     try series2.rename("Salary");
     try series2.append(15000);
     try series2.append(75000.0);
@@ -230,7 +229,7 @@ test "basic manipulations" {
     }.call);
     // series2.print();
 
-    var series3 = try df.create_series(i32);
+    var series3 = try df.createSeries(i32);
     try series3.rename("Age");
     try series3.append(15);
     try series3.append(20);
@@ -250,7 +249,7 @@ test "basic manipulations" {
         }
     }.call);
 
-    var df2 = try df.deep_copy();
+    var df2 = try df.deepCopy();
     defer df2.deinit();
 
     df.drop_series("Age");

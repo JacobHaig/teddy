@@ -88,11 +88,11 @@ pub const Reader = struct {
         const tokenizer = try csv.CsvTokenizer.init(self.allocator, content, .{ .delimiter = self.delimiter, .has_header = self.has_header, .skip_rows = self.skip_rows });
         defer tokenizer.deinit();
 
-        try tokenizer.read_all();
-        try tokenizer.validation();
+        try tokenizer.readAll();
+        try tokenizer.validate();
         // try tokenizer.print();
 
-        const df = try tokenizer.to_dataframe();
+        const df = try tokenizer.createOwnedDataframe();
 
         return df;
     }

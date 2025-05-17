@@ -56,18 +56,18 @@ pub const VariantSeries = union(enum) {
         }
     }
 
-    pub fn drop_row(self: *Self, index: usize) void {
+    pub fn dropRow(self: *Self, index: usize) void {
         switch (self.*) {
-            inline else => |p| p.drop_row(index),
+            inline else => |p| p.dropRow(index),
         }
     }
 
-    pub fn apply_inplace(self: *Self, comptime T: type, comptime func: fn (x: T) T) void {
+    pub fn applyInplace(self: *Self, comptime T: type, comptime func: fn (x: T) T) void {
         switch (self.*) {
             inline else => |s| {
                 // std.debug.print("Type: {}\n", .{@TypeOf(s)});
                 if (comptime *Series(T) == @TypeOf(s)) {
-                    s.*.apply_inplace(func);
+                    s.*.applyInplace(func);
                 }
             },
         }
@@ -79,7 +79,7 @@ pub const VariantSeries = union(enum) {
         }
     }
 
-    pub fn deep_copy(self: *Self) !Self {
+    pub fn deepCopy(self: *Self) !Self {
         switch (self.*) {
             inline else => |s| {
                 const series = try s.*.deep_copy();
@@ -94,9 +94,9 @@ pub const VariantSeries = union(enum) {
         }
     }
 
-    pub fn print_at(self: *Self, n: usize) void {
+    pub fn printAt(self: *Self, n: usize) void {
         switch (self.*) {
-            inline else => |s| s.*.print_at(n),
+            inline else => |s| s.*.printAt(n),
         }
     }
 
@@ -106,15 +106,15 @@ pub const VariantSeries = union(enum) {
         }
     }
 
-    pub fn name_as_string(self: *const Self) !UnmanagedString {
+    pub fn getNameOwned(self: *const Self) !UnmanagedString {
         switch (self.*) {
-            inline else => |p| return p.name_as_string(),
+            inline else => |p| return p.getNameOwned(),
         }
     }
 
-    pub fn type_as_string(self: *Self) !UnmanagedString {
+    pub fn getTypeToString(self: *Self) !UnmanagedString {
         switch (self.*) {
-            inline else => |s| return s.*.type_as_string(),
+            inline else => |s| return s.*.getTypeToString(),
         }
     }
 

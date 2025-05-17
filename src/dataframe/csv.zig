@@ -42,7 +42,7 @@ pub const CsvTokenizer = struct {
         self.allocator.destroy(self);
     }
 
-    pub fn validation(self: *Self) !void {
+    pub fn validate(self: *Self) !void {
         if (self.rows.items.len == 0) {
             return CsvError.ParsingError;
         }
@@ -73,7 +73,7 @@ pub const CsvTokenizer = struct {
 
     // TODO: Consider parsing the datatypes of each column here.
     // This could reduce the overall memory footprint of the dataframe.
-    pub fn to_dataframe(self: *Self) !*dataframe.Dataframe {
+    pub fn createOwnedDataframe(self: *Self) !*dataframe.Dataframe {
         const df = try dataframe.Dataframe.init(self.allocator);
         errdefer df.deinit();
 
@@ -81,13 +81,13 @@ pub const CsvTokenizer = struct {
         const h = self.rows.items.len;
 
         for (0..w) |dw| {
-            var series = try df.create_series(variant_series.UnmanagedString);
+            var series = try df.createSeries(variant_series.UnmanagedString);
             var starting_feild: usize = 0;
 
             if (self.flags.has_header) {
                 const csv_str: CSVType = self.rows.items[starting_feild].items[dw];
-                const header_string: UnmanagedString = try csv_str.to_string(self.allocator);
-                try series.rename_from(header_string);
+                const header_string: UnmanagedString = try csv_str.createString(self.allocator);
+                try series.renameOwned(header_string);
                 starting_feild += 1;
             }
 
@@ -95,7 +95,7 @@ pub const CsvTokenizer = struct {
 
             for (starting_feild..h) |dh| {
                 const csv_str: CSVType = self.rows.items[dh].items[dw];
-                const string: UnmanagedString = try csv_str.to_string(self.allocator);
+                const string: UnmanagedString = try csv_str.createString(self.allocator);
                 try series.append(string);
             }
         }
@@ -120,8 +120,8 @@ pub const CsvTokenizer = struct {
             }
         }
 
-        // Returns an Unmanaged Owned String
-        fn to_string(self: CSVType, allocator: std.mem.Allocator) !UnmanagedString {
+        // Returns an UnmanagedString
+        fn createString(self: CSVType, allocator: std.mem.Allocator) !UnmanagedString {
             switch (self) {
                 .value => |v| {
                     const str: UnmanagedString = try variant_series.stringer(allocator, v);
@@ -150,7 +150,7 @@ pub const CsvTokenizer = struct {
         }
     };
 
-    pub fn read_all(self: *Self) !void {
+    pub fn readAll(self: *Self) !void {
         var rows = std.ArrayList(Row).init(self.allocator);
         errdefer rows.deinit();
 
@@ -158,7 +158,7 @@ pub const CsvTokenizer = struct {
             var row = Row.init(self.allocator);
             errdefer row.deinit();
 
-            const err = try self.read_row(&row);
+            const err = try self.readRow(&row);
 
             if (err == .end_of_file) {
                 if (row.items.len != 0) {
@@ -177,7 +177,7 @@ pub const CsvTokenizer = struct {
         self.rows = rows;
     }
 
-    fn read_row(self: *Self, row: *Row) !CSVType {
+    fn readRow(self: *Self, row: *Row) !CSVType {
         while (true) {
             const csv_token_type = self.next();
 
@@ -283,7 +283,7 @@ pub const CsvTokenizer = struct {
     }
 };
 
-fn print_char(c: u8) void {
+fn printChar(c: u8) void {
     switch (c) {
         'a'...'z' => std.debug.print("'{c}'\n", .{c}),
         'A'...'Z' => std.debug.print("'{c}'\n", .{c}),
@@ -311,6 +311,6 @@ test "parse_csv_text" {
     var tokenizer = try CsvTokenizer.init(std.testing.allocator, content, .{ .delimiter = ',' });
     defer tokenizer.deinit();
 
-    try tokenizer.read_all();
-    try tokenizer.validation();
+    try tokenizer.readAll();
+    try tokenizer.validate();
 }
