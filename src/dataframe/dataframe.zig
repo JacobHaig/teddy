@@ -3,7 +3,7 @@ const Series = @import("series.zig").Series;
 const VariantSeries = @import("variant_series.zig").VariantSeries;
 const UnmanagedString = @import("variant_series.zig").UnmanagedString;
 const ManagedString = @import("variant_series.zig").ManagedString;
-const stringer = @import("variant_series.zig").stringer;
+const createString = @import("variant_series.zig").createString;
 
 pub const Dataframe = struct {
     const Self = @This();
@@ -30,11 +30,13 @@ pub const Dataframe = struct {
         self.allocator.destroy(self);
     }
 
+    // Creates a new Series and adds it to the dataframe
+    // Returns a pointer to the Series, owned by the dataframe.
     pub fn createSeries(self: *Self, comptime T: type) !*Series(T) {
         const series = try Series(T).init(self.allocator);
         errdefer series.deinit();
 
-        const new_series_var = series.*.to_variant_series();
+        const new_series_var = series.*.toVariantSeries();
         try self.series.append(new_series_var);
         return series;
     }
@@ -50,10 +52,14 @@ pub const Dataframe = struct {
         return self.series.items.ptr[0].len();
     }
 
+    // Adds a series to the dataframe
+    // Takes ownership of the series
     pub fn addSeries(self: *Self, series: VariantSeries) !void {
         try self.series.append(series);
     }
 
+    // Returns a pointer to the requested series or null
+    // Dataframe retains ownership
     pub fn getSeries(self: *Self, name: []const u8) ?*VariantSeries {
         for (self.series.items) |*series_type| {
             switch (series_type.*) {
@@ -95,17 +101,19 @@ pub const Dataframe = struct {
         const series = self.getSeries(name) orelse return;
         var new_series = try series.deepCopy();
 
-        new_series.apply_inplace(T, func);
+        new_series.applyInplace(T, func);
         try new_series.rename(new_name);
 
         try self.addSeries(new_series);
     }
 
-    pub fn rename(self: *Self, name: []const u8, new_name: []const u8) void {
+    pub fn rename(self: *Self, name: []const u8, new_name: []const u8) !void {
         const series = self.getSeries(name) orelse return;
         try series.rename(new_name);
     }
 
+    // Creates a deep copy of the Dataframe
+    // Ownership of the new dataframe is transferred to the caller
     pub fn deepCopy(self: *Self) !*Self {
         const new_dataframe = try Self.init(self.allocator);
         errdefer new_dataframe.deinit();
@@ -148,7 +156,7 @@ pub const Dataframe = struct {
             try string_series.append(try varseries.getNameOwned()); // Name
             try string_series.append(try varseries.getTypeToString()); // Type
             for (0..print_rows) |h| {
-                try string_series.append(try varseries.as_string_at(h)); // Value
+                try string_series.append(try varseries.asStringAt(h)); // Value
             }
 
             try all_series.append(string_series);
@@ -210,8 +218,8 @@ test "basic manipulations" {
 
     var series = try df.createSeries(UnmanagedString);
     try series.rename("Name");
-    try series.append(try stringer(std.testing.allocator, "Alice"));
-    try series.tryAppend(try stringer(std.testing.allocator, "Gary"));
+    try series.append(try createString(std.testing.allocator, "Alice"));
+    try series.tryAppend(try createString(std.testing.allocator, "Gary"));
     try series.tryAppend("Bob");
     // series.print();
 
@@ -222,7 +230,7 @@ test "basic manipulations" {
     try series2.append(110000.0);
     // series2.print();
 
-    df.apply_inplace("Salary", f32, struct {
+    df.applyInplace("Salary", f32, struct {
         fn call(x: f32) f32 {
             return x / 52 / 40;
         }
@@ -241,9 +249,9 @@ test "basic manipulations" {
             return x + 5;
         }
     }.call;
-    df.apply_inplace("Age", i32, add_five);
+    df.applyInplace("Age", i32, add_five);
 
-    df.apply_inplace("Age", i32, struct {
+    df.applyInplace("Age", i32, struct {
         fn call(x: i32) i32 {
             return x + 10;
         }
@@ -252,7 +260,7 @@ test "basic manipulations" {
     var df2 = try df.deepCopy();
     defer df2.deinit();
 
-    df.drop_series("Age");
+    df.dropSeries("Age");
     df.limit(2);
 
     try std.testing.expectEqual(2, df.height());

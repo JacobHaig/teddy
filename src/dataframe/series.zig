@@ -49,7 +49,7 @@ pub fn Series(comptime T: type) type {
             try self.name.appendSlice(self.allocator, new_name);
         }
 
-        // owned renames the series using an UnmanagedString.
+        // renameOwned renames the series using an UnmanagedString.
         // Takes ownership, caller no longer owns.
         pub fn renameOwned(self: *Self, new_name: UnmanagedString) !void {
             if (self.name.items.len > 0) {
@@ -119,10 +119,10 @@ pub fn Series(comptime T: type) type {
             }
         }
 
-        // as_string_at returns a string representation of the value at index n.
+        // asStringAt returns a string representation of the value at index n.
         // It uses the allocator to create a new string and formats the value.
         // The owner of the string is responsible for deallocating it.
-        pub fn as_string_at(self: *Self, n: usize) !UnmanagedString {
+        pub fn asStringAt(self: *Self, n: usize) !UnmanagedString {
             var string = try UnmanagedString.initCapacity(self.allocator, 0);
 
             switch (comptime T) {
@@ -211,10 +211,10 @@ pub fn Series(comptime T: type) type {
             }
         }
 
-        // deep_copy creates a deep copy of the Series.
+        // deepCopy creates a deep copy of the Series.
         // It allocates a new Series and copies the values from the original Series.
         // If the type is String, it also copies the string data to the new Series as well.
-        pub fn deep_copy(self: *Self) !*Self {
+        pub fn deepCopy(self: *Self) !*Self {
             const new_series = try Self.init(self.allocator);
             errdefer new_series.deinit();
 
@@ -254,7 +254,7 @@ pub fn Series(comptime T: type) type {
             self.values.shrinkAndFree(n_limit);
         }
 
-        pub fn to_variant_series(self: *Self) VariantSeries {
+        pub fn toVariantSeries(self: *Self) VariantSeries {
             return switch (T) {
                 bool => VariantSeries{ .bool = self },
 

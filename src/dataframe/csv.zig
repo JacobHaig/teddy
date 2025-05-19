@@ -21,15 +21,15 @@ const CSVType = union(enum) {
         }
     }
 
-    // Returns an UnmanagedString
+    // Returns an UnmanagedString, ownership transferred to caller
     fn createString(self: CSVType, allocator: std.mem.Allocator) !UnmanagedString {
         switch (self) {
             .value => |v| {
-                const str: UnmanagedString = try variant_series.stringer(allocator, v);
+                const str: UnmanagedString = try variant_series.createString(allocator, v);
                 return str;
             },
             .quoted_value => |v| {
-                var string: UnmanagedString = try variant_series.stringer(allocator, v);
+                var string: UnmanagedString = try variant_series.createString(allocator, v);
                 defer string.deinit(allocator);
 
                 // Remove the first and last quotes from the string
@@ -40,7 +40,7 @@ const CSVType = union(enum) {
                 const new_str: []u8 = try std.mem.replaceOwned(u8, allocator, string.items, "\"\"", "\"");
                 defer allocator.free(new_str);
 
-                const new_string: UnmanagedString = try variant_series.stringer(allocator, new_str);
+                const new_string: UnmanagedString = try variant_series.createString(allocator, new_str);
 
                 return new_string;
             },
@@ -120,6 +120,7 @@ pub const CsvTokenizer = struct {
 
     // TODO: Consider parsing the datatypes of each column here.
     // This could reduce the overall memory footprint of the dataframe.
+    // Creates and returns a new dataframe. Caller takes ownership.
     pub fn createOwnedDataframe(self: *Self) !*dataframe.Dataframe {
         const df = try dataframe.Dataframe.init(self.allocator);
         errdefer df.deinit();
@@ -129,18 +130,18 @@ pub const CsvTokenizer = struct {
 
         for (0..w) |dw| {
             var series = try df.createSeries(variant_series.UnmanagedString);
-            var starting_feild: usize = 0;
+            var startingField: usize = 0;
 
             if (self.flags.has_header) {
-                const csv_str: CSVType = self.rows.items[starting_feild].items[dw];
+                const csv_str: CSVType = self.rows.items[startingField].items[dw];
                 const header_string: UnmanagedString = try csv_str.createString(self.allocator);
                 try series.renameOwned(header_string);
-                starting_feild += 1;
+                startingField += 1;
             }
 
-            starting_feild += self.flags.skip_rows;
+            startingField += self.flags.skip_rows;
 
-            for (starting_feild..h) |dh| {
+            for (startingField..h) |dh| {
                 const csv_str: CSVType = self.rows.items[dh].items[dw];
                 const string: UnmanagedString = try csv_str.createString(self.allocator);
                 try series.append(string);

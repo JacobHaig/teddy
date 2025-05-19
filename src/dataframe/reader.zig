@@ -44,31 +44,34 @@ pub const Reader = struct {
         self.allocator.destroy(self);
     }
 
-    pub fn setFileType(self: *Self, file_type: FileType) *Self {
+    pub fn withFileType(self: *Self, file_type: FileType) *Self {
         self.file_type = file_type;
         return self;
     }
 
-    pub fn setPath(self: *Self, path: []const u8) *Self {
+    pub fn withPath(self: *Self, path: []const u8) *Self {
         self.path = path;
         return self;
     }
 
-    pub fn setDelimiter(self: *Self, delimiter: u8) *Self {
+    pub fn withDelimiter(self: *Self, delimiter: u8) *Self {
         self.delimiter = delimiter;
         return self;
     }
 
-    pub fn setHasHeader(self: *Self, has_header: bool) *Self {
+    pub fn withHeaders(self: *Self, has_header: bool) *Self {
         self.has_header = has_header;
         return self;
     }
 
-    pub fn setSkipRows(self: *Self, skip_rows: usize) *Self {
+    pub fn withSkipRows(self: *Self, skip_rows: usize) *Self {
         self.skip_rows = skip_rows;
         return self;
     }
 
+    // Loads data from the configured source
+    // Returns a new dataframe with the loaded data
+    // Ownership of the dataframe is transferred to the caller
     pub fn load(self: *Self) !*dataframe.Dataframe {
         return switch (self.file_type) {
             .csv => self.readCsv(),

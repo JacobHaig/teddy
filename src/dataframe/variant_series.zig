@@ -4,7 +4,7 @@ const Series = @import("series.zig").Series;
 pub const UnmanagedString = std.ArrayListUnmanaged(u8);
 pub const ManagedString = std.ArrayList(u8);
 
-pub fn stringer(allocator: std.mem.Allocator, str: []const u8) !UnmanagedString {
+pub fn createString(allocator: std.mem.Allocator, str: []const u8) !UnmanagedString {
     var name = try UnmanagedString.initCapacity(allocator, str.len);
     errdefer name.deinit(allocator);
 
@@ -82,8 +82,8 @@ pub const VariantSeries = union(enum) {
     pub fn deepCopy(self: *Self) !Self {
         switch (self.*) {
             inline else => |s| {
-                const series = try s.*.deep_copy();
-                return series.to_variant_series();
+                const series = try s.*.deepCopy();
+                return series.toVariantSeries();
             },
         }
     }
@@ -100,9 +100,9 @@ pub const VariantSeries = union(enum) {
         }
     }
 
-    pub fn as_string_at(self: *Self, n: usize) !UnmanagedString {
+    pub fn asStringAt(self: *Self, n: usize) !UnmanagedString {
         switch (self.*) {
-            inline else => |s| return s.*.as_string_at(n),
+            inline else => |s| return s.*.asStringAt(n),
         }
     }
 
@@ -118,7 +118,7 @@ pub const VariantSeries = union(enum) {
         }
     }
 
-    pub fn get_type(self: *Self) type {
+    pub fn getType(self: *Self) type {
         switch (self.*) {
             .bool => return bool,
             .uint8 => return u8,
