@@ -18,7 +18,7 @@ pub fn Series(comptime T: type) type {
 
         allocator: std.mem.Allocator,
         name: UnmanagedString,
-        values: std.ArrayList(T),
+        values: std.array_list.Managed(T),
 
         pub fn init(allocator: std.mem.Allocator) !*Self {
             const series_ptr = try allocator.create(Self);
@@ -26,7 +26,8 @@ pub fn Series(comptime T: type) type {
 
             series_ptr.allocator = allocator;
             series_ptr.name = try UnmanagedString.initCapacity(allocator, 0);
-            series_ptr.values = std.ArrayList(T).init(allocator);
+            // series_ptr.values = std.ArrayList(T).init(allocator);
+            series_ptr.values = std.array_list.Managed(T).init(allocator);
 
             return series_ptr;
         }

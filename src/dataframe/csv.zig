@@ -53,8 +53,10 @@ const CSVType = union(enum) {
 
 pub const CsvTokenizer = struct {
     const Self = @This();
-    const Row = std.ArrayList(CSVType);
-    const Rows = std.ArrayList(Row);
+    // const Row = std.ArrayList(CSVType);
+    const Row = std.array_list.Managed(CSVType);
+    // const Rows = std.ArrayList(Row);
+    const Rows = std.array_list.Managed(Row);
     const CsvError = error{ EndOfFile, EndOfLine, ParsingError };
     const CsvTokenizerFlags = struct {
         delimiter: u8 = ',',
@@ -152,7 +154,8 @@ pub const CsvTokenizer = struct {
     }
 
     pub fn readAll(self: *Self) !void {
-        var rows = std.ArrayList(Row).init(self.allocator);
+        // var rows = std.ArrayList(Row).init(self.allocator);
+        var rows = std.array_list.Managed(Row).init(self.allocator);
         errdefer rows.deinit();
 
         while (true) {

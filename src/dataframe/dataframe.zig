@@ -9,7 +9,7 @@ pub const Dataframe = struct {
     const Self = @This();
 
     allocator: std.mem.Allocator,
-    series: std.ArrayList(VariantSeries),
+    series: std.array_list.Managed(VariantSeries),
 
     pub fn init(allocator: std.mem.Allocator) !*Self {
         const dataframe_ptr = try allocator.create(Self);
@@ -17,7 +17,8 @@ pub const Dataframe = struct {
 
         // Initialize fields directly
         dataframe_ptr.allocator = allocator;
-        dataframe_ptr.series = std.ArrayList(VariantSeries).init(allocator);
+        // dataframe_ptr.series = std.ArrayList(VariantSeries).init(allocator);
+        dataframe_ptr.series = std.array_list.Managed(VariantSeries).init(allocator);
 
         return dataframe_ptr;
     }
@@ -145,12 +146,14 @@ pub const Dataframe = struct {
         // Count the number of characters to get the max width for each column
         // Also include the header and datatype in the width calculation
 
-        var all_series: std.ArrayList(std.ArrayList(UnmanagedString)) = std.ArrayList(std.ArrayList(UnmanagedString)).init(self.allocator);
+        // var all_series: std.ArrayList(std.ArrayList(UnmanagedString)) = std.ArrayList(std.ArrayList(UnmanagedString)).init(self.allocator);
+        var all_series: std.array_list.Managed(std.array_list.Managed(UnmanagedString)) = std.array_list.Managed(std.array_list.Managed(UnmanagedString)).init(self.allocator);
         errdefer all_series.deinit();
 
         // Create a series of strings.
         for (0..wwidth) |w| {
-            var string_series = std.ArrayList(UnmanagedString).init(self.allocator);
+            // var string_series = std.ArrayList(UnmanagedString).init(self.allocator);
+            var string_series = std.array_list.Managed(UnmanagedString).init(self.allocator);
             var varseries = self.series.items[w];
 
             try string_series.append(try varseries.getNameOwned()); // Name
@@ -174,12 +177,14 @@ pub const Dataframe = struct {
         }
 
         // Calculate the max width for each column
-        var max_widths = std.ArrayList(usize).init(self.allocator);
+        // var max_widths = std.ArrayList(usize).init(self.allocator);
+        var max_widths = std.array_list.Managed(usize).init(self.allocator);
         defer max_widths.deinit();
 
         for (0..wwidth) |w| {
             var max_width: usize = 0;
-            const series: std.ArrayList(UnmanagedString) = all_series.items[w];
+            // const series: std.ArrayList(UnmanagedString) = all_series.items[w];
+            const series: std.array_list.Managed(UnmanagedString) = all_series.items[w];
 
             for (series.items) |str| {
                 const len = str.items.len;
@@ -191,16 +196,19 @@ pub const Dataframe = struct {
         }
 
         // Print the Table to stdout
-        const writer = std.io.getStdOut().writer();
+        // const writer = std.io.getStdOut().writer();
+        var stdout_buffer: [1024]u8 = undefined;
+        var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+        const stdout = &stdout_writer.interface;
         // Print the header, type, and values. The header and type require us to include the +2
         for (0..print_rows + 2) |h| {
             for (0..wwidth) |w| {
                 const str: []u8 = all_series.items[w].items[h].items;
                 const custom_width = max_widths.items[w];
 
-                try std.fmt.format(writer, "| {s:[width]} ", .{ .s = str, .width = custom_width });
+                try stdout.print("| {s:[width]} ", .{ .s = str, .width = custom_width });
             }
-            try std.fmt.format(writer, "|\n", .{});
+            try stdout.print("|\n", .{});
         }
     }
 };
