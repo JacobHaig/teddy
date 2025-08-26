@@ -1,6 +1,6 @@
 const std = @import("std");
 const VariantSeries = @import("variant_series.zig").VariantSeries;
-const String = @import("variant_series.zig").String;
+const strings = @import("strings.zig");
 
 fn canBeSlice(comptime T: type) bool {
     return @typeInfo(T) == .pointer and
@@ -16,7 +16,7 @@ pub fn Series(comptime T: type) type {
         const Self = @This();
 
         allocator: std.mem.Allocator,
-        name: String,
+        name: strings.String,
         values: std.ArrayList(T),
 
         pub fn init(allocator: std.mem.Allocator) !*Self {
@@ -24,7 +24,7 @@ pub fn Series(comptime T: type) type {
             errdefer allocator.destroy(series_ptr);
 
             series_ptr.allocator = allocator;
-            series_ptr.name = try String.initCapacity(allocator, 0);
+            series_ptr.name = try strings.String.initCapacity(allocator, 0);
             series_ptr.values = try std.ArrayList(T).initCapacity(allocator, 0);
 
             return series_ptr;
@@ -35,7 +35,7 @@ pub fn Series(comptime T: type) type {
             errdefer allocator.destroy(series_ptr);
 
             series_ptr.allocator = allocator;
-            series_ptr.name = try String.initCapacity(allocator, 0);
+            series_ptr.name = try strings.String.initCapacity(allocator, 0);
             series_ptr.values = try std.ArrayList(T).initCapacity(allocator, cap);
 
             return series_ptr;
@@ -50,7 +50,7 @@ pub fn Series(comptime T: type) type {
 
         // renameOwned renames the series using an UnmanagedString.
         // Takes ownership, caller no longer owns.
-        pub fn renameOwned(self: *Self, new_name: String) !void {
+        pub fn renameOwned(self: *Self, new_name: strings.String) !void {
             if (self.name.items.len > 0) {
                 self.name.deinit(self.allocator);
             }
@@ -60,7 +60,7 @@ pub fn Series(comptime T: type) type {
 
         pub fn deinit(self: *Self) void {
             switch (T) { // Deinit each item in the list
-                String => {
+                strings.String => {
                     for (self.values.items) |*item| {
                         item.deinit(self.allocator);
                     }
@@ -76,7 +76,7 @@ pub fn Series(comptime T: type) type {
 
         pub fn print(self: *Self) void {
             switch (comptime T) {
-                String => {
+                strings.String => {
                     std.debug.print("{s}\n{s}\n--------\n", .{ self.name.items, "String" });
                     for (self.values.items) |value| {
                         std.debug.print("{s}\n", .{value.items});
@@ -111,7 +111,7 @@ pub fn Series(comptime T: type) type {
             // TODO: Check if n is < len
 
             switch (comptime T) {
-                String => std.debug.print("{s}", .{self.values.items[n].items}),
+                strings.String => std.debug.print("{s}", .{self.values.items[n].items}),
                 []const u8 => std.debug.print("{s}", .{self.values.items[n]}),
                 f32, f64 => std.debug.print("{d}", .{self.values.items[n]}),
                 else => std.debug.print("{}", .{self.values.items[n]}),
@@ -121,11 +121,11 @@ pub fn Series(comptime T: type) type {
         // asStringAt returns a string representation of the value at index n.
         // It uses the allocator to create a new string and formats the value.
         // The owner of the string is responsible for deallocating it.
-        pub fn asStringAt(self: *Self, n: usize) !String {
-            var string = try String.initCapacity(self.allocator, 0);
+        pub fn asStringAt(self: *Self, n: usize) !strings.String {
+            var string = try strings.String.initCapacity(self.allocator, 0);
 
             switch (comptime T) {
-                String => try string.writer(self.allocator).print("{s}", .{self.values.items[n].items}),
+                strings.String => try string.writer(self.allocator).print("{s}", .{self.values.items[n].items}),
                 []const u8 => try string.writer(self.allocator).print("{s}", .{self.values.items[n]}),
                 f32, f64 => try string.writer(self.allocator).print("{d}", .{self.values.items[n]}),
                 else => try string.writer(self.allocator).print("{}", .{self.values.items[n]}),
@@ -134,15 +134,15 @@ pub fn Series(comptime T: type) type {
             return string;
         }
 
-        pub fn getNameOwned(self: *Self) !String {
+        pub fn getNameOwned(self: *Self) !strings.String {
             return try self.name.clone(self.allocator);
         }
 
-        pub fn getTypeToString(self: *Self) !String {
-            var string = try String.initCapacity(self.allocator, 0);
+        pub fn getTypeToString(self: *Self) !strings.String {
+            var string = try strings.String.initCapacity(self.allocator, 0);
 
             const value = switch (T) {
-                String => "String",
+                strings.String => "String",
                 []const u8 => "ConstString",
                 f32 => "Float32",
                 f64 => "Float64",
@@ -175,19 +175,19 @@ pub fn Series(comptime T: type) type {
         // It checks the type at compile time and ensures it matches the series type.
         // If the type is not compatible, it raises a compile-time error.
         pub fn tryAppend(self: *Self, value: anytype) !void {
-            if (comptime T == String and @TypeOf(value) == []const u8) {
-                var new_value = try String.initCapacity(self.allocator, value.len);
+            if (comptime T == strings.String and @TypeOf(value) == []const u8) {
+                var new_value = try strings.String.initCapacity(self.allocator, value.len);
                 errdefer new_value.deinit(self.allocator);
 
                 new_value.appendSliceAssumeCapacity(value);
                 try self.values.append(new_value);
-            } else if (comptime T == String and canBeSlice(@TypeOf(value))) {
-                var new_value = try String.initCapacity(self.allocator, value.len);
+            } else if (comptime T == strings.String and canBeSlice(@TypeOf(value))) {
+                var new_value = try strings.String.initCapacity(self.allocator, value.len);
                 errdefer new_value.deinit(self.allocator);
 
                 new_value.appendSliceAssumeCapacity(value[0..]);
                 try self.values.append(new_value);
-            } else if (comptime T == String and @TypeOf(value) == String) {
+            } else if (comptime T == strings.String and @TypeOf(value) == strings.String) {
                 try self.values.append(value);
             } else {
                 @compileError("Type mismatch in tryAppend(), expected String but got " ++ @typeName(@TypeOf(value)));
@@ -196,7 +196,7 @@ pub fn Series(comptime T: type) type {
 
         pub fn dropRow(self: *Self, index: usize) void {
             switch (T) {
-                String => {
+                strings.String => {
                     var a = self.values.orderedRemove(index);
                     a.deinit(self.allocator);
                 },
@@ -222,8 +222,8 @@ pub fn Series(comptime T: type) type {
 
             for (self.values.items) |*value| {
                 switch (comptime T) {
-                    String => {
-                        var new_value = try String.initCapacity(self.allocator, value.items.len);
+                    strings.String => {
+                        var new_value = try strings.String.initCapacity(self.allocator, value.items.len);
                         errdefer new_value.deinit(self.allocator);
 
                         new_value.appendSliceAssumeCapacity(value.items);
@@ -242,7 +242,7 @@ pub fn Series(comptime T: type) type {
             if (n_limit >= self.values.items.len) return;
 
             switch (comptime T) {
-                String => {
+                strings.String => {
                     for (n_limit..self.values.items.len) |i| {
                         self.values.items[i].deinit(self.allocator);
                     }

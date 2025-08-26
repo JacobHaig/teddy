@@ -1,8 +1,8 @@
 const std = @import("std");
 const Series = @import("series.zig").Series;
 const VariantSeries = @import("variant_series.zig").VariantSeries;
-const String = @import("variant_series.zig").String;
-const createString = @import("variant_series.zig").createString;
+
+const strings = @import("strings.zig");
 
 pub const Dataframe = struct {
     const Self = @This();
@@ -144,12 +144,12 @@ pub const Dataframe = struct {
         // Count the number of characters to get the max width for each column
         // Also include the header and datatype in the width calculation
 
-        var all_series: std.array_list.Managed(std.array_list.Managed(String)) = std.array_list.Managed(std.array_list.Managed(String)).init(self.allocator);
+        var all_series: std.array_list.Managed(std.array_list.Managed(strings.String)) = std.array_list.Managed(std.array_list.Managed(strings.String)).init(self.allocator);
         errdefer all_series.deinit();
 
         // Create a series of strings.
         for (0..wwidth) |w| {
-            var string_series = std.array_list.Managed(String).init(self.allocator);
+            var string_series = std.array_list.Managed(strings.String).init(self.allocator);
             var varseries = self.series.items[w];
 
             try string_series.append(try varseries.getNameOwned()); // Name
@@ -178,7 +178,7 @@ pub const Dataframe = struct {
 
         for (0..wwidth) |w| {
             var max_width: usize = 0;
-            const series: std.array_list.Managed(String) = all_series.items[w];
+            const series: std.array_list.Managed(strings.String) = all_series.items[w];
 
             for (series.items) |str| {
                 const len = str.items.len;
@@ -218,10 +218,10 @@ test "basic manipulations" {
     var df = try Dataframe.init(std.testing.allocator);
     defer df.deinit();
 
-    var series = try df.createSeries(String);
+    var series = try df.createSeries(strings.String);
     try series.rename("Name");
-    try series.append(try createString(std.testing.allocator, "Alice"));
-    try series.tryAppend(try createString(std.testing.allocator, "Gary"));
+    try series.append(try strings.createStringFromArray(std.testing.allocator, "Alice"));
+    try series.tryAppend(try strings.createStringFromArray(std.testing.allocator, "Gary"));
     try series.tryAppend("Bob");
     // series.print();
 

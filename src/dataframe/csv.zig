@@ -1,7 +1,7 @@
 const std = @import("std");
 const dataframe = @import("dataframe.zig");
 const variant_series = @import("variant_series.zig");
-const String = @import("variant_series.zig").String;
+const strings = @import("strings.zig");
 
 const CSVType = union(enum) {
     value: []const u8,
@@ -21,25 +21,25 @@ const CSVType = union(enum) {
     }
 
     // Returns an UnmanagedString, ownership transferred to caller
-    fn createString(self: CSVType, allocator: std.mem.Allocator) !String {
+    fn createString(self: CSVType, allocator: std.mem.Allocator) !strings.String {
         switch (self) {
             .value => |v| {
-                const str: String = try variant_series.createString(allocator, v);
+                const str: strings.String = try strings.createStringFromArray(allocator, v);
                 return str;
             },
             .quoted_value => |v| {
-                var string: String = try variant_series.createString(allocator, v);
-                defer string.deinit(allocator);
+                var str: strings.String = try strings.createStringFromArray(allocator, v);
+                defer str.deinit(allocator);
 
                 // Remove the first and last quotes from the string
-                _ = string.orderedRemove(0);
-                _ = string.orderedRemove(string.items.len - 1);
+                _ = str.orderedRemove(0);
+                _ = str.orderedRemove(str.items.len - 1);
 
                 // Replace double quotes with a single quote. There may be the opportunity to optimize this further.
-                const new_str: []u8 = try std.mem.replaceOwned(u8, allocator, string.items, "\"\"", "\"");
+                const new_str: []u8 = try std.mem.replaceOwned(u8, allocator, str.items, "\"\"", "\"");
                 defer allocator.free(new_str);
 
-                const new_string: String = try variant_series.createString(allocator, new_str);
+                const new_string: strings.String = try strings.createStringFromArray(allocator, new_str);
 
                 return new_string;
             },
@@ -130,12 +130,12 @@ pub const CsvTokenizer = struct {
         const h = self.rows.items.len;
 
         for (0..w) |dw| {
-            var series = try df.createSeries(variant_series.String);
+            var series = try df.createSeries(strings.String);
             var startingField: usize = 0;
 
             if (self.flags.has_header) {
                 const csv_str: CSVType = self.rows.items[startingField].items[dw];
-                const header_string: String = try csv_str.createString(self.allocator);
+                const header_string: strings.String = try csv_str.createString(self.allocator);
                 try series.renameOwned(header_string);
                 startingField += 1;
             }
@@ -144,8 +144,8 @@ pub const CsvTokenizer = struct {
 
             for (startingField..h) |dh| {
                 const csv_str: CSVType = self.rows.items[dh].items[dw];
-                const string: String = try csv_str.createString(self.allocator);
-                try series.append(string);
+                const str: strings.String = try csv_str.createString(self.allocator);
+                try series.append(str);
             }
         }
 

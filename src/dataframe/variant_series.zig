@@ -1,15 +1,6 @@
 const std = @import("std");
 const Series = @import("series.zig").Series;
-
-pub const String = std.ArrayList(u8);
-
-pub fn createString(allocator: std.mem.Allocator, str: []const u8) !String {
-    var name = try String.initCapacity(allocator, str.len);
-    errdefer name.deinit(allocator);
-
-    name.appendSliceAssumeCapacity(str);
-    return name;
-}
+const String = @import("strings.zig").String;
 
 pub const VariantSeries = union(enum) {
     const Self = @This();
