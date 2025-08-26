@@ -1,15 +1,14 @@
 const std = @import("std");
 const Series = @import("series.zig").Series;
 const VariantSeries = @import("variant_series.zig").VariantSeries;
-const UnmanagedString = @import("variant_series.zig").UnmanagedString;
-const ManagedString = @import("variant_series.zig").ManagedString;
+const String = @import("variant_series.zig").String;
 const createString = @import("variant_series.zig").createString;
 
 pub const Dataframe = struct {
     const Self = @This();
 
     allocator: std.mem.Allocator,
-    series: std.array_list.Managed(VariantSeries),
+    series: std.ArrayList(VariantSeries),
 
     pub fn init(allocator: std.mem.Allocator) !*Self {
         const dataframe_ptr = try allocator.create(Self);
@@ -17,8 +16,7 @@ pub const Dataframe = struct {
 
         // Initialize fields directly
         dataframe_ptr.allocator = allocator;
-        // dataframe_ptr.series = std.ArrayList(VariantSeries).init(allocator);
-        dataframe_ptr.series = std.array_list.Managed(VariantSeries).init(allocator);
+        dataframe_ptr.series = try std.ArrayList(VariantSeries).initCapacity(allocator, 0);
 
         return dataframe_ptr;
     }
@@ -27,7 +25,7 @@ pub const Dataframe = struct {
         for (self.series.items) |*seriesItem| {
             seriesItem.deinit();
         }
-        self.series.deinit();
+        self.series.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
@@ -38,7 +36,7 @@ pub const Dataframe = struct {
         errdefer series.deinit();
 
         const new_series_var = series.*.toVariantSeries();
-        try self.series.append(new_series_var);
+        try self.series.append(self.allocator, new_series_var);
         return series;
     }
 
@@ -146,14 +144,12 @@ pub const Dataframe = struct {
         // Count the number of characters to get the max width for each column
         // Also include the header and datatype in the width calculation
 
-        // var all_series: std.ArrayList(std.ArrayList(UnmanagedString)) = std.ArrayList(std.ArrayList(UnmanagedString)).init(self.allocator);
-        var all_series: std.array_list.Managed(std.array_list.Managed(UnmanagedString)) = std.array_list.Managed(std.array_list.Managed(UnmanagedString)).init(self.allocator);
+        var all_series: std.array_list.Managed(std.array_list.Managed(String)) = std.array_list.Managed(std.array_list.Managed(String)).init(self.allocator);
         errdefer all_series.deinit();
 
         // Create a series of strings.
         for (0..wwidth) |w| {
-            // var string_series = std.ArrayList(UnmanagedString).init(self.allocator);
-            var string_series = std.array_list.Managed(UnmanagedString).init(self.allocator);
+            var string_series = std.array_list.Managed(String).init(self.allocator);
             var varseries = self.series.items[w];
 
             try string_series.append(try varseries.getNameOwned()); // Name
@@ -177,14 +173,12 @@ pub const Dataframe = struct {
         }
 
         // Calculate the max width for each column
-        // var max_widths = std.ArrayList(usize).init(self.allocator);
         var max_widths = std.array_list.Managed(usize).init(self.allocator);
         defer max_widths.deinit();
 
         for (0..wwidth) |w| {
             var max_width: usize = 0;
-            // const series: std.ArrayList(UnmanagedString) = all_series.items[w];
-            const series: std.array_list.Managed(UnmanagedString) = all_series.items[w];
+            const series: std.array_list.Managed(String) = all_series.items[w];
 
             for (series.items) |str| {
                 const len = str.items.len;
@@ -224,7 +218,7 @@ test "basic manipulations" {
     var df = try Dataframe.init(std.testing.allocator);
     defer df.deinit();
 
-    var series = try df.createSeries(UnmanagedString);
+    var series = try df.createSeries(String);
     try series.rename("Name");
     try series.append(try createString(std.testing.allocator, "Alice"));
     try series.tryAppend(try createString(std.testing.allocator, "Gary"));

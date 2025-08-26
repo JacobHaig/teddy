@@ -1,11 +1,10 @@
 const std = @import("std");
 const Series = @import("series.zig").Series;
 
-pub const UnmanagedString = std.ArrayListUnmanaged(u8);
-pub const ManagedString = std.ArrayList(u8);
+pub const String = std.ArrayList(u8);
 
-pub fn createString(allocator: std.mem.Allocator, str: []const u8) !UnmanagedString {
-    var name = try UnmanagedString.initCapacity(allocator, str.len);
+pub fn createString(allocator: std.mem.Allocator, str: []const u8) !String {
+    var name = try String.initCapacity(allocator, str.len);
     errdefer name.deinit(allocator);
 
     name.appendSliceAssumeCapacity(str);
@@ -30,7 +29,7 @@ pub const VariantSeries = union(enum) {
     float64: *Series(f64),
 
     conststring: *Series([]const u8),
-    string: *Series(UnmanagedString),
+    string: *Series(String),
 
     pub fn deinit(self: *Self) void {
         switch (self.*) {
@@ -100,19 +99,19 @@ pub const VariantSeries = union(enum) {
         }
     }
 
-    pub fn asStringAt(self: *Self, n: usize) !UnmanagedString {
+    pub fn asStringAt(self: *Self, n: usize) !String {
         switch (self.*) {
             inline else => |s| return s.*.asStringAt(n),
         }
     }
 
-    pub fn getNameOwned(self: *const Self) !UnmanagedString {
+    pub fn getNameOwned(self: *const Self) !String {
         switch (self.*) {
             inline else => |p| return p.getNameOwned(),
         }
     }
 
-    pub fn getTypeToString(self: *Self) !UnmanagedString {
+    pub fn getTypeToString(self: *Self) !String {
         switch (self.*) {
             inline else => |s| return s.*.getTypeToString(),
         }
@@ -131,7 +130,7 @@ pub const VariantSeries = union(enum) {
             .int64 => return i64,
             .float32 => return f32,
             .float64 => return f64,
-            .string => return UnmanagedString,
+            .string => return String,
         }
     }
 };
