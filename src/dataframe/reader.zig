@@ -109,7 +109,7 @@ pub const Reader = struct {
 
         try tokenizer.readAll();
         try tokenizer.validate();
-        try tokenizer.print();
+        // try tokenizer.print();
 
         const df = try tokenizer.createOwnedDataframe();
 

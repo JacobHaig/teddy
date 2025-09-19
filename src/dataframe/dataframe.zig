@@ -144,41 +144,41 @@ pub const Dataframe = struct {
         // Count the number of characters to get the max width for each column
         // Also include the header and datatype in the width calculation
 
-        var all_series: std.array_list.Managed(std.array_list.Managed(strings.String)) = std.array_list.Managed(std.array_list.Managed(strings.String)).init(self.allocator);
-        errdefer all_series.deinit();
+        var all_series: std.ArrayList(std.ArrayList(strings.String)) = std.ArrayList(std.ArrayList(strings.String)).empty;
+        errdefer all_series.deinit(self.allocator);
 
         // Create a series of strings.
         for (0..wwidth) |w| {
-            var string_series = std.array_list.Managed(strings.String).init(self.allocator);
+            var string_series = std.ArrayList(strings.String).empty;
             var varseries = self.series.items[w];
 
-            try string_series.append(try varseries.getNameOwned()); // Name
-            try string_series.append(try varseries.getTypeToString()); // Type
+            try string_series.append(self.allocator, try varseries.getNameOwned()); // Name
+            try string_series.append(self.allocator, try varseries.getTypeToString()); // Type
             for (0..print_rows) |h| {
-                try string_series.append(try varseries.asStringAt(h)); // Value
+                try string_series.append(self.allocator, try varseries.asStringAt(h)); // Value
             }
 
-            try all_series.append(string_series);
+            try all_series.append(self.allocator, string_series);
         }
 
         // Deinit the series of strings after use
         defer {
-            for (all_series.items) |string_series| {
+            for (all_series.items) |*string_series| {
                 for (string_series.items) |*str| {
                     str.deinit(self.allocator);
                 }
-                string_series.deinit();
+                string_series.deinit(self.allocator);
             }
-            all_series.deinit();
+            all_series.deinit(self.allocator);
         }
 
         // Calculate the max width for each column
-        var max_widths = std.array_list.Managed(usize).init(self.allocator);
-        defer max_widths.deinit();
+        var max_widths = std.ArrayList(usize).empty;
+        defer max_widths.deinit(self.allocator);
 
         for (0..wwidth) |w| {
             var max_width: usize = 0;
-            const series: std.array_list.Managed(strings.String) = all_series.items[w];
+            const series: std.ArrayList(strings.String) = all_series.items[w];
 
             for (series.items) |str| {
                 const len = str.items.len;
@@ -186,7 +186,7 @@ pub const Dataframe = struct {
                     max_width = len;
                 }
             }
-            try max_widths.append(max_width);
+            try max_widths.append(self.allocator, max_width);
         }
 
         // Print the Table to stdout
