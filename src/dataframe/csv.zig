@@ -52,10 +52,8 @@ const CSVType = union(enum) {
 
 pub const CsvTokenizer = struct {
     const Self = @This();
-    // const Row = std.ArrayList(CSVType);
-    const Row = std.array_list.Managed(CSVType);
-    // const Rows = std.ArrayList(Row);
-    const Rows = std.array_list.Managed(Row);
+    const Row = std.ArrayList(CSVType);
+    const Rows = std.ArrayList(Row);
     const CsvError = error{ EndOfFile, EndOfLine, ParsingError };
     const CsvTokenizerFlags = struct {
         delimiter: u8 = ',',
@@ -83,10 +81,10 @@ pub const CsvTokenizer = struct {
 
     pub fn deinit(self: *Self) void {
         for (self.rows.items) |*row| {
-            row.deinit();
+            row.deinit(self.allocator);
         }
 
-        self.rows.deinit();
+        self.rows.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
@@ -154,18 +152,18 @@ pub const CsvTokenizer = struct {
 
     pub fn readAll(self: *Self) !void {
         // var rows = std.ArrayList(Row).init(self.allocator);
-        var rows = std.array_list.Managed(Row).init(self.allocator);
-        errdefer rows.deinit();
+        var rows = std.ArrayList(Row).empty;
+        errdefer rows.deinit(self.allocator);
 
         while (true) {
-            var row = Row.init(self.allocator);
-            errdefer row.deinit();
+            var row = Row.empty;
+            errdefer row.deinit(self.allocator);
 
             const err = try self.readRow(&row);
 
             if (err == .end_of_file) {
                 if (row.items.len != 0) {
-                    try rows.append(row);
+                    try rows.append(self.allocator, row);
                 }
                 break;
             }
@@ -174,7 +172,7 @@ pub const CsvTokenizer = struct {
                 return CsvError.ParsingError;
             }
 
-            try rows.append(row);
+            try rows.append(self.allocator, row);
         }
 
         self.rows = rows;
@@ -197,7 +195,7 @@ pub const CsvTokenizer = struct {
             }
 
             // If we have some value, append it to the row
-            try row.append(csv_token_type);
+            try row.append(self.allocator, csv_token_type);
         }
         return .end_of_file;
     }
