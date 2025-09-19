@@ -15,7 +15,8 @@ pub fn main() !void {
 
     var df3 = try df_reader
         .withFileType(.csv)
-        .withPath("data\\addresses.csv")
+        .withPath("data/addresses.csv")
+        // .withPath("data/stock_apple.csv")
         .withDelimiter(',')
         .withHeaders(true)
         .withSkipRows(0)

@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const dataframe = @import("dataframe.zig");
 const csv = @import("csv.zig");
@@ -16,7 +17,7 @@ pub const Reader = struct {
     allocator: std.mem.Allocator,
 
     file_type: FileType,
-    path: ?[]const u8,
+    path: ?[]const u8, // Owned
     delimiter: u8,
     has_header: bool,
     skip_rows: usize,
@@ -41,6 +42,9 @@ pub const Reader = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        if (self.path) |path| {
+            self.allocator.free(path);
+        }
         self.allocator.destroy(self);
     }
 
@@ -50,7 +54,19 @@ pub const Reader = struct {
     }
 
     pub fn withPath(self: *Self, path: []const u8) *Self {
-        self.path = path;
+        // Copy string into new owned string
+        const newPath: []u8 = self.allocator.alloc(u8, path.len) catch return self;
+        std.mem.copyForwards(u8, newPath, path);
+
+        // Change slash direction based on os
+        if (builtin.target.os.tag == .windows) {
+            std.mem.replaceScalar(u8, newPath, '/', '\\');
+        } else {
+            std.mem.replaceScalar(u8, newPath, '\\', '/');
+        }
+
+        self.path = newPath;
+        // std.debug.print("{?s}", .{self.path});
         return self;
     }
 
@@ -93,7 +109,7 @@ pub const Reader = struct {
 
         try tokenizer.readAll();
         try tokenizer.validate();
-        // try tokenizer.print();
+        try tokenizer.print();
 
         const df = try tokenizer.createOwnedDataframe();
 

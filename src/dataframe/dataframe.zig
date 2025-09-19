@@ -204,6 +204,7 @@ pub const Dataframe = struct {
             }
             try stdout.print("|\n", .{});
         }
+        try stdout.flush();
     }
 };
 
