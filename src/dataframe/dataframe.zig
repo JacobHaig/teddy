@@ -54,7 +54,7 @@ pub const Dataframe = struct {
     // Adds a series to the dataframe
     // Takes ownership of the series
     pub fn addSeries(self: *Self, series: VariantSeries) !void {
-        try self.series.append(series);
+        try self.series.append(self.allocator, series);
     }
 
     // Returns a pointer to the requested series or null
@@ -63,7 +63,7 @@ pub const Dataframe = struct {
         for (self.series.items) |*series_type| {
             switch (series_type.*) {
                 inline else => |ptr| {
-                    if (std.mem.eql(u8, ptr.name, name)) {
+                    if (std.mem.eql(u8, ptr.name.items, name)) {
                         return series_type;
                     }
                 },
@@ -121,7 +121,7 @@ pub const Dataframe = struct {
             var new_series = try series.*.deepCopy();
             errdefer new_series.deinit();
 
-            try new_dataframe.series.append(new_series);
+            try new_dataframe.series.append(self.allocator, new_series);
         }
 
         return new_dataframe;
@@ -131,6 +131,46 @@ pub const Dataframe = struct {
         for (self.series.items) |*item| {
             item.limit(n_limit);
         }
+    }
+
+    pub fn getColumnNames(self: *Self) !std.ArrayList([]const u8) {
+        var names = std.ArrayList([]const u8).empty;
+        errdefer names.deinit(self.allocator);
+
+        for (self.series.items) |*item| {
+            try names.append(self.allocator, item.name());
+        }
+
+        return names;
+    }
+
+    pub fn compareDataframe(self: *Self, other: *Self) !bool {
+        if (self.height() != other.height() or self.width() != other.width()) {
+            return false;
+        }
+
+        var columns = try self.getColumnNames();
+        defer columns.deinit(self.allocator);
+
+        for (columns.items) |col_name| {
+            const series_a = self.getSeries(col_name) orelse return false;
+            const series_b = other.getSeries(col_name) orelse return false;
+
+            if (series_a.len() != series_b.len()) {
+                return false;
+            }
+
+            for (0..series_a.len()) |i| {
+                const val_a = try series_a.asStringAt(i);
+                const val_b = try series_b.asStringAt(i);
+
+                if (!std.mem.eql(u8, val_a.items, val_b.items)) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
     }
 
     pub fn print(self: *Self) !void {
@@ -221,8 +261,8 @@ test "basic manipulations" {
 
     var series = try df.createSeries(strings.String);
     try series.rename("Name");
-    try series.append(try strings.createStringFromArray(std.testing.allocator, "Alice"));
-    try series.tryAppend(try strings.createStringFromArray(std.testing.allocator, "Gary"));
+    try series.append(try strings.createStringFromSlice(std.testing.allocator, "Alice"));
+    try series.tryAppend(try strings.createStringFromSlice(std.testing.allocator, "Gary"));
     try series.tryAppend("Bob");
     // series.print();
 

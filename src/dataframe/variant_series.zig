@@ -42,7 +42,7 @@ pub const VariantSeries = union(enum) {
 
     pub fn name(self: *const Self) []const u8 {
         switch (self.*) {
-            inline else => |p| return p.name,
+            inline else => |p| return p.name.items,
         }
     }
 

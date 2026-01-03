@@ -134,10 +134,12 @@ pub fn Series(comptime T: type) type {
             return string;
         }
 
+        // getNameOwned returns a owned copy of the name string.
         pub fn getNameOwned(self: *Self) !strings.String {
             return try self.name.clone(self.allocator);
         }
 
+        // getTypeToString returns the type of the series as an owned string.
         pub fn getTypeToString(self: *Self) !strings.String {
             var string = try strings.String.initCapacity(self.allocator, 0);
 
@@ -171,6 +173,12 @@ pub fn Series(comptime T: type) type {
             try self.values.append(self.allocator, value);
         }
 
+        pub fn appendSlice(self: *Self, slice: []const T) !void {
+            for (slice) |item| {
+                try self.values.append(self.allocator, item);
+            }
+        }
+
         // tryAppend takes a value of any type and appends it to the series.
         // It checks the type at compile time and ensures it matches the series type.
         // If the type is not compatible, it raises a compile-time error.
@@ -186,11 +194,25 @@ pub fn Series(comptime T: type) type {
                 errdefer new_value.deinit(self.allocator);
 
                 new_value.appendSliceAssumeCapacity(value[0..]);
-                try self.values.append(new_value);
+                try self.values.append(self.allocator, new_value);
             } else if (comptime T == strings.String and @TypeOf(value) == strings.String) {
-                try self.values.append(value);
+                try self.values.append(self.allocator, value);
             } else {
                 @compileError("Type mismatch in tryAppend(), expected String but got " ++ @typeName(@TypeOf(value)));
+            }
+        }
+
+        pub fn tryAppendSlice(self: *Self, slice: anytype) !void {
+            if (comptime T == strings.String and @TypeOf(slice) == []const []const u8) {
+                for (slice) |item| {
+                    var new_value = try strings.String.initCapacity(self.allocator, item.len);
+                    errdefer new_value.deinit(self.allocator);
+
+                    new_value.appendSliceAssumeCapacity(item);
+                    try self.values.append(new_value);
+                }
+            } else {
+                @compileError("Type mismatch in tryAppendSlice(), expected slice of String but got " ++ @typeName(@TypeOf(slice)));
             }
         }
 
@@ -217,8 +239,8 @@ pub fn Series(comptime T: type) type {
             const new_series = try Self.init(self.allocator);
             errdefer new_series.deinit();
 
-            try new_series.rename(self.name);
-            try new_series.values.ensureTotalCapacity(self.values.items.len);
+            try new_series.rename(self.name.items);
+            try new_series.values.ensureTotalCapacity(self.allocator, self.values.items.len);
 
             for (self.values.items) |*value| {
                 switch (comptime T) {
@@ -227,7 +249,7 @@ pub fn Series(comptime T: type) type {
                         errdefer new_value.deinit(self.allocator);
 
                         new_value.appendSliceAssumeCapacity(value.items);
-                        try new_series.values.append(new_value);
+                        try new_series.values.append(self.allocator, new_value);
                     },
                     inline else => {
                         try new_series.append(value.*);
@@ -250,7 +272,19 @@ pub fn Series(comptime T: type) type {
                 else => {},
             }
 
-            self.values.shrinkAndFree(n_limit);
+            self.values.shrinkAndFree(self.allocator, n_limit);
+        }
+
+        pub fn compareSeries(self: *Self, other: *Self) bool {
+            if (self.len() != other.len()) return false;
+
+            for (self.values.items, 0..) |value, index| {
+                if (value != other.values.items[index]) {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         pub fn toVariantSeries(self: *Self) VariantSeries {

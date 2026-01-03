@@ -2,6 +2,7 @@ const std = @import("std");
 
 const dataframe = @import("dataframe.zig");
 const variant_series = @import("dataframe/variant_series.zig");
+const parquet = @import("dataframe/parquet.zig");
 
 pub fn main() !void {
     var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
@@ -28,4 +29,5 @@ pub fn main() !void {
 
     // const s = df3.get_series("First Name") orelse return error.doesntExist;
     // s.print();
+
 }

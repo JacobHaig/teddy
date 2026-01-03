@@ -1,5 +1,6 @@
 const std = @import("std");
 const dataframe = @import("dataframe.zig");
+const series = @import("series.zig");
 const variant_series = @import("variant_series.zig");
 const strings = @import("strings.zig");
 
@@ -24,11 +25,11 @@ const CSVType = union(enum) {
     fn createString(self: CSVType, allocator: std.mem.Allocator) !strings.String {
         switch (self) {
             .value => |v| {
-                const str: strings.String = try strings.createStringFromArray(allocator, v);
+                const str: strings.String = try strings.createStringFromSlice(allocator, v);
                 return str;
             },
             .quoted_value => |v| {
-                var str: strings.String = try strings.createStringFromArray(allocator, v);
+                var str: strings.String = try strings.createStringFromSlice(allocator, v);
                 defer str.deinit(allocator);
 
                 // Remove the first and last quotes from the string
@@ -39,7 +40,7 @@ const CSVType = union(enum) {
                 const new_str: []u8 = try std.mem.replaceOwned(u8, allocator, str.items, "\"\"", "\"");
                 defer allocator.free(new_str);
 
-                const new_string: strings.String = try strings.createStringFromArray(allocator, new_str);
+                const new_string: strings.String = try strings.createStringFromSlice(allocator, new_str);
 
                 return new_string;
             },
@@ -52,6 +53,7 @@ const CSVType = union(enum) {
 
 pub const CsvTokenizer = struct {
     const Self = @This();
+
     const Row = std.ArrayList(CSVType);
     const Rows = std.ArrayList(Row);
     const CsvError = error{ EndOfFile, EndOfLine, ParsingError };
@@ -128,13 +130,14 @@ pub const CsvTokenizer = struct {
         const h = self.rows.items.len;
 
         for (0..w) |dw| {
-            var series = try df.createSeries(strings.String);
+            var series1 = try df.createSeries(strings.String);
+
             var startingField: usize = 0;
 
             if (self.flags.has_header) {
                 const csv_str: CSVType = self.rows.items[startingField].items[dw];
                 const header_string: strings.String = try csv_str.createString(self.allocator);
-                try series.renameOwned(header_string);
+                try series1.renameOwned(header_string);
                 startingField += 1;
             }
 
@@ -143,7 +146,7 @@ pub const CsvTokenizer = struct {
             for (startingField..h) |dh| {
                 const csv_str: CSVType = self.rows.items[dh].items[dw];
                 const str: strings.String = try csv_str.createString(self.allocator);
-                try series.append(str);
+                try series1.append(str);
             }
         }
 
@@ -298,7 +301,63 @@ fn printChar(c: u8) void {
     }
 }
 
-test "parse_csv_text" {
+test "parse_csv_text3" {
+    const content =
+        \\First Name,Last Name
+        \\John,"Doe"
+        \\Jack,McGinnis
+        \\"John ""Da Man""",Repici
+        \\Stephen,Tyler
+        \\,Blankman
+        \\"Joan ""the bone"", Anne",Jet
+    ;
+
+    var tokenizer = try CsvTokenizer.init(std.testing.allocator, content, .{ .delimiter = ',' });
+    defer tokenizer.deinit();
+
+    try tokenizer.readAll();
+    try tokenizer.validate();
+    // try tokenizer.print();
+
+    const df = try tokenizer.createOwnedDataframe();
+    defer df.deinit();
+
+    const compare_df = try dataframe.Dataframe.init(std.testing.allocator);
+    defer compare_df.deinit();
+
+    const series1 = try series.Series(strings.String).init(std.testing.allocator);
+    try series1.rename("First Name");
+    try series1.tryAppend("John");
+    try series1.tryAppend("Jack");
+    try series1.tryAppend("John \"Da Man\"");
+    try series1.tryAppend("Stephen");
+    try series1.tryAppend("");
+    try series1.tryAppend("Joan \"the bone\", Anne");
+    try compare_df.addSeries(series1.toVariantSeries());
+    const series2 = try series.Series(strings.String).init(std.testing.allocator);
+    try series2.rename("Last Name");
+    try series2.tryAppend("Doe");
+    try series2.tryAppend("McGinnis");
+    try series2.tryAppend("Repici");
+    try series2.tryAppend("Tyler");
+    try series2.tryAppend("Blankman");
+    try series2.tryAppend("Jet");
+    try compare_df.addSeries(series2.toVariantSeries());
+
+    std.debug.print("Comparing Dataframes...\n", .{});
+    std.debug.print("Dataframe Height: {} Width: {}\n", .{ df.height(), df.width() });
+    std.debug.print("Dataframe Height: {} Width: {}\n", .{ compare_df.height(), compare_df.width() });
+
+    if (try df.compareDataframe(compare_df)) {
+        std.debug.print("Dataframes are equal!\n", .{});
+    } else {
+        std.debug.print("Dataframes are NOT equal!\n", .{});
+        try df.print();
+        try std.testing.expect(false);
+    }
+}
+
+test "parse_csv_text2" {
     const content =
         \\First Name,Last Name,Age,Address,City,State,Zip
         \\John,Doe,52,120 jefferson st.,Riverside, NJ, 08075
@@ -314,4 +373,6 @@ test "parse_csv_text" {
 
     try tokenizer.readAll();
     try tokenizer.validate();
+
+    try tokenizer.print();
 }

@@ -32,3 +32,4 @@ zig-out
 
 # Data
 data_hidden/
+.DS_Store

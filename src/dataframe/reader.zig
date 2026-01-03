@@ -121,8 +121,8 @@ pub const Reader = struct {
         _ = self;
     }
 
-    fn readParquet(self: *Self) void {
-        // Implement Parquet reading logic here
-        _ = self;
+    fn readParquet(self: *Self) !*dataframe.Dataframe {
+        _ = self.path orelse return error.InvalidFilePath;
+        return error.InvalidFilePath;
     }
 };

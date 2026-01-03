@@ -9,7 +9,7 @@ pub fn createString(allocator: std.mem.Allocator) !String {
     return name;
 }
 
-pub fn createStringFromArray(allocator: std.mem.Allocator, str: []const u8) !String {
+pub fn createStringFromSlice(allocator: std.mem.Allocator, str: []const u8) !String {
     var name = try String.initCapacity(allocator, str.len);
     errdefer name.deinit(allocator);
 
