@@ -22,6 +22,7 @@ pub const VariantSeries = union(enum) {
     conststring: *Series([]const u8),
     string: *Series(String),
 
+    /// Deallocates the contained Series. After this call, the VariantSeries is invalid.
     pub fn deinit(self: *Self) void {
         switch (self.*) {
             inline else => |p| p.deinit(),
@@ -42,7 +43,7 @@ pub const VariantSeries = union(enum) {
 
     pub fn name(self: *const Self) []const u8 {
         switch (self.*) {
-            inline else => |p| return p.name.items,
+            inline else => |p| return p.name.toSlice(),
         }
     }
 
@@ -69,6 +70,7 @@ pub const VariantSeries = union(enum) {
         }
     }
 
+    /// Returns a new VariantSeries containing a deep-copied Series. Caller must call deinit on the returned VariantSeries.
     pub fn deepCopy(self: *Self) !Self {
         switch (self.*) {
             inline else => |s| {

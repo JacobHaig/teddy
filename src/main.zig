@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const dataframe = @import("dataframe.zig");
+const dataframe = @import("dataframe/dataframe.zig");
 const variant_series = @import("dataframe/variant_series.zig");
 const parquet = @import("dataframe/parquet.zig");
 

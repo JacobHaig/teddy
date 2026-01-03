@@ -25,28 +25,20 @@ const CSVType = union(enum) {
     fn createString(self: CSVType, allocator: std.mem.Allocator) !strings.String {
         switch (self) {
             .value => |v| {
-                const str: strings.String = try strings.createStringFromSlice(allocator, v);
-                return str;
+                return try strings.String.fromSlice(allocator, v);
             },
             .quoted_value => |v| {
-                var str: strings.String = try strings.createStringFromSlice(allocator, v);
-                defer str.deinit(allocator);
-
+                var str = try strings.String.fromSlice(allocator, v);
+                defer str.deinit();
                 // Remove the first and last quotes from the string
-                _ = str.orderedRemove(0);
-                _ = str.orderedRemove(str.items.len - 1);
-
+                _ = str.remove(0);
+                _ = str.remove(str.len() - 1);
                 // Replace double quotes with a single quote. There may be the opportunity to optimize this further.
-                const new_str: []u8 = try std.mem.replaceOwned(u8, allocator, str.items, "\"\"", "\"");
+                const new_str: []u8 = try std.mem.replaceOwned(u8, allocator, str.toSlice(), "\"\"", "\"");
                 defer allocator.free(new_str);
-
-                const new_string: strings.String = try strings.createStringFromSlice(allocator, new_str);
-
-                return new_string;
+                return try strings.String.fromSlice(allocator, new_str);
             },
-            else => {
-                unreachable;
-            },
+            else => unreachable,
         }
     }
 };
@@ -69,6 +61,7 @@ pub const CsvTokenizer = struct {
     flags: CsvTokenizerFlags,
     rows: Rows,
 
+    /// Allocates a new CsvTokenizer on the heap. Caller owns the returned pointer and must call deinit.
     pub fn init(allocator: std.mem.Allocator, content: []const u8, csvFlags: CsvTokenizerFlags) !*Self {
         const ptr_csv_tokenizer = try allocator.create(Self);
         errdefer allocator.destroy(ptr_csv_tokenizer);
@@ -81,6 +74,7 @@ pub const CsvTokenizer = struct {
         return ptr_csv_tokenizer;
     }
 
+    /// Deallocates all memory owned by this CsvTokenizer, including all rows. After this call, the pointer is invalid.
     pub fn deinit(self: *Self) void {
         for (self.rows.items) |*row| {
             row.deinit(self.allocator);
@@ -121,7 +115,7 @@ pub const CsvTokenizer = struct {
 
     // TODO: Consider parsing the datatypes of each column here.
     // This could reduce the overall memory footprint of the dataframe.
-    // Creates and returns a new dataframe. Caller takes ownership.
+    /// Creates and returns a new Dataframe. Caller owns the returned pointer and must call deinit.
     pub fn createOwnedDataframe(self: *Self) !*dataframe.Dataframe {
         const df = try dataframe.Dataframe.init(self.allocator);
         errdefer df.deinit();
@@ -374,5 +368,28 @@ test "parse_csv_text2" {
     try tokenizer.readAll();
     try tokenizer.validate();
 
+    try tokenizer.print();
+}
+
+test "CsvTokenizer: init, readAll, validate, createOwnedDataframe" {
+    const allocator = std.testing.allocator;
+    const content = "A,B\n1,2\n3,4\n";
+    var tokenizer = try CsvTokenizer.init(allocator, content, .{ .delimiter = ',' });
+    defer tokenizer.deinit();
+    try tokenizer.readAll();
+    try tokenizer.validate();
+    const df = try tokenizer.createOwnedDataframe();
+    defer df.deinit();
+    try std.testing.expect(df.width() == 2);
+    try std.testing.expect(df.height() == 2);
+}
+
+test "CsvTokenizer: print output" {
+    const allocator = std.testing.allocator;
+    const content = "A,B\nfoo,bar\n";
+    var tokenizer = try CsvTokenizer.init(allocator, content, .{ .delimiter = ',' });
+    defer tokenizer.deinit();
+    try tokenizer.readAll();
+    try tokenizer.validate();
     try tokenizer.print();
 }

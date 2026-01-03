@@ -1,18 +1,119 @@
 const std = @import("std");
 
-pub const String = std.ArrayList(u8);
+pub const String = struct {
+    allocator: std.mem.Allocator,
+    list: std.ArrayList(u8),
 
+    /// Create an empty String
+    pub fn init(allocator: std.mem.Allocator) !String {
+        return String{
+            .allocator = allocator,
+            .list = try std.ArrayList(u8).initCapacity(allocator, 0),
+        };
+    }
+
+    /// Create a String from a slice
+    pub fn fromSlice(allocator: std.mem.Allocator, str: []const u8) !String {
+        var s = try String.init(allocator);
+        try s.appendSlice(str);
+        return s;
+    }
+
+    /// Free all memory used by this String
+    pub fn deinit(self: *String) void {
+        self.list.deinit(self.allocator);
+        // No need to free self, as this is a value type
+    }
+
+    /// Clone this String (deep copy)
+    pub fn clone(self: *const String) !String {
+        return String.fromSlice(self.allocator, self.toSlice());
+    }
+
+    /// Remove all contents, keep capacity
+    pub fn clear(self: *String) void {
+        self.list.clearRetainingCapacity();
+    }
+
+    /// Append a single byte
+    pub fn append(self: *String, c: u8) !void {
+        try self.list.append(self.allocator, c);
+    }
+
+    /// Append a slice
+    pub fn appendSlice(self: *String, s: []const u8) !void {
+        try self.list.appendSlice(self.allocator, s);
+    }
+
+    /// Get the string as a slice
+    pub fn toSlice(self: *const String) []const u8 {
+        return self.list.items;
+    }
+
+    /// Compare with another String
+    pub fn eql(self: *const String, other: *const String) bool {
+        return std.mem.eql(u8, self.toSlice(), other.toSlice());
+    }
+
+    /// Compare with a slice
+    pub fn eqlSlice(self: *const String, other: []const u8) bool {
+        return std.mem.eql(u8, self.toSlice(), other);
+    }
+
+    /// Reserve capacity
+    pub fn ensureCapacity(self: *String, n: usize) !void {
+        try self.list.ensureTotalCapacity(self.allocator, n);
+    }
+
+    /// Remove a character at index
+    pub fn remove(self: *String, idx: usize) u8 {
+        return self.list.orderedRemove(idx);
+    }
+
+    /// Length
+    pub fn len(self: *const String) usize {
+        return self.list.items.len;
+    }
+};
+
+/// Deprecated: use String.init
 pub fn createString(allocator: std.mem.Allocator) !String {
-    var name = try String.initCapacity(allocator, 0);
-    errdefer name.deinit(allocator);
-
-    return name;
+    return String.init(allocator);
 }
 
+/// Deprecated: use String.fromSlice
 pub fn createStringFromSlice(allocator: std.mem.Allocator, str: []const u8) !String {
-    var name = try String.initCapacity(allocator, str.len);
-    errdefer name.deinit(allocator);
+    return String.fromSlice(allocator, str);
+}
 
-    name.appendSliceAssumeCapacity(str);
-    return name;
+test "String: init, append, eql, clear, remove, deinit" {
+    const allocator = std.testing.allocator;
+    var s = try String.init(allocator);
+    defer s.deinit();
+    try s.append('a');
+    try s.append('b');
+    try s.append('c');
+    try std.testing.expect(s.len() == 3);
+    try std.testing.expect(s.toSlice()[0] == 'a');
+    try std.testing.expect(s.toSlice()[1] == 'b');
+    try std.testing.expect(s.toSlice()[2] == 'c');
+    s.clear();
+    try std.testing.expect(s.len() == 0);
+    try s.append('x');
+    try std.testing.expect(s.toSlice()[0] == 'x');
+    _ = s.remove(0);
+    try std.testing.expect(s.len() == 0);
+}
+
+test "String: fromSlice, eql, eqlSlice, clone" {
+    const allocator = std.testing.allocator;
+    var s1 = try String.fromSlice(allocator, "hello");
+    defer s1.deinit();
+    var s2 = try String.fromSlice(allocator, "hello");
+    defer s2.deinit();
+    try std.testing.expect(s1.eql(&s2));
+    try std.testing.expect(s1.eqlSlice("hello"));
+    var s3 = try s1.clone();
+    defer s3.deinit();
+    try std.testing.expect(s3.eql(&s1));
 }
