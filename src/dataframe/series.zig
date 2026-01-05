@@ -74,13 +74,7 @@ pub fn Series(comptime T: type) type {
                     }
                     std.debug.print("\n", .{});
                 },
-                []const u8 => {
-                    std.debug.print("{s}\n{s}\n--------\n", .{ self.name.toSlice(), "ConstString" });
-                    for (self.values.items) |value| {
-                        std.debug.print("{s}\n", .{value});
-                    }
-                    std.debug.print("\n", .{});
-                },
+
                 f32, f64 => {
                     std.debug.print("{s}\n{s}\n--------\n", .{ self.name.toSlice(), "Float" });
                     for (self.values.items) |value| {
@@ -125,18 +119,23 @@ pub fn Series(comptime T: type) type {
             return string;
         }
 
+        /// toSlice returns a slice of the values in the series.
+        /// The does not transfer ownership; the caller must not deinit the series while using the slice.
+        pub fn toSlice(self: *Self) []const T {
+            return self.values.items;
+        }
+
         // getNameOwned returns a owned copy of the name string.
         pub fn getNameOwned(self: *Self) !strings.String {
             return try self.name.clone();
         }
 
         // getTypeToString returns the type of the series as an owned string.
-        pub fn getTypeToString(self: *Self) !strings.String {
+        pub fn getTypeAsString(self: *Self) !strings.String {
             var string = try strings.String.init(self.allocator);
 
             const value = switch (T) {
                 strings.String => "String",
-                []const u8 => "ConstString",
                 f32 => "Float32",
                 f64 => "Float64",
                 bool => "Bool",
@@ -288,7 +287,6 @@ pub fn Series(comptime T: type) type {
                 i128 => VariantSeries{ .int128 = self },
                 f32 => VariantSeries{ .float32 = self },
                 f64 => VariantSeries{ .float64 = self },
-                []const u8 => VariantSeries{ .conststring = self },
                 strings.String => VariantSeries{ .string = self },
                 // Add other types as needed
                 else => @compileError("Unsupported type " ++ @typeName(T) ++ " for SeriesType conversion"),

@@ -1,9 +1,11 @@
 const std = @import("std");
+
+// const strings = @import("strings.zig");
+const String = @import("strings.zig").String;
+
 const Series = @import("series.zig").Series;
 const VariantSeries = @import("variant_series.zig").VariantSeries;
 pub const Reader = @import("reader.zig").Reader;
-
-const strings = @import("strings.zig");
 
 pub const Dataframe = struct {
     const Self = @This();
@@ -176,16 +178,16 @@ pub const Dataframe = struct {
         // Count the number of characters to get the max width for each column
         // Also include the header and datatype in the width calculation
 
-        var all_series: std.ArrayList(std.ArrayList(strings.String)) = std.ArrayList(std.ArrayList(strings.String)).empty;
+        var all_series: std.ArrayList(std.ArrayList(String)) = std.ArrayList(std.ArrayList(String)).empty;
         errdefer all_series.deinit(self.allocator);
 
         // Create a series of strings.
         for (0..wwidth) |w| {
-            var string_series = std.ArrayList(strings.String).empty;
+            var string_series = std.ArrayList(String).empty;
             var varseries = self.series.items[w];
 
             try string_series.append(self.allocator, try varseries.getNameOwned()); // Name
-            try string_series.append(self.allocator, try varseries.getTypeToString()); // Type
+            try string_series.append(self.allocator, try varseries.getTypeAsString()); // Type
             for (0..print_rows) |h| {
                 try string_series.append(self.allocator, try varseries.asStringAt(h)); // Value
             }
@@ -210,7 +212,7 @@ pub const Dataframe = struct {
 
         for (0..wwidth) |w| {
             var max_width: usize = 0;
-            const series: std.ArrayList(strings.String) = all_series.items[w];
+            const series: std.ArrayList(String) = all_series.items[w];
 
             for (series.items) |str| {
                 const len = str.toSlice().len;
@@ -251,26 +253,23 @@ test "basic manipulations" {
     var df = try Dataframe.init(std.testing.allocator);
     defer df.deinit();
 
-    var series = try df.createSeries(strings.String);
+    var series = try df.createSeries(String);
     try series.rename("Name");
-    try series.append(try strings.String.fromSlice(std.testing.allocator, "Alice"));
-    try series.tryAppend(try strings.String.fromSlice(std.testing.allocator, "Gary"));
+    try series.append(try String.fromSlice(std.testing.allocator, "Alice"));
+    try series.tryAppend(try String.fromSlice(std.testing.allocator, "Gary"));
     try series.tryAppend("Bob");
-    // series.print();
 
     var series2 = try df.createSeries(f32);
     try series2.rename("Salary");
     try series2.append(15000);
     try series2.append(75000.0);
     try series2.append(110000.0);
-    // series2.print();
 
     df.applyInplace("Salary", f32, struct {
         fn call(x: f32) f32 {
             return x / 52 / 40;
         }
     }.call);
-    // series2.print();
 
     var series3 = try df.createSeries(i32);
     try series3.rename("Age");
@@ -370,9 +369,27 @@ test "Dataframe: compareDataframe equality and inequality" {
     try std.testing.expect(!(try df1.compareDataframe(df3)));
 }
 
+test "External Function Test: add5a" {
+    const f = @import("functions.zig");
+
+    var df = try Dataframe.init(std.testing.allocator);
+    defer df.deinit();
+
+    var series = try df.createSeries(i32);
+    try series.rename("Salary");
+    try series.append(15000);
+    try series.append(75000);
+
+    df.applyInplace("Salary", i32, f.add5a);
+
+    try std.testing.expect(series.len() == 2);
+    try std.testing.expect(series.toSlice()[0] == 15005);
+    try std.testing.expect(series.toSlice()[1] == 75005);
+}
+
 test "String re-export: can create and use String from top-level API" {
     const allocator = std.testing.allocator;
-    var s = try strings.String.init(allocator);
+    var s = try String.init(allocator);
     defer s.deinit();
     try s.append('a');
     try s.append('b');
@@ -395,7 +412,7 @@ test "memory management and ownership" {
     }
 
     // Test Series allocation and deallocation
-    var s = try series_mod.Series(strings.String).init(allocator);
+    var s = try series_mod.Series(String).init(allocator);
     defer s.deinit();
     try s.rename("Test Series");
     try s.tryAppend("Hello");
@@ -435,7 +452,7 @@ test "dataframe series ownership" {
     // Create a dataframe and add a series to it, let dataframe own the series
     var df = try Dataframe.init(allocator);
     defer df.deinit();
-    var s = try series_mod.Series(strings.String).init(allocator);
+    var s = try series_mod.Series(String).init(allocator);
     try s.rename("Test Series");
     try s.tryAppend("A");
     try s.tryAppend("B");

@@ -18,8 +18,6 @@ pub const VariantSeries = union(enum) {
     int128: *Series(i128),
     float32: *Series(f32),
     float64: *Series(f64),
-
-    conststring: *Series([]const u8),
     string: *Series(String),
 
     /// Deallocates the contained Series. After this call, the VariantSeries is invalid.
@@ -104,9 +102,9 @@ pub const VariantSeries = union(enum) {
         }
     }
 
-    pub fn getTypeToString(self: *Self) !String {
+    pub fn getTypeAsString(self: *Self) !String {
         switch (self.*) {
-            inline else => |s| return s.*.getTypeToString(),
+            inline else => |s| return s.*.getTypeAsString(),
         }
     }
 
