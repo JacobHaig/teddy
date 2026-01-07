@@ -1,6 +1,9 @@
 const std = @import("std");
-const VariantSeries = @import("variant_series.zig").VariantSeries;
 const strings = @import("strings.zig");
+
+const VariantSeries = @import("variant_series.zig").VariantSeries;
+const GroupBy = @import("group.zig").GroupBy;
+const Dataframe = @import("dataframe.zig").Dataframe;
 
 fn canBeSlice(comptime T: type) bool {
     return @typeInfo(T) == .pointer and
@@ -11,6 +14,10 @@ fn canBeSlice(comptime T: type) bool {
         @typeInfo(@typeInfo(T).pointer.child).array.sentinel_ptr != null;
 }
 
+// Series struct for holding a single column of data of type T
+//
+// Usage:
+// var series = try Series(i32).init(allocator);
 pub fn Series(comptime T: type) type {
     return struct {
         const Self = @This();
@@ -21,12 +28,13 @@ pub fn Series(comptime T: type) type {
 
         /// Allocates a new Series on the heap. Caller owns the returned pointer and must call deinit.
         pub fn init(allocator: std.mem.Allocator) !*Self {
-            const series_ptr = try allocator.create(Self);
-            errdefer allocator.destroy(series_ptr);
-            series_ptr.allocator = allocator;
-            series_ptr.name = try strings.String.init(allocator);
-            series_ptr.values = try std.ArrayList(T).initCapacity(allocator, 0);
-            return series_ptr;
+            const ptr = try allocator.create(Self);
+            errdefer allocator.destroy(ptr);
+
+            ptr.allocator = allocator;
+            ptr.name = try strings.String.init(allocator);
+            ptr.values = try std.ArrayList(T).initCapacity(allocator, 0);
+            return ptr;
         }
 
         /// Allocates a new Series with a given capacity. Caller owns the returned pointer and must call deinit.
@@ -291,6 +299,10 @@ pub fn Series(comptime T: type) type {
                 // Add other types as needed
                 else => @compileError("Unsupported type " ++ @typeName(T) ++ " for SeriesType conversion"),
             };
+        }
+
+        pub fn groupBy(self: *Self, allocator: std.mem.Allocator, dataframe: *Dataframe) !*GroupBy(type) {
+            return GroupBy(T).init(allocator, dataframe, self);
         }
     };
 }

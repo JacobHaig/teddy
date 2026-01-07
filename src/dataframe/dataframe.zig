@@ -6,6 +6,7 @@ const String = @import("strings.zig").String;
 const Series = @import("series.zig").Series;
 const VariantSeries = @import("variant_series.zig").VariantSeries;
 pub const Reader = @import("reader.zig").Reader;
+const GroupBy = @import("group.zig").GroupBy;
 
 pub const Dataframe = struct {
     const Self = @This();
@@ -139,6 +140,19 @@ pub const Dataframe = struct {
             try names.append(self.allocator, item.name());
         }
         return names;
+    }
+
+    /// GroupBy method to group Dataframe rows by values in a Series of type T.
+    ///
+    /// Usage:
+    /// var group_by = try df.groupBy("column_name");
+    /// defer group_by.deinit();
+    pub fn groupBy(self: *Self, column: []const u8) !*GroupBy(type) {
+        const variant_series = self.getSeries(column) orelse return error.DoesNotExist;
+
+        const group_by = variant_series.groupBy(self.allocator, self);
+
+        return group_by;
     }
 
     /// Compares this Dataframe to another for equality. Returns true if all columns and values are equal.

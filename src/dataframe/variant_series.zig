@@ -1,6 +1,8 @@
 const std = @import("std");
 const Series = @import("series.zig").Series;
 const String = @import("strings.zig").String;
+const GroupBy = @import("group.zig").GroupBy;
+const Dataframe = @import("dataframe.zig").Dataframe;
 
 pub const VariantSeries = union(enum) {
     const Self = @This();
@@ -108,6 +110,14 @@ pub const VariantSeries = union(enum) {
         }
     }
 
+    pub fn groupBy(self: *Self, allocator: std.mem.Allocator, dataframe: *Dataframe) !*GroupBy(type) {
+        switch (self.*) {
+            inline else => |s| return s.*.groupBy(allocator, dataframe),
+        }
+    }
+
+    /// Returns the type of the contained Series
+    /// It also can not be used at runtime
     pub fn getType(self: *Self) type {
         switch (self.*) {
             .bool => return bool,

@@ -26,4 +26,9 @@ pub fn main() !void {
 
     std.debug.print("height: {} width: {}\n", .{ df3.height(), df3.width() });
     try df3.print();
+
+    const group_by = try df3.groupBy("Age");
+    defer group_by.deinit();
+
+    _ = group_by.groups.iterator();
 }
