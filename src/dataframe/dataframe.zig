@@ -4,7 +4,8 @@ const std = @import("std");
 const String = @import("strings.zig").String;
 
 const Series = @import("series.zig").Series;
-const VariantSeries = @import("variant_series.zig").VariantSeries;
+const BoxedSeries = @import("boxed_series.zig").BoxedSeries;
+const BoxedGroupBy = @import("boxed_groupby.zig").BoxedGroupBy;
 pub const Reader = @import("reader.zig").Reader;
 const GroupBy = @import("group.zig").GroupBy;
 
@@ -12,14 +13,14 @@ pub const Dataframe = struct {
     const Self = @This();
 
     allocator: std.mem.Allocator,
-    series: std.ArrayList(VariantSeries),
+    series: std.ArrayList(BoxedSeries),
 
     /// Allocates a new Dataframe on the heap. Caller owns the returned pointer and must call deinit.
     pub fn init(allocator: std.mem.Allocator) !*Self {
         const dataframe_ptr = try allocator.create(Self);
         errdefer allocator.destroy(dataframe_ptr);
         dataframe_ptr.allocator = allocator;
-        dataframe_ptr.series = try std.ArrayList(VariantSeries).initCapacity(allocator, 0);
+        dataframe_ptr.series = try std.ArrayList(BoxedSeries).initCapacity(allocator, 0);
         return dataframe_ptr;
     }
 
@@ -36,7 +37,7 @@ pub const Dataframe = struct {
     pub fn createSeries(self: *Self, comptime T: type) !*Series(T) {
         const series = try Series(T).init(self.allocator);
         errdefer series.deinit();
-        const new_series_var = series.*.toVariantSeries();
+        const new_series_var = series.*.toBoxedSeries();
         try self.series.append(self.allocator, new_series_var);
         return series;
     }
@@ -54,13 +55,13 @@ pub const Dataframe = struct {
         return self.series.items.ptr[0].len();
     }
 
-    /// Adds a VariantSeries to the Dataframe. Dataframe takes ownership and will deinit it. Caller must not deinit after this call.
-    pub fn addSeries(self: *Self, series: VariantSeries) !void {
+    /// Adds a BoxedSeries to the Dataframe. Dataframe takes ownership and will deinit it. Caller must not deinit after this call.
+    pub fn addSeries(self: *Self, series: BoxedSeries) !void {
         try self.series.append(self.allocator, series);
     }
 
     /// Returns a pointer to the series with the given name, or null if not found. Dataframe retains ownership.
-    pub fn getSeries(self: *Self, name: []const u8) ?*VariantSeries {
+    pub fn getSeries(self: *Self, name: []const u8) ?*BoxedSeries {
         for (self.series.items) |*series_type| {
             switch (series_type.*) {
                 inline else => |ptr| {
@@ -142,17 +143,14 @@ pub const Dataframe = struct {
         return names;
     }
 
-    /// GroupBy method to group Dataframe rows by values in a Series of type T.
+    /// GroupBy method to group Dataframe rows by values in a Series.
     ///
     /// Usage:
     /// var group_by = try df.groupBy("column_name");
     /// defer group_by.deinit();
-    pub fn groupBy(self: *Self, column: []const u8) !*GroupBy(type) {
-        const variant_series = self.getSeries(column) orelse return error.DoesNotExist;
-
-        const group_by = variant_series.groupBy(self.allocator, self);
-
-        return group_by;
+    pub fn groupBy(self: *Self, column: []const u8) !BoxedGroupBy {
+        const boxed_series = self.getSeries(column) orelse return error.DoesNotExist;
+        return boxed_series.groupBy(self.allocator, self);
     }
 
     /// Compares this Dataframe to another for equality. Returns true if all columns and values are equal.
@@ -240,7 +238,8 @@ pub const Dataframe = struct {
         // Print the Table to stdout
         // const writer = std.io.getStdOut().writer();
         var stdout_buffer: [1024]u8 = undefined;
-        var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+        const io = std.Io.Threaded.global_single_threaded.io();
+        var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
         const stdout = &stdout_writer.interface;
         // Print the header, type, and values. The header and type require us to include the +2
         for (0..print_rows + 2) |h| {
@@ -329,7 +328,7 @@ test "Dataframe: init, width, height, createSeries, addSeries, dropSeries, dropR
     try s.append(1);
     try s.append(2);
     try s.append(3);
-    try df.addSeries(s.toVariantSeries());
+    try df.addSeries(s.toBoxedSeries());
     // Do NOT deinit s after ownership is transferred
     try std.testing.expect(df.width() == 1);
     try std.testing.expect(df.height() == 3);
@@ -339,7 +338,7 @@ test "Dataframe: init, width, height, createSeries, addSeries, dropSeries, dropR
     try s2.append(10);
     try s2.append(20);
     try s2.append(30);
-    try df.addSeries(s2.toVariantSeries());
+    try df.addSeries(s2.toBoxedSeries());
     // Do NOT deinit s2 after ownership is transferred
     try std.testing.expect(df.width() == 2);
     try std.testing.expect(df.height() == 3);
@@ -358,7 +357,7 @@ test "Dataframe: compareDataframe equality and inequality" {
     try s1.rename("col");
     try s1.append(1);
     try s1.append(2);
-    try df1.addSeries(s1.toVariantSeries());
+    try df1.addSeries(s1.toBoxedSeries());
     // Do NOT deinit s1 after ownership is transferred
 
     var df2 = try Dataframe.init(allocator);
@@ -367,7 +366,7 @@ test "Dataframe: compareDataframe equality and inequality" {
     try s2.rename("col");
     try s2.append(1);
     try s2.append(2);
-    try df2.addSeries(s2.toVariantSeries());
+    try df2.addSeries(s2.toBoxedSeries());
     // Do NOT deinit s2 after ownership is transferred
 
     try std.testing.expect(try df1.compareDataframe(df2));
@@ -379,7 +378,7 @@ test "Dataframe: compareDataframe equality and inequality" {
     try s3.append(3);
     var df3 = try Dataframe.init(allocator);
     defer df3.deinit();
-    try df3.addSeries(s3.toVariantSeries());
+    try df3.addSeries(s3.toBoxedSeries());
     try std.testing.expect(!(try df1.compareDataframe(df3)));
 }
 
@@ -470,8 +469,91 @@ test "dataframe series ownership" {
     try s.rename("Test Series");
     try s.tryAppend("A");
     try s.tryAppend("B");
-    try df.addSeries(s.toVariantSeries());
+    try df.addSeries(s.toBoxedSeries());
     // Do NOT deinit s, dataframe owns it now
 
     try std.testing.expect(!had_leak);
+}
+
+test "groupBy: count groups" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var category = try df.createSeries(i32);
+    try category.rename("category");
+    try category.append(1);
+    try category.append(2);
+    try category.append(1);
+    try category.append(2);
+    try category.append(1);
+
+    var gb = try df.groupBy("category");
+    defer gb.deinit();
+
+    var counts = try gb.count();
+    defer counts.deinit();
+
+    try std.testing.expect(counts.len() == 2);
+    try std.testing.expectEqual(@as(usize, 3), counts.usize.values.items[0]);
+    try std.testing.expectEqual(@as(usize, 2), counts.usize.values.items[1]);
+}
+
+test "groupBy: sum by group" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var category = try df.createSeries(i32);
+    try category.rename("category");
+    try category.append(1);
+    try category.append(2);
+    try category.append(1);
+    try category.append(2);
+
+    var values = try df.createSeries(i32);
+    try values.rename("values");
+    try values.append(10);
+    try values.append(20);
+    try values.append(15);
+    try values.append(25);
+
+    var gb = try df.groupBy("category");
+    defer gb.deinit();
+
+    var sum_result = try gb.sum("values");
+    defer sum_result.deinit();
+
+    try std.testing.expect(sum_result.len() == 2);
+    try std.testing.expectEqual(@as(i32, 25), sum_result.int32.values.items[0]);
+    try std.testing.expectEqual(@as(i32, 45), sum_result.int32.values.items[1]);
+}
+
+test "groupBy: mean by group" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var category = try df.createSeries(i32);
+    try category.rename("category");
+    try category.append(1);
+    try category.append(2);
+    try category.append(1);
+
+    var values = try df.createSeries(i32);
+    try values.rename("values");
+    try values.append(10);
+    try values.append(20);
+    try values.append(20);
+
+    var gb = try df.groupBy("category");
+    defer gb.deinit();
+
+    var mean_result = try gb.mean("values");
+    defer mean_result.deinit();
+
+    try std.testing.expect(mean_result.len() == 2);
+    // mean of [10, 20] for group 1 = 15.0, mean of [20] for group 2 = 20.0
+    try std.testing.expectEqual(15.0, mean_result.float64.values.items[0]);
+    try std.testing.expectEqual(20.0, mean_result.float64.values.items[1]);
 }

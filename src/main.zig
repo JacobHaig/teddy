@@ -1,7 +1,7 @@
 const std = @import("std");
 
 const dataframe = @import("dataframe/dataframe.zig");
-const variant_series = @import("dataframe/variant_series.zig");
+const boxed_series = @import("dataframe/boxed_series.zig");
 const parquet = @import("dataframe/parquet.zig");
 
 pub fn main() !void {
@@ -27,8 +27,6 @@ pub fn main() !void {
     std.debug.print("height: {} width: {}\n", .{ df3.height(), df3.width() });
     try df3.print();
 
-    const group_by = try df3.groupBy("Age");
+    var group_by = try df3.groupBy("Age");
     defer group_by.deinit();
-
-    _ = group_by.groups.iterator();
 }

@@ -1,7 +1,7 @@
 const std = @import("std");
 const strings = @import("strings.zig");
 
-const VariantSeries = @import("variant_series.zig").VariantSeries;
+const BoxedSeries = @import("boxed_series.zig").BoxedSeries;
 const GroupBy = @import("group.zig").GroupBy;
 const Dataframe = @import("dataframe.zig").Dataframe;
 
@@ -280,28 +280,29 @@ pub fn Series(comptime T: type) type {
             return true;
         }
 
-        pub fn toVariantSeries(self: *Self) VariantSeries {
+        pub fn toBoxedSeries(self: *Self) BoxedSeries {
             return switch (T) {
-                bool => VariantSeries{ .bool = self },
-                u8 => VariantSeries{ .uint8 = self },
-                u16 => VariantSeries{ .uint16 = self },
-                u32 => VariantSeries{ .uint32 = self },
-                u64 => VariantSeries{ .uint64 = self },
-                u128 => VariantSeries{ .uint128 = self },
-                i8 => VariantSeries{ .int8 = self },
-                i16 => VariantSeries{ .int16 = self },
-                i32 => VariantSeries{ .int32 = self },
-                i64 => VariantSeries{ .int64 = self },
-                i128 => VariantSeries{ .int128 = self },
-                f32 => VariantSeries{ .float32 = self },
-                f64 => VariantSeries{ .float64 = self },
-                strings.String => VariantSeries{ .string = self },
+                bool => BoxedSeries{ .bool = self },
+                u8 => BoxedSeries{ .uint8 = self },
+                u16 => BoxedSeries{ .uint16 = self },
+                u32 => BoxedSeries{ .uint32 = self },
+                u64 => BoxedSeries{ .uint64 = self },
+                u128 => BoxedSeries{ .uint128 = self },
+                usize => BoxedSeries{ .usize = self },
+                i8 => BoxedSeries{ .int8 = self },
+                i16 => BoxedSeries{ .int16 = self },
+                i32 => BoxedSeries{ .int32 = self },
+                i64 => BoxedSeries{ .int64 = self },
+                i128 => BoxedSeries{ .int128 = self },
+                f32 => BoxedSeries{ .float32 = self },
+                f64 => BoxedSeries{ .float64 = self },
+                strings.String => BoxedSeries{ .string = self },
                 // Add other types as needed
                 else => @compileError("Unsupported type " ++ @typeName(T) ++ " for SeriesType conversion"),
             };
         }
 
-        pub fn groupBy(self: *Self, allocator: std.mem.Allocator, dataframe: *Dataframe) !*GroupBy(type) {
+        pub fn groupBy(self: *Self, allocator: std.mem.Allocator, dataframe: *Dataframe) !*GroupBy(T) {
             return GroupBy(T).init(allocator, dataframe, self);
         }
     };

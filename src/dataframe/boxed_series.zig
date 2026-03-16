@@ -2,9 +2,10 @@ const std = @import("std");
 const Series = @import("series.zig").Series;
 const String = @import("strings.zig").String;
 const GroupBy = @import("group.zig").GroupBy;
+const BoxedGroupBy = @import("boxed_groupby.zig").BoxedGroupBy;
 const Dataframe = @import("dataframe.zig").Dataframe;
 
-pub const VariantSeries = union(enum) {
+pub const BoxedSeries = union(enum) {
     const Self = @This();
 
     bool: *Series(bool),
@@ -13,6 +14,7 @@ pub const VariantSeries = union(enum) {
     uint32: *Series(u32),
     uint64: *Series(u64),
     uint128: *Series(u128),
+    usize: *Series(usize),
     int8: *Series(i8),
     int16: *Series(i16),
     int32: *Series(i32),
@@ -22,7 +24,7 @@ pub const VariantSeries = union(enum) {
     float64: *Series(f64),
     string: *Series(String),
 
-    /// Deallocates the contained Series. After this call, the VariantSeries is invalid.
+    /// Deallocates the contained Series. After this call, the BoxedSeries is invalid.
     pub fn deinit(self: *Self) void {
         switch (self.*) {
             inline else => |p| p.deinit(),
@@ -70,12 +72,12 @@ pub const VariantSeries = union(enum) {
         }
     }
 
-    /// Returns a new VariantSeries containing a deep-copied Series. Caller must call deinit on the returned VariantSeries.
+    /// Returns a new BoxedSeries containing a deep-copied Series. Caller must call deinit on the returned BoxedSeries.
     pub fn deepCopy(self: *Self) !Self {
         switch (self.*) {
             inline else => |s| {
                 const series = try s.*.deepCopy();
-                return series.toVariantSeries();
+                return series.toBoxedSeries();
             },
         }
     }
@@ -110,9 +112,12 @@ pub const VariantSeries = union(enum) {
         }
     }
 
-    pub fn groupBy(self: *Self, allocator: std.mem.Allocator, dataframe: *Dataframe) !*GroupBy(type) {
+    pub fn groupBy(self: *Self, allocator: std.mem.Allocator, dataframe: *Dataframe) !BoxedGroupBy {
         switch (self.*) {
-            inline else => |s| return s.*.groupBy(allocator, dataframe),
+            inline else => |s| {
+                const gb = try s.*.groupBy(allocator, dataframe);
+                return gb.toBoxedGroupBy();
+            },
         }
     }
 
@@ -125,10 +130,13 @@ pub const VariantSeries = union(enum) {
             .uint16 => return u16,
             .uint32 => return u32,
             .uint64 => return u64,
+            .uint128 => return u128,
+            .usize => return usize,
             .int8 => return i8,
             .int16 => return i16,
             .int32 => return i32,
             .int64 => return i64,
+            .int128 => return i128,
             .float32 => return f32,
             .float64 => return f64,
             .string => return String,

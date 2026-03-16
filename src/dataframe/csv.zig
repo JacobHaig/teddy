@@ -1,7 +1,7 @@
 const std = @import("std");
 const dataframe = @import("dataframe.zig");
 const series = @import("series.zig");
-const variant_series = @import("variant_series.zig");
+const boxed_series = @import("boxed_series.zig");
 const strings = @import("strings.zig");
 
 const CSVType = union(enum) {
@@ -327,7 +327,7 @@ test "parse_csv_text3" {
     try series1.tryAppend("Stephen");
     try series1.tryAppend("");
     try series1.tryAppend("Joan \"the bone\", Anne");
-    try compare_df.addSeries(series1.toVariantSeries());
+    try compare_df.addSeries(series1.toBoxedSeries());
     const series2 = try series.Series(strings.String).init(std.testing.allocator);
     try series2.rename("Last Name");
     try series2.tryAppend("Doe");
@@ -336,7 +336,7 @@ test "parse_csv_text3" {
     try series2.tryAppend("Tyler");
     try series2.tryAppend("Blankman");
     try series2.tryAppend("Jet");
-    try compare_df.addSeries(series2.toVariantSeries());
+    try compare_df.addSeries(series2.toBoxedSeries());
 
     std.debug.print("Comparing Dataframes...\n", .{});
     std.debug.print("Dataframe Height: {} Width: {}\n", .{ df.height(), df.width() });

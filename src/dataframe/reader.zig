@@ -98,11 +98,10 @@ pub const Reader = struct {
     fn readCsv(self: *Self) !*dataframe.Dataframe {
         const filename = self.path orelse return error.InvalidFilePath;
 
-        const file = try std.fs.cwd().openFile(filename, .{});
-        defer file.close();
-
-        const content = try file.readToEndAlloc(self.allocator, std.math.maxInt(usize));
-        defer self.*.allocator.free(content);
+        const cwd = std.Io.Dir.cwd();
+        const io = std.Io.Threaded.global_single_threaded.io();
+        const content = try cwd.readFileAlloc(io, filename, self.allocator, .unlimited);
+        defer self.allocator.free(content);
 
         const tokenizer = try csv.CsvTokenizer.init(self.allocator, content, .{ .delimiter = self.delimiter, .has_header = self.has_header, .skip_rows = self.skip_rows });
         defer tokenizer.deinit();
