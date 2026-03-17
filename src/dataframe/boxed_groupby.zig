@@ -3,6 +3,7 @@ const GroupBy = @import("group.zig").GroupBy;
 const String = @import("strings.zig").String;
 const BoxedSeries = @import("boxed_series.zig").BoxedSeries;
 const Series = @import("series.zig").Series;
+const Dataframe = @import("dataframe.zig").Dataframe;
 
 pub const BoxedGroupBy = union(enum) {
     const Self = @This();
@@ -29,12 +30,9 @@ pub const BoxedGroupBy = union(enum) {
         }
     }
 
-    pub fn count(self: *Self) !BoxedSeries {
+    pub fn count(self: *Self) !*Dataframe {
         switch (self.*) {
-            inline else => |gb| {
-                const result = try gb.count();
-                return result.toBoxedSeries();
-            },
+            inline else => |gb| return gb.count(),
         }
     }
 

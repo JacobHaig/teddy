@@ -125,17 +125,23 @@ pub fn GroupBy(comptime T: type) type {
             };
         }
 
-        pub fn count(self: *Self) !*Series(usize) {
-            const result_series = try Series(usize).init(self.allocator);
-            errdefer result_series.deinit();
-            try result_series.rename("count");
+        pub fn count(self: *Self) !*Dataframe {
+            const result_df = try Dataframe.init(self.allocator);
+            errdefer result_df.deinit();
+
+            var key_series = try result_df.createSeries(T);
+            try key_series.rename(self.series.name.toSlice());
+
+            var count_series = try result_df.createSeries(usize);
+            try count_series.rename("count");
 
             var it = self.groups.iterator();
             while (it.next()) |entry| {
-                try result_series.append(entry.value_ptr.items.len);
+                try key_series.append(entry.key_ptr.*);
+                try count_series.append(entry.value_ptr.items.len);
             }
 
-            return result_series;
+            return result_df;
         }
 
         pub fn sum(self: *Self, column: []const u8) !BoxedSeries {
@@ -316,11 +322,13 @@ test "GroupBy: count produces correct group sizes" {
     var counts = try gb.count();
     defer counts.deinit();
 
-    try std.testing.expectEqual(@as(usize, 2), counts.len());
+    try std.testing.expectEqual(@as(usize, 2), counts.width());
+    try std.testing.expectEqual(@as(usize, 2), counts.height());
 
-    // Group 1 has 3 rows, group 2 has 2 rows (order may vary)
-    const a = counts.usize.values.items[0];
-    const b = counts.usize.values.items[1];
+    // Check that the count column exists and has correct values
+    const count_series = counts.getSeries("count") orelse return error.DoesNotExist;
+    const a = count_series.usize.values.items[0];
+    const b = count_series.usize.values.items[1];
     try std.testing.expect((a == 3 and b == 2) or (a == 2 and b == 3));
 }
 
@@ -407,8 +415,9 @@ test "GroupBy: single group contains all rows" {
 
     var counts = try gb.count();
     defer counts.deinit();
-    try std.testing.expectEqual(@as(usize, 1), counts.len());
-    try std.testing.expectEqual(@as(usize, 3), counts.usize.values.items[0]);
+    try std.testing.expectEqual(@as(usize, 1), counts.height());
+    const count_series = counts.getSeries("count") orelse return error.DoesNotExist;
+    try std.testing.expectEqual(@as(usize, 3), count_series.usize.values.items[0]);
 
     var mean_result = try gb.mean("val");
     defer mean_result.deinit();
@@ -437,7 +446,7 @@ test "GroupBy: f64 keys group correctly" {
 
     var counts = try gb.count();
     defer counts.deinit();
-    try std.testing.expectEqual(@as(usize, 2), counts.len());
+    try std.testing.expectEqual(@as(usize, 2), counts.height());
 
     var sum_result = try gb.sum("qty");
     defer sum_result.deinit();

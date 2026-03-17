@@ -32,5 +32,5 @@ pub fn main() !void {
     defer zip_count.deinit();
 
     std.debug.print("Count by Zip:\n", .{});
-    zip_count.print();
+    try zip_count.print();
 }

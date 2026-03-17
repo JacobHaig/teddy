@@ -490,9 +490,11 @@ test "groupBy: count groups" {
     var counts = try gb.count();
     defer counts.deinit();
 
-    try std.testing.expect(counts.len() == 2);
-    try std.testing.expectEqual(@as(usize, 3), counts.usize.values.items[0]);
-    try std.testing.expectEqual(@as(usize, 2), counts.usize.values.items[1]);
+    try std.testing.expect(counts.height() == 2);
+    try std.testing.expect(counts.width() == 2);
+    const count_series = counts.getSeries("count") orelse return error.DoesNotExist;
+    try std.testing.expectEqual(@as(usize, 3), count_series.usize.values.items[0]);
+    try std.testing.expectEqual(@as(usize, 2), count_series.usize.values.items[1]);
 }
 
 test "groupBy: sum by group" {
