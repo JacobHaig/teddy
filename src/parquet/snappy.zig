@@ -129,6 +129,45 @@ fn readSnappyVarint(data: []const u8, pos: *usize) ?usize {
 }
 
 // ============================================================
+// Snappy Compression (literal-only, always valid)
+// ============================================================
+
+/// Compress data using Snappy format (literal-only, no match-finding).
+/// Produces valid Snappy that any compliant reader can decompress.
+/// Not optimally compressed, but correct and simple.
+pub fn compress(allocator: Allocator, input: []const u8) SnappyError![]u8 {
+    var buf: std.ArrayList(u8) = .{};
+    errdefer buf.deinit(allocator);
+
+    // Write uncompressed length as Snappy varint
+    writeSnappyVarint(&buf, allocator, input.len) catch return SnappyError.OutOfMemory;
+
+    // Emit literals in chunks (max 60 bytes per short-form literal tag)
+    var pos: usize = 0;
+    while (pos < input.len) {
+        const remaining = input.len - pos;
+        const chunk_len = @min(remaining, 60);
+
+        // Short-form literal: (len-1) << 2 | 0
+        const tag: u8 = @intCast((@as(u32, @intCast(chunk_len)) - 1) << 2);
+        buf.append(allocator, tag) catch return SnappyError.OutOfMemory;
+        buf.appendSlice(allocator, input[pos .. pos + chunk_len]) catch return SnappyError.OutOfMemory;
+        pos += chunk_len;
+    }
+
+    return buf.toOwnedSlice(allocator) catch return SnappyError.OutOfMemory;
+}
+
+fn writeSnappyVarint(buf: *std.ArrayList(u8), allocator: Allocator, value: usize) SnappyError!void {
+    var v = value;
+    while (v >= 0x80) {
+        buf.append(allocator, @intCast((v & 0x7F) | 0x80)) catch return SnappyError.OutOfMemory;
+        v >>= 7;
+    }
+    buf.append(allocator, @intCast(v)) catch return SnappyError.OutOfMemory;
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -288,4 +327,42 @@ test "snappy: single byte literal" {
     const output = try decompress(allocator, &input);
     defer allocator.free(output);
     try std.testing.expectEqualStrings("x", output);
+}
+
+test "snappy: compress then decompress - hello" {
+    const allocator = std.testing.allocator;
+    const compressed = try compress(allocator, "hello");
+    defer allocator.free(compressed);
+    const decompressed = try decompress(allocator, compressed);
+    defer allocator.free(decompressed);
+    try std.testing.expectEqualStrings("hello", decompressed);
+}
+
+test "snappy: compress then decompress - empty" {
+    const allocator = std.testing.allocator;
+    const compressed = try compress(allocator, "");
+    defer allocator.free(compressed);
+    const decompressed = try decompress(allocator, compressed);
+    defer allocator.free(decompressed);
+    try std.testing.expectEqual(@as(usize, 0), decompressed.len);
+}
+
+test "snappy: compress then decompress - 100 bytes" {
+    const allocator = std.testing.allocator;
+    var data: [100]u8 = undefined;
+    for (&data, 0..) |*b, i| b.* = @intCast(i % 256);
+    const compressed = try compress(allocator, &data);
+    defer allocator.free(compressed);
+    const decompressed = try decompress(allocator, compressed);
+    defer allocator.free(decompressed);
+    try std.testing.expectEqualSlices(u8, &data, decompressed);
+}
+
+test "snappy: compress then decompress - single byte" {
+    const allocator = std.testing.allocator;
+    const compressed = try compress(allocator, "x");
+    defer allocator.free(compressed);
+    const decompressed = try decompress(allocator, compressed);
+    defer allocator.free(decompressed);
+    try std.testing.expectEqualStrings("x", decompressed);
 }

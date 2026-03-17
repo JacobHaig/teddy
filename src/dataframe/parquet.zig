@@ -98,6 +98,131 @@ fn addColumn(allocator: Allocator, df: *dataframe.Dataframe, col: *const parquet
     }
 }
 
+// ============================================================
+// Adapter: Dataframe → ColumnData (for Parquet writer)
+// ============================================================
+
+pub const ColumnData = parquet.ColumnData;
+
+pub const DataframeColumns = struct {
+    columns: []ColumnData,
+    /// Allocated string slices that need to be freed
+    string_bufs: [][]const []const u8,
+    allocator: Allocator,
+
+    pub fn deinit(self: *DataframeColumns) void {
+        for (self.string_bufs) |buf| {
+            self.allocator.free(buf);
+        }
+        self.allocator.free(self.string_bufs);
+        self.allocator.free(self.columns);
+    }
+};
+
+/// Convert a Dataframe's columns to ColumnData slices for the Parquet writer.
+pub fn fromDataframe(allocator: Allocator, df: *dataframe.Dataframe) !DataframeColumns {
+    const width = df.width();
+    const cols = try allocator.alloc(ColumnData, width);
+    errdefer allocator.free(cols);
+
+    // Track string buffers that need cleanup
+    var string_bufs: std.ArrayList([]const []const u8) = .{};
+    defer string_bufs.deinit(allocator);
+
+    for (df.series.items, 0..) |*boxed, i| {
+        cols[i] = try boxedToColumnData(allocator, boxed, &string_bufs);
+    }
+
+    const bufs = try string_bufs.toOwnedSlice(allocator);
+    return .{ .columns = cols, .string_bufs = bufs, .allocator = allocator };
+}
+
+fn boxedToColumnData(allocator: Allocator, boxed: *BoxedSeries, string_bufs: *std.ArrayList([]const []const u8)) !ColumnData {
+    return switch (boxed.*) {
+        .int32 => |s| .{
+            .name = s.name.toSlice(),
+            .physical_type = .int32,
+            .int32s = s.values.items,
+            .num_values = s.values.items.len,
+        },
+        .int64 => |s| .{
+            .name = s.name.toSlice(),
+            .physical_type = .int64,
+            .int64s = s.values.items,
+            .num_values = s.values.items.len,
+        },
+        .float32 => |s| .{
+            .name = s.name.toSlice(),
+            .physical_type = .float,
+            .floats = s.values.items,
+            .num_values = s.values.items.len,
+        },
+        .float64 => |s| .{
+            .name = s.name.toSlice(),
+            .physical_type = .double,
+            .doubles = s.values.items,
+            .num_values = s.values.items.len,
+        },
+        .bool => |s| .{
+            .name = s.name.toSlice(),
+            .physical_type = .boolean,
+            .booleans = s.values.items,
+            .num_values = s.values.items.len,
+        },
+        .string => |s| blk: {
+            // Convert String values to []const u8 slices
+            const slices = try allocator.alloc([]const u8, s.values.items.len);
+            for (s.values.items, 0..) |*str, j| {
+                slices[j] = str.toSlice();
+            }
+            try string_bufs.append(allocator, slices);
+            break :blk .{
+                .name = s.name.toSlice(),
+                .physical_type = .byte_array,
+                .converted_type = .utf8,
+                .byte_arrays = slices,
+                .num_values = s.values.items.len,
+            };
+        },
+        .int8 => |s| blk: {
+            _ = s;
+            break :blk error.UnsupportedType;
+        },
+        .int16 => |s| blk: {
+            _ = s;
+            break :blk error.UnsupportedType;
+        },
+        .uint8 => |s| blk: {
+            _ = s;
+            break :blk error.UnsupportedType;
+        },
+        .uint16 => |s| blk: {
+            _ = s;
+            break :blk error.UnsupportedType;
+        },
+        .uint32 => |s| blk: {
+            _ = s;
+            break :blk error.UnsupportedType;
+        },
+        .uint64 => |s| blk: {
+            _ = s;
+            break :blk error.UnsupportedType;
+        },
+        .uint128 => |s| blk: {
+            _ = s;
+            break :blk error.UnsupportedType;
+        },
+        .int128 => |s| blk: {
+            _ = s;
+            break :blk error.UnsupportedType;
+        },
+        .usize => |s| blk: {
+            _ = s;
+            break :blk error.UnsupportedType;
+        },
+    };
+}
+
 fn addNarrowIntColumn(comptime T: type, allocator: Allocator, df: *dataframe.Dataframe, col: *const parquet.ParquetColumn) !void {
     _ = allocator;
     var s = try df.createSeries(T);

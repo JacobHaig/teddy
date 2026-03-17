@@ -151,7 +151,8 @@ fn addJoinedColumn(
                         errdefer empty.deinit();
                         try new_series.values.append(allocator, empty);
                     } else {
-                        try new_series.values.append(allocator, @as(ValType, 0));
+                        const default_val: ValType = if (comptime ValType == bool) false else @as(ValType, 0);
+                        try new_series.values.append(allocator, default_val);
                     }
                 }
             }

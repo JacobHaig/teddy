@@ -7,6 +7,7 @@ const Series = @import("series.zig").Series;
 const BoxedSeries = @import("boxed_series.zig").BoxedSeries;
 const BoxedGroupBy = @import("boxed_groupby.zig").BoxedGroupBy;
 pub const Reader = @import("reader.zig").Reader;
+pub const Writer = @import("writer.zig").Writer;
 const GroupBy = @import("group.zig").GroupBy;
 
 pub const Dataframe = struct {
@@ -1218,4 +1219,13 @@ test "Dataframe: groupByMultiple composite key" {
 
     // NJ|Riverside=2, PA|Phila=1
     try std.testing.expectEqual(@as(usize, 2), counts.height());
+}
+
+// Pull in tests from submodules
+test {
+    _ = @import("json_reader.zig");
+    _ = @import("json_writer.zig");
+    _ = @import("csv_writer.zig");
+    _ = @import("join.zig");
+    _ = @import("writer.zig");
 }

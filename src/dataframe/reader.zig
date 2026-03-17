@@ -91,6 +91,7 @@ pub const Reader = struct {
     pub fn load(self: *Self) !*dataframe.Dataframe {
         return switch (self.file_type) {
             .csv => self.readCsv(),
+            .json => self.readJson(),
             .parquet => self.readParquet(),
             else => error.FileDoesNotExist,
         };
@@ -111,9 +112,16 @@ pub const Reader = struct {
         });
     }
 
-    fn readJson(self: *Self) void {
-        // Implement JSON reading logic here
-        _ = self;
+    fn readJson(self: *Self) !*dataframe.Dataframe {
+        const filename = self.path orelse return error.InvalidFilePath;
+
+        const cwd = std.Io.Dir.cwd();
+        const io = std.Io.Threaded.global_single_threaded.io();
+        const content = try cwd.readFileAlloc(io, filename, self.allocator, .unlimited);
+        defer self.allocator.free(content);
+
+        const json_reader = @import("json_reader.zig");
+        return try json_reader.parse(self.allocator, content, .{});
     }
 
     fn readParquet(self: *Self) !*dataframe.Dataframe {
