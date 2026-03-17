@@ -102,7 +102,7 @@ pub const Writer = struct {
         const path = self.path orelse return error.InvalidFilePath;
         const cwd = std.Io.Dir.cwd();
         const io = std.Io.Threaded.global_single_threaded.io();
-        try cwd.writeFile(io, path, data, .{});
+        try cwd.writeFile(io, .{ .sub_path = path, .data = data });
     }
 };
 

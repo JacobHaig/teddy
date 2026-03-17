@@ -474,23 +474,68 @@ pub const Dataframe = struct {
             try max_widths.append(self.allocator, max_width);
         }
 
-        // Print the Table to stdout
-        // const writer = std.io.getStdOut().writer();
-        var stdout_buffer: [1024]u8 = undefined;
-        const io = std.Io.Threaded.global_single_threaded.io();
-        var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
-        const stdout = &stdout_writer.interface;
-        // Print the header, type, and values. The header and type require us to include the +2
-        for (0..print_rows + 2) |h| {
-            for (0..wwidth) |w| {
-                const str: []u8 = @constCast(all_series.items[w].items[h].toSlice());
-                const custom_width = max_widths.items[w];
+        // Build the entire table into a buffer, then write all at once
+        var buf: std.ArrayList(u8) = .{};
+        defer buf.deinit(self.allocator);
 
-                try stdout.print("| {s:[width]} ", .{ .s = str, .width = custom_width });
-            }
-            try stdout.print("|\n", .{});
+        // +------+------+  top border
+        try buf.append(self.allocator, '+');
+        for (0..wwidth) |w| {
+            if (w > 0) try buf.append(self.allocator, '+');
+            for (0..max_widths.items[w] + 2) |_| try buf.append(self.allocator, '-');
         }
-        try stdout.flush();
+        try buf.appendSlice(self.allocator, "+\n");
+
+        // | Name | Type |  header + type rows
+        for (0..2) |h| {
+            try buf.append(self.allocator, '|');
+            for (0..wwidth) |w| {
+                const str = all_series.items[w].items[h].toSlice();
+                const cw = max_widths.items[w];
+                try buf.append(self.allocator, ' ');
+                const pad = cw - str.len;
+                for (0..pad) |_| try buf.append(self.allocator, ' ');
+                try buf.appendSlice(self.allocator, str);
+                try buf.append(self.allocator, ' ');
+                try buf.append(self.allocator, '|');
+            }
+            try buf.append(self.allocator, '\n');
+        }
+
+        // +------+------+  separator after header
+        try buf.append(self.allocator, '+');
+        for (0..wwidth) |w| {
+            if (w > 0) try buf.append(self.allocator, '+');
+            for (0..max_widths.items[w] + 2) |_| try buf.append(self.allocator, '-');
+        }
+        try buf.appendSlice(self.allocator, "+\n");
+
+        // | val  | val  |  data rows
+        for (0..print_rows) |h| {
+            try buf.append(self.allocator, '|');
+            for (0..wwidth) |w| {
+                const str = all_series.items[w].items[h + 2].toSlice();
+                const cw = max_widths.items[w];
+                try buf.append(self.allocator, ' ');
+                const pad = cw - str.len;
+                for (0..pad) |_| try buf.append(self.allocator, ' ');
+                try buf.appendSlice(self.allocator, str);
+                try buf.append(self.allocator, ' ');
+                try buf.append(self.allocator, '|');
+            }
+            try buf.append(self.allocator, '\n');
+        }
+
+        // +------+------+  bottom border
+        try buf.append(self.allocator, '+');
+        for (0..wwidth) |w| {
+            if (w > 0) try buf.append(self.allocator, '+');
+            for (0..max_widths.items[w] + 2) |_| try buf.append(self.allocator, '-');
+        }
+        try buf.appendSlice(self.allocator, "+\n");
+
+        // Write all at once
+        std.debug.print("{s}", .{buf.items});
     }
 };
 

@@ -22,44 +22,48 @@ pub fn main() !void {
         .load();
     defer df3.deinit();
 
-    std.debug.print("height: {} width: {}\n", .{ df3.height(), df3.width() });
     try df3.print();
 
+    std.debug.print("\nCount by Zip:\n", .{});
     var group_by = try df3.groupBy("Zip");
     defer group_by.deinit();
-
     var zip_count = try group_by.count();
     defer zip_count.deinit();
-
-    std.debug.print("Count by Zip:\n", .{});
     try zip_count.print();
 
+    std.debug.print("\nSorted by Age:\n", .{});
     const df4 = try df3.sort("Age", true);
     defer df4.deinit();
-    std.debug.print("Sorted by Age:\n", .{});
     try df4.print();
 
+    std.debug.print("\nFiltered Age >= 30:\n", .{});
     const df5 = try df3.filter("Age", i64, .gte, 30);
     defer df5.deinit();
-    std.debug.print("Filtered Age >= 30:\n", .{});
     try df5.print();
 
+    std.debug.print("\nFiltered City == Riverside:\n", .{});
     const df6 = try df3.filter("City", []const u8, .eq, "Riverside");
     defer df6.deinit();
-    std.debug.print("\nFiltered City == Riverside:\n", .{});
     try df6.print();
 
+    std.debug.print("\nSelected First Name and City:\n", .{});
     const df7 = try df3.select(&.{ "First Name", "City" });
     defer df7.deinit();
-    std.debug.print("\nSelected First Name and City:\n", .{});
     try df7.print();
 
-    const s = try df3.toJsonString(.rows);
-    defer allocator.free(s);
-    std.debug.print("\n{s}\n", .{s});
-
+    std.debug.print("\nDescribe:\n", .{});
     const df8 = try df3.describe();
     defer df8.deinit();
-    std.debug.print("\nDataframe Description:\n", .{});
     try df8.print();
+
+    // writer example
+    var df_writer = try dataframe.Writer.init(allocator);
+    defer df_writer.deinit();
+
+    try df_writer
+        .withFileType(.csv)
+        .withPath("data/addresses_out.csv")
+        .withDelimiter(',')
+        .withHeader(true)
+        .save(df3);
 }
