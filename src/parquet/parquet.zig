@@ -2,8 +2,8 @@
 // Parquet Module — Native Zig Parquet file reader/writer
 // ============================================================
 
-const reader = @import("reader.zig");
-const writer_mod = @import("writer.zig");
+const reader = @import("parquet_reader.zig");
+const writer_mod = @import("parquet_writer.zig");
 
 // Re-export reader API
 pub const readParquet = reader.readParquet;
@@ -23,15 +23,15 @@ pub const CompressionCodec = types.CompressionCodec;
 
 // Pull in tests from all submodules
 test {
-    _ = @import("thrift.zig");
+    _ = @import("thrift_reader.zig");
     _ = @import("thrift_writer.zig");
     _ = @import("types.zig");
     _ = @import("metadata.zig");
-    _ = @import("encoding.zig");
+    _ = @import("encoding_reader.zig");
     _ = @import("encoding_writer.zig");
     _ = @import("snappy.zig");
     _ = @import("column_reader.zig");
     _ = @import("column_writer.zig");
-    _ = @import("reader.zig");
-    _ = @import("writer.zig");
+    _ = @import("parquet_reader.zig");
+    _ = @import("parquet_writer.zig");
 }

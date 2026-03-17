@@ -2,7 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const dataframe = @import("dataframe.zig");
-const csv = @import("csv.zig");
+const csv = @import("csv_reader.zig");
 
 pub const FileType = union(enum) {
     none,

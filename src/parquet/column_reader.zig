@@ -2,9 +2,9 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const types = @import("types.zig");
 const metadata = @import("metadata.zig");
-const encoding = @import("encoding.zig");
+const encoding = @import("encoding_reader.zig");
 const snappy = @import("snappy.zig");
-const ThriftReader = @import("thrift.zig").ThriftReader;
+const ThriftReader = @import("thrift_reader.zig").ThriftReader;
 
 // ============================================================
 // Column Chunk Reader

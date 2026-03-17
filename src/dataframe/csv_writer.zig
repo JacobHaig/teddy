@@ -61,7 +61,7 @@ fn appendCsvField(buf: *std.ArrayList(u8), allocator: Allocator, field: []const 
 
 // --- Tests ---
 
-const csv = @import("csv.zig");
+const csv = @import("csv_reader.zig");
 
 test "csv_writer: round-trip basic CSV" {
     const allocator = std.testing.allocator;

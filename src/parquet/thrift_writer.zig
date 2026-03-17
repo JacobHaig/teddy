@@ -1,5 +1,5 @@
 const std = @import("std");
-const thrift = @import("thrift.zig");
+const thrift = @import("thrift_reader.zig");
 const CompactType = thrift.CompactType;
 const ThriftReader = thrift.ThriftReader;
 

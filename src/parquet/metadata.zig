@@ -1,7 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const ThriftReader = @import("thrift.zig").ThriftReader;
-const CompactType = @import("thrift.zig").CompactType;
+const ThriftReader = @import("thrift_reader.zig").ThriftReader;
+const CompactType = @import("thrift_reader.zig").CompactType;
 const ThriftWriter = @import("thrift_writer.zig").ThriftWriter;
 const types = @import("types.zig");
 

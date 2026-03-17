@@ -1,6 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const PlainDecoder = @import("encoding.zig").PlainDecoder;
+const PlainDecoder = @import("encoding_reader.zig").PlainDecoder;
 
 // ============================================================
 // PLAIN Encoding Writer

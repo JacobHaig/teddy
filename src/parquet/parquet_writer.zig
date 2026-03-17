@@ -5,7 +5,7 @@ const metadata = @import("metadata.zig");
 const ThriftWriter = @import("thrift_writer.zig").ThriftWriter;
 const column_writer = @import("column_writer.zig");
 const ColumnData = column_writer.ColumnData;
-const reader_mod = @import("reader.zig");
+const reader_mod = @import("parquet_reader.zig");
 
 // ============================================================
 // Parquet File Writer

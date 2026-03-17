@@ -3,7 +3,7 @@ const Allocator = std.mem.Allocator;
 const types = @import("types.zig");
 const metadata = @import("metadata.zig");
 const column_reader = @import("column_reader.zig");
-const ThriftReader = @import("thrift.zig").ThriftReader;
+const ThriftReader = @import("thrift_reader.zig").ThriftReader;
 
 // ============================================================
 // Parquet File Reader

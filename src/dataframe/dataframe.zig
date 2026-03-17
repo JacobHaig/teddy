@@ -652,7 +652,7 @@ test "String re-export: can create and use String from top-level API" {
 
 test "memory management and ownership" {
     const series_mod = @import("series.zig");
-    const csv_mod = @import("csv.zig");
+    const csv_mod = @import("csv_reader.zig");
     var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
     const allocator = debug_allocator.allocator();
     var had_leak = false;
