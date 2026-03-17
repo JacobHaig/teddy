@@ -436,16 +436,12 @@ test "memory management and ownership" {
     defer s2.deinit();
     try s2.rename("Copy");
 
-    // Test CsvTokenizer allocation and deallocation
+    // Test CSV parsing allocation and deallocation
     const content =
         "A,B\n1,2\n3,4\n";
-    var tokenizer = try csv_mod.CsvTokenizer.init(allocator, content, .{ .delimiter = ',' });
-    defer tokenizer.deinit();
-    try tokenizer.readAll();
-    try tokenizer.validate();
 
     // Test Dataframe allocation and deallocation
-    var df = try tokenizer.createOwnedDataframe();
+    var df = try csv_mod.parse(allocator, content, .{});
     defer df.deinit();
     try std.testing.expect(!had_leak);
 }

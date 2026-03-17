@@ -1,158 +1,253 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
+
 const dataframe = @import("dataframe.zig");
 const series = @import("series.zig");
-const boxed_series = @import("boxed_series.zig");
 const strings = @import("strings.zig");
+const String = strings.String;
 
-const CSVType = union(enum) {
-    value: []const u8,
-    quoted_value: []const u8,
-    end_of_line: void,
-    end_of_file: void,
-    parsing_error: void,
+// ============================================================
+// Types
+// ============================================================
 
-    /// Returns the inner text content for value types.
-    /// For quoted_value, strips the surrounding quotes (but does NOT unescape "").
-    /// For unquoted value, returns the slice as-is.
-    fn getRawSlice(self: CSVType) []const u8 {
-        return switch (self) {
-            .value => |v| v,
-            .quoted_value => |v| {
-                // Strip surrounding quotes: "hello" -> hello
-                if (v.len >= 2 and v[0] == '"' and v[v.len - 1] == '"') {
-                    return v[1 .. v.len - 1];
-                }
-                return v;
-            },
-            else => unreachable,
-        };
+/// Options controlling how CSV content is parsed.
+pub const ParseOptions = struct {
+    delimiter: u8 = ',',
+    has_header: bool = true,
+    skip_rows: usize = 0,
+};
+
+/// A single field extracted from CSV content.
+/// For quoted fields, `raw` is the inner text (outer quotes removed)
+/// but escaped quotes ("") are NOT yet unescaped.
+pub const Field = struct {
+    raw: []const u8,
+    quoted: bool,
+
+    /// Returns the raw text of the field (suitable for type inference).
+    pub fn text(self: Field) []const u8 {
+        return self.raw;
     }
 
-    fn print(self: CSVType) void {
-        switch (self) {
-            .value => |v| std.debug.print("Value:{s}\n", .{v}),
-            .quoted_value => |v| std.debug.print("QuotedValue:{s}\n", .{v}),
-            .end_of_line => std.debug.print("End of Line\n", .{}),
-            .end_of_file => std.debug.print("End of File\n", .{}),
-            .parsing_error => std.debug.print("Parsing Error\n", .{}),
-        }
+    /// Returns true if the field contains no text.
+    pub fn isEmpty(self: Field) bool {
+        return self.raw.len == 0;
     }
 
-    /// Creates an owned String from this token's text content.
-    /// For quoted values, strips surrounding quotes and unescapes doubled quotes ("" -> ").
-    /// Ownership of the returned String is transferred to the caller.
-    fn createString(self: CSVType, allocator: std.mem.Allocator) !strings.String {
-        switch (self) {
-            .value => |v| {
-                return try strings.String.fromSlice(allocator, v);
-            },
-            .quoted_value => |v| {
-                var str = try strings.String.fromSlice(allocator, v);
-                defer str.deinit();
-                // Remove the first and last quotes from the string
-                _ = str.remove(0);
-                _ = str.remove(str.len() - 1);
-                // Replace double quotes with a single quote. There may be the opportunity to optimize this further.
-                const new_str: []u8 = try std.mem.replaceOwned(u8, allocator, str.toSlice(), "\"\"", "\"");
-                defer allocator.free(new_str);
-                return try strings.String.fromSlice(allocator, new_str);
-            },
-            else => unreachable,
+    /// Creates an owned String from this field.
+    /// For quoted fields, unescapes "" -> ".
+    /// Caller owns the returned String.
+    pub fn createString(self: Field, allocator: Allocator) !String {
+        if (!self.quoted) {
+            return String.fromSlice(allocator, self.raw);
         }
+        // Fast path: no escaped quotes
+        if (std.mem.indexOf(u8, self.raw, "\"\"") == null) {
+            return String.fromSlice(allocator, self.raw);
+        }
+        // Unescape "" -> "
+        const unescaped = try std.mem.replaceOwned(u8, allocator, self.raw, "\"\"", "\"");
+        defer allocator.free(unescaped);
+        return String.fromSlice(allocator, unescaped);
     }
 };
 
-pub const CsvTokenizer = struct {
-    const Self = @This();
+/// Lexical token produced by the Scanner.
+const Token = union(enum) {
+    field: Field,
+    row_end: void,
+    eof: void,
+};
 
-    const Row = std.ArrayList(CSVType);
-    const Rows = std.ArrayList(Row);
-    const CsvError = error{ EndOfFile, EndOfLine, ParsingError };
-    const CsvTokenizerFlags = struct {
-        delimiter: u8 = ',',
-        skip_rows: usize = 0,
-        has_header: bool = true,
-    };
+/// Inferred data type for a column.
+pub const ColumnType = enum {
+    int64,
+    float64,
+    string,
+};
 
-    allocator: std.mem.Allocator,
+// ============================================================
+// Scanner — zero-allocation state machine tokenizer
+// ============================================================
+
+/// Low-level CSV scanner that produces a stream of Tokens from raw content.
+/// Does not allocate — all Field slices point into the original content buffer.
+const Scanner = struct {
     content: []const u8,
-    index: usize,
-    flags: CsvTokenizerFlags,
-    rows: Rows,
-    after_delimiter: bool, // Tracks if we just consumed a delimiter (for trailing empty fields)
+    pos: usize,
+    delimiter: u8,
+    after_delim: bool,
 
-    /// Allocates a new CsvTokenizer on the heap. Caller owns the returned pointer and must call deinit.
-    pub fn init(allocator: std.mem.Allocator, content: []const u8, csvFlags: CsvTokenizerFlags) !*Self {
-        const ptr_csv_tokenizer = try allocator.create(Self);
-        errdefer allocator.destroy(ptr_csv_tokenizer);
-
-        ptr_csv_tokenizer.allocator = allocator;
-        ptr_csv_tokenizer.content = content;
-        ptr_csv_tokenizer.index = 0;
-        ptr_csv_tokenizer.flags = csvFlags;
-        ptr_csv_tokenizer.rows = Rows.empty;
-        ptr_csv_tokenizer.after_delimiter = false;
-
-        return ptr_csv_tokenizer;
+    fn init(content: []const u8, delimiter: u8) Scanner {
+        return .{
+            .content = content,
+            .pos = 0,
+            .delimiter = delimiter,
+            .after_delim = false,
+        };
     }
 
-    /// Deallocates all memory owned by this CsvTokenizer, including all rows. After this call, the pointer is invalid.
-    pub fn deinit(self: *Self) void {
-        for (self.rows.items) |*row| {
-            row.deinit(self.allocator);
-        }
-
-        self.rows.deinit(self.allocator);
-        self.allocator.destroy(self);
-    }
-
-    pub fn validate(self: *Self) !void {
-        if (self.rows.items.len == 0) {
-            return CsvError.ParsingError;
-        }
-
-        const expected_row_len: usize = self.rows.items.ptr[0].items.len;
-
-        for (self.rows.items, 0..) |row, index| {
-            if (row.items.len != expected_row_len) {
-                std.debug.print("\nRow: {} Expected Row of Len: {} Got: {}\n", .{ index + 1, expected_row_len, row.items.len });
-
-                return CsvError.ParsingError;
+    /// Returns the next token from the CSV content.
+    fn next(self: *Scanner) Token {
+        // Trailing empty field: delimiter was the last thing before newline/EOF
+        if (self.pos >= self.content.len) {
+            if (self.after_delim) {
+                self.after_delim = false;
+                return .{ .field = .{ .raw = self.content[self.pos..self.pos], .quoted = false } };
             }
+            return .eof;
         }
+
+        const ch = self.content[self.pos];
+
+        // Newline -> emit trailing empty field if needed, then row_end
+        if (ch == '\r' or ch == '\n') {
+            if (self.after_delim) {
+                self.after_delim = false;
+                return .{ .field = .{ .raw = self.content[self.pos..self.pos], .quoted = false } };
+            }
+            self.pos += 1;
+            if (ch == '\r' and self.pos < self.content.len and self.content[self.pos] == '\n') {
+                self.pos += 1;
+            }
+            return .row_end;
+        }
+
+        self.after_delim = false;
+
+        if (ch == '"') return self.scanQuoted();
+        return self.scanUnquoted();
     }
 
-    pub fn print(self: *Self) !void {
-        for (self.rows.items) |row| {
-            for (row.items) |item| {
-                switch (item) {
-                    .value => |v| std.debug.print("'{s}' ", .{v}),
-                    .quoted_value => |v| std.debug.print("'{s}' ", .{v}),
-                    else => std.debug.print("", .{}),
+    /// Scan a quoted field: opening quote already at self.pos.
+    fn scanQuoted(self: *Scanner) Token {
+        self.pos += 1; // skip opening quote
+        const start = self.pos;
+
+        while (self.pos < self.content.len) {
+            if (self.content[self.pos] == '"') {
+                // Escaped quote ""
+                if (self.pos + 1 < self.content.len and self.content[self.pos + 1] == '"') {
+                    self.pos += 2;
+                    continue;
                 }
+                // Closing quote
+                const raw = self.content[start..self.pos];
+                self.pos += 1; // skip closing quote
+
+                // Consume trailing delimiter if present
+                if (self.pos < self.content.len and self.content[self.pos] == self.delimiter) {
+                    self.pos += 1;
+                    self.after_delim = true;
+                }
+
+                return .{ .field = .{ .raw = raw, .quoted = true } };
             }
-            std.debug.print("\n", .{});
+            self.pos += 1;
         }
+
+        // Unterminated quote — return content as unquoted field
+        return .{ .field = .{ .raw = self.content[start..self.pos], .quoted = false } };
     }
 
-    const InferredType = enum { int64, float64, string };
+    /// Scan an unquoted field: current char is not quote, delimiter, or newline.
+    fn scanUnquoted(self: *Scanner) Token {
+        const start = self.pos;
+
+        while (self.pos < self.content.len) {
+            const ch = self.content[self.pos];
+            if (ch == self.delimiter) {
+                const raw = self.content[start..self.pos];
+                self.pos += 1; // skip delimiter
+                self.after_delim = true;
+                return .{ .field = .{ .raw = raw, .quoted = false } };
+            }
+            if (ch == '\r' or ch == '\n') {
+                break;
+            }
+            self.pos += 1;
+        }
+
+        // Reached newline or EOF
+        return .{ .field = .{ .raw = self.content[start..self.pos], .quoted = false } };
+    }
+};
+
+// ============================================================
+// Table — intermediate scanned representation
+// ============================================================
+
+/// A structured table of Fields scanned from CSV content.
+/// Fields are zero-copy slices into the original content buffer.
+const Table = struct {
+    const Row = std.ArrayList(Field);
+
+    allocator: Allocator,
+    rows: std.ArrayList(Row),
+
+    /// Scan CSV content into a Table of Fields.
+    fn scan(allocator: Allocator, content: []const u8, delimiter: u8) !Table {
+        var scanner = Scanner.init(content, delimiter);
+        var rows = std.ArrayList(Row).empty;
+        errdefer {
+            for (rows.items) |*r| r.deinit(allocator);
+            rows.deinit(allocator);
+        }
+
+        var current = Row.empty;
+        errdefer current.deinit(allocator);
+
+        while (true) {
+            switch (scanner.next()) {
+                .field => |f| try current.append(allocator, f),
+                .row_end => {
+                    try rows.append(allocator, current);
+                    current = Row.empty;
+                },
+                .eof => {
+                    if (current.items.len > 0) {
+                        try rows.append(allocator, current);
+                        current = Row.empty;
+                    }
+                    break;
+                },
+            }
+        }
+
+        return .{ .allocator = allocator, .rows = rows };
+    }
+
+    /// Free all row arrays. Fields are zero-copy and need no cleanup.
+    fn deinit(self: *Table) void {
+        for (self.rows.items) |*r| r.deinit(self.allocator);
+        self.rows.deinit(self.allocator);
+    }
+
+    /// Validate that all rows have the same number of fields.
+    fn validate(self: *const Table) !void {
+        if (self.rows.items.len == 0) return error.EmptyInput;
+        const expected = self.rows.items[0].items.len;
+        for (self.rows.items, 0..) |row, i| {
+            if (row.items.len != expected) {
+                std.debug.print("\nRow: {} Expected {} fields, got {}\n", .{ i + 1, expected, row.items.len });
+                return error.InconsistentRowWidth;
+            }
+        }
+    }
 
     /// Infer the best numeric type for a column by scanning all data values.
     /// Tries i64 first, then f64, falls back to string.
-    /// A column where all values are empty is treated as string.
-    fn inferColumnType(self: *Self, col: usize, data_start: usize) InferredType {
-        const h = self.rows.items.len;
+    /// A column where every value is empty is treated as string.
+    fn inferColumnType(self: *const Table, col: usize, data_start: usize) ColumnType {
         var all_int = true;
         var all_float = true;
-        var has_value = false; // Bug fix: track whether we saw any non-empty value
+        var has_value = false;
 
-        for (data_start..h) |row_idx| {
-            const raw = self.rows.items[row_idx].items[col].getRawSlice();
-            // Skip empty values — they don't disqualify a numeric type
+        for (data_start..self.rows.items.len) |i| {
+            const raw = self.rows.items[i].items[col].text();
             if (raw.len == 0) continue;
 
             has_value = true;
-
             if (all_int) {
                 _ = std.fmt.parseInt(i64, raw, 10) catch {
                     all_int = false;
@@ -172,56 +267,50 @@ pub const CsvTokenizer = struct {
         return .string;
     }
 
-    /// Creates and returns a new Dataframe with inferred column types.
-    /// Numeric columns are stored as i64 or f64; everything else as String.
-    /// Caller owns the returned pointer and must call deinit.
-    pub fn createOwnedDataframe(self: *Self) !*dataframe.Dataframe {
-        const df = try dataframe.Dataframe.init(self.allocator);
+    /// Build a Dataframe from this Table with type-inferred columns.
+    /// Caller owns the returned Dataframe.
+    fn toDataframe(self: *const Table, allocator: Allocator, options: ParseOptions) !*dataframe.Dataframe {
+        const df = try dataframe.Dataframe.init(allocator);
         errdefer df.deinit();
 
-        const w = self.rows.items.ptr[0].items.len;
-        const h = self.rows.items.len;
+        const width = self.rows.items[0].items.len;
+        const height = self.rows.items.len;
 
-        for (0..w) |dw| {
+        for (0..width) |col| {
             var data_start: usize = 0;
 
             // Extract header name if present
-            var header_name: ?strings.String = null;
-            defer if (header_name) |*hn| hn.deinit();
+            var header: ?String = null;
+            defer if (header) |*h| h.deinit();
 
-            if (self.flags.has_header) {
-                header_name = try self.rows.items[0].items[dw].createString(self.allocator);
+            if (options.has_header) {
+                header = try self.rows.items[0].items[col].createString(allocator);
                 data_start = 1;
             }
-            data_start += self.flags.skip_rows;
+            data_start += options.skip_rows;
 
-            const col_type = self.inferColumnType(dw, data_start);
-
-            switch (col_type) {
+            switch (self.inferColumnType(col, data_start)) {
                 .int64 => {
                     var s = try df.createSeries(i64);
-                    if (header_name) |hn| try s.renameOwned(try hn.clone());
-                    for (data_start..h) |dh| {
-                        const raw = self.rows.items[dh].items[dw].getRawSlice();
-                        const val = if (raw.len == 0) 0 else try std.fmt.parseInt(i64, raw, 10);
-                        try s.append(val);
+                    if (header) |h| try s.renameOwned(try h.clone());
+                    for (data_start..height) |row_i| {
+                        const raw = self.rows.items[row_i].items[col].text();
+                        try s.append(if (raw.len == 0) 0 else try std.fmt.parseInt(i64, raw, 10));
                     }
                 },
                 .float64 => {
                     var s = try df.createSeries(f64);
-                    if (header_name) |hn| try s.renameOwned(try hn.clone());
-                    for (data_start..h) |dh| {
-                        const raw = self.rows.items[dh].items[dw].getRawSlice();
-                        const val = if (raw.len == 0) 0.0 else try std.fmt.parseFloat(f64, raw);
-                        try s.append(val);
+                    if (header) |h| try s.renameOwned(try h.clone());
+                    for (data_start..height) |row_i| {
+                        const raw = self.rows.items[row_i].items[col].text();
+                        try s.append(if (raw.len == 0) 0.0 else try std.fmt.parseFloat(f64, raw));
                     }
                 },
                 .string => {
-                    var s = try df.createSeries(strings.String);
-                    if (header_name) |hn| try s.renameOwned(try hn.clone());
-                    for (data_start..h) |dh| {
-                        const str = try self.rows.items[dh].items[dw].createString(self.allocator);
-                        try s.append(str);
+                    var s = try df.createSeries(String);
+                    if (header) |h| try s.renameOwned(try h.clone());
+                    for (data_start..height) |row_i| {
+                        try s.append(try self.rows.items[row_i].items[col].createString(allocator));
                     }
                 },
             }
@@ -230,185 +319,50 @@ pub const CsvTokenizer = struct {
         return df;
     }
 
-    pub fn readAll(self: *Self) !void {
-        var rows = std.ArrayList(Row).empty;
-
-        errdefer {
-            for (rows.items) |*row| {
-                row.deinit(self.allocator);
-            }
-            rows.deinit(self.allocator);
-        }
-
-        while (true) {
-            var row = Row.empty;
-            errdefer row.deinit(self.allocator);
-
-            const result = try self.readRow(&row);
-
-            if (result == .end_of_file) {
-                if (row.items.len != 0) {
-                    try rows.append(self.allocator, row);
-                }
-                break;
-            }
-
-            if (result == .parsing_error) {
-                // Clean up the current row before returning error
-                row.deinit(self.allocator);
-                return CsvError.ParsingError;
-            }
-
-            try rows.append(self.allocator, row);
-        }
-
-        self.rows = rows;
-    }
-
-    fn readRow(self: *Self, row: *Row) !CSVType {
-        while (true) {
-            const csv_token_type = self.next();
-
-            if (csv_token_type == .parsing_error) {
-                return .parsing_error;
-            }
-
-            if (csv_token_type == .end_of_file) {
-                return .end_of_file;
-            }
-
-            if (csv_token_type == .end_of_line) {
-                return .end_of_line;
-            }
-
-            // If we have some value, append it to the row
-            try row.append(self.allocator, csv_token_type);
-        }
-        return .end_of_file;
-    }
-
-    fn next(self: *Self) CSVType {
-        if (self.index >= self.content.len) {
-            if (self.after_delimiter) {
-                self.after_delimiter = false;
-                return .{ .value = self.content[self.index..self.index] }; // empty slice
-            }
-            return .end_of_file;
-        }
-
-        // Handle \r\n and \n line endings
-        if (self.content[self.index] == '\r' or self.content[self.index] == '\n') {
-            // Bug fix: if we just consumed a delimiter, emit the trailing empty field first
-            if (self.after_delimiter) {
-                self.after_delimiter = false;
-                return .{ .value = self.content[self.index..self.index] }; // empty slice
-            }
-
-            self.index += 1;
-
-            if (self.index < self.content.len) {
-                if (self.content[self.index] == '\n') {
-                    self.index += 1;
+    /// Debug: print all fields in the table.
+    fn print(self: *const Table) void {
+        for (self.rows.items) |row| {
+            for (row.items) |field| {
+                if (field.quoted) {
+                    std.debug.print("'\"{s}\"' ", .{field.raw});
+                } else {
+                    std.debug.print("'{s}' ", .{field.raw});
                 }
             }
-
-            return .end_of_line;
+            std.debug.print("\n", .{});
         }
-
-        self.after_delimiter = false;
-
-        // Handle quoted strings
-        const start = self.index;
-
-        if (self.content[self.index] == '\"') {
-            self.index += 1; // Skip the opening quote
-
-            while (self.index < self.content.len) {
-                const char = self.content[self.index];
-
-                if (char == '\"') {
-                    // Check if this is an escaped quote ("") or a closing quote
-                    if (self.index + 1 < self.content.len) {
-                        const next_char = self.content[self.index + 1];
-
-                        // Escaped quote: skip both and continue
-                        if (next_char == '\"') {
-                            self.index += 2;
-                            continue;
-                        }
-
-                        // Closing quote followed by delimiter, newline, or carriage return
-                        const token = self.content[start .. self.index + 1];
-
-                        if (next_char == self.flags.delimiter) {
-                            self.index += 2; // Skip closing quote + delimiter
-                            self.after_delimiter = true;
-                        } else if (next_char == '\n' or next_char == '\r') {
-                            self.index += 1; // Skip closing quote, leave newline for next call
-                        } else {
-                            return .parsing_error;
-                        }
-
-                        return .{ .quoted_value = token };
-                    }
-
-                    // Bug fix: closing quote is the very last character in content
-                    const token = self.content[start .. self.index + 1];
-                    self.index += 1;
-                    return .{ .quoted_value = token };
-                }
-
-                self.index += 1;
-            }
-
-            // If we reached EOF without finding a closing quote, this is malformed.
-            // Return as value to avoid losing data, but the quotes won't be stripped properly.
-            if (start != self.index) {
-                const token = self.content[start..self.index];
-                return .{ .value = token };
-            }
-        } else {
-            // Handle unquoted strings: read until delimiter, newline, or EOF
-            while (self.index < self.content.len) {
-                const char = self.content[self.index];
-
-                if (char == self.flags.delimiter or char == '\n' or char == '\r') {
-                    const token = self.content[start..self.index];
-                    if (char == self.flags.delimiter) {
-                        self.index += 1; // Skip delimiter, leave newline for next call
-                        self.after_delimiter = true;
-                    }
-                    return .{ .value = token };
-                }
-
-                self.index += 1;
-            }
-            // Reached EOF — return remaining content as value
-            if (start != self.index) {
-                const token = self.content[start..self.index];
-                return .{ .value = token };
-            }
-        }
-
-        return .end_of_line;
     }
 };
 
-fn printChar(c: u8) void {
-    switch (c) {
-        'a'...'z' => std.debug.print("'{c}'\n", .{c}),
-        'A'...'Z' => std.debug.print("'{c}'\n", .{c}),
-        '0'...'9' => std.debug.print("'{c}'\n", .{c}),
-        '"' => std.debug.print("'{c}'\n", .{c}),
-        ' ' => std.debug.print("'{c}'\n", .{c}),
-        ',' => std.debug.print("'{c}'\n", .{c}),
-        '\n' => std.debug.print("'\\n'\n", .{}),
-        '\r' => std.debug.print("'\\r'\n", .{}),
-        else => std.debug.print("? '{c}' '{}'\n", .{ c, c }),
-    }
+// ============================================================
+// Public API
+// ============================================================
+
+/// Parse CSV content into a Dataframe.
+/// Single entry point: handles scanning, validation, type inference, and construction.
+/// Caller owns the returned Dataframe.
+pub fn parse(allocator: Allocator, content: []const u8, options: ParseOptions) !*dataframe.Dataframe {
+    var table = try Table.scan(allocator, content, options.delimiter);
+    defer table.deinit();
+    try table.validate();
+    return try table.toDataframe(allocator, options);
 }
 
-test "parse_csv_text3" {
+// ============================================================
+// Tests
+// ============================================================
+
+test "parse: basic CSV with headers" {
+    const allocator = std.testing.allocator;
+    const content = "A,B\n1,2\n3,4\n";
+    const df = try parse(allocator, content, .{});
+    defer df.deinit();
+    try std.testing.expectEqual(@as(usize, 2), df.width());
+    try std.testing.expectEqual(@as(usize, 2), df.height());
+}
+
+test "parse: quoted fields with escaped quotes" {
+    const allocator = std.testing.allocator;
     const content =
         \\First Name,Last Name
         \\John,"Doe"
@@ -419,20 +373,13 @@ test "parse_csv_text3" {
         \\"Joan ""the bone"", Anne",Jet
     ;
 
-    var tokenizer = try CsvTokenizer.init(std.testing.allocator, content, .{ .delimiter = ',' });
-    defer tokenizer.deinit();
-
-    try tokenizer.readAll();
-    try tokenizer.validate();
-    // try tokenizer.print();
-
-    const df = try tokenizer.createOwnedDataframe();
+    const df = try parse(allocator, content, .{});
     defer df.deinit();
 
-    const compare_df = try dataframe.Dataframe.init(std.testing.allocator);
+    const compare_df = try dataframe.Dataframe.init(allocator);
     defer compare_df.deinit();
 
-    const series1 = try series.Series(strings.String).init(std.testing.allocator);
+    const series1 = try series.Series(String).init(allocator);
     try series1.rename("First Name");
     try series1.tryAppend("John");
     try series1.tryAppend("Jack");
@@ -441,7 +388,8 @@ test "parse_csv_text3" {
     try series1.tryAppend("");
     try series1.tryAppend("Joan \"the bone\", Anne");
     try compare_df.addSeries(series1.toBoxedSeries());
-    const series2 = try series.Series(strings.String).init(std.testing.allocator);
+
+    const series2 = try series.Series(String).init(allocator);
     try series2.rename("Last Name");
     try series2.tryAppend("Doe");
     try series2.tryAppend("McGinnis");
@@ -451,20 +399,14 @@ test "parse_csv_text3" {
     try series2.tryAppend("Jet");
     try compare_df.addSeries(series2.toBoxedSeries());
 
-    std.debug.print("Comparing Dataframes...\n", .{});
-    std.debug.print("Dataframe Height: {} Width: {}\n", .{ df.height(), df.width() });
-    std.debug.print("Dataframe Height: {} Width: {}\n", .{ compare_df.height(), compare_df.width() });
-
-    if (try df.compareDataframe(compare_df)) {
-        std.debug.print("Dataframes are equal!\n", .{});
-    } else {
-        std.debug.print("Dataframes are NOT equal!\n", .{});
+    if (!try df.compareDataframe(compare_df)) {
         try df.print();
         try std.testing.expect(false);
     }
 }
 
-test "parse_csv_text2" {
+test "parse: multi-column addresses CSV" {
+    const allocator = std.testing.allocator;
     const content =
         \\First Name,Last Name,Age,Address,City,State,Zip
         \\John,Doe,52,120 jefferson st.,Riverside, NJ, 08075
@@ -475,100 +417,41 @@ test "parse_csv_text2" {
         \\"Joan ""the bone"", Anne",Jet,56,"9th, at Terrace plc",Desert City,CO,00123
     ;
 
-    var tokenizer = try CsvTokenizer.init(std.testing.allocator, content, .{ .delimiter = ',' });
-    defer tokenizer.deinit();
-
-    try tokenizer.readAll();
-    try tokenizer.validate();
-
-    try tokenizer.print();
-}
-
-test "CsvTokenizer: init, readAll, validate, createOwnedDataframe" {
-    const allocator = std.testing.allocator;
-    const content = "A,B\n1,2\n3,4\n";
-    var tokenizer = try CsvTokenizer.init(allocator, content, .{ .delimiter = ',' });
-    defer tokenizer.deinit();
-    try tokenizer.readAll();
-    try tokenizer.validate();
-    const df = try tokenizer.createOwnedDataframe();
+    const df = try parse(allocator, content, .{});
     defer df.deinit();
-    try std.testing.expect(df.width() == 2);
-    try std.testing.expect(df.height() == 2);
+    try std.testing.expectEqual(@as(usize, 7), df.width());
+    try std.testing.expectEqual(@as(usize, 6), df.height());
 }
 
-test "CsvTokenizer: print output" {
-    const allocator = std.testing.allocator;
-    const content = "A,B\nfoo,bar\n";
-    var tokenizer = try CsvTokenizer.init(allocator, content, .{ .delimiter = ',' });
-    defer tokenizer.deinit();
-    try tokenizer.readAll();
-    try tokenizer.validate();
-    try tokenizer.print();
-}
-
-// --- New Tests ---
-
-test "csv: deinit without readAll does not crash" {
-    // Bug fix: rows was uninitialized in init, causing UB on deinit
-    const allocator = std.testing.allocator;
-    var tokenizer = try CsvTokenizer.init(allocator, "A,B\n1,2\n", .{ .delimiter = ',' });
-    // Immediately deinit without calling readAll
-    tokenizer.deinit();
-}
-
-test "csv: quoted field at end of file without trailing newline" {
-    // Bug fix: closing quote at EOF was returned as .value instead of .quoted_value
+test "parse: quoted field at end of file without trailing newline" {
     const allocator = std.testing.allocator;
     const content = "name,val\nhello,\"world\"";
-    var tokenizer = try CsvTokenizer.init(allocator, content, .{ .delimiter = ',' });
-    defer tokenizer.deinit();
-
-    try tokenizer.readAll();
-    try tokenizer.validate();
-
-    const df = try tokenizer.createOwnedDataframe();
+    const df = try parse(allocator, content, .{});
     defer df.deinit();
 
     try std.testing.expectEqual(@as(usize, 2), df.width());
     try std.testing.expectEqual(@as(usize, 1), df.height());
 
-    // The quoted value "world" should have quotes stripped
     const val_series = df.getSeries("val") orelse return error.ColumnNotFound;
-    const str_val = val_series.string.values.items[0].toSlice();
-    try std.testing.expectEqualStrings("world", str_val);
+    try std.testing.expectEqualStrings("world", val_series.string.values.items[0].toSlice());
 }
 
-test "csv: quoted field with escaped quotes at EOF" {
+test "parse: quoted field with escaped quotes at EOF" {
     const allocator = std.testing.allocator;
     const content = "a\n\"he said \"\"hi\"\"\"";
-    var tokenizer = try CsvTokenizer.init(allocator, content, .{ .delimiter = ',' });
-    defer tokenizer.deinit();
-
-    try tokenizer.readAll();
-    try tokenizer.validate();
-
-    const df = try tokenizer.createOwnedDataframe();
+    const df = try parse(allocator, content, .{});
     defer df.deinit();
 
     const s = df.getSeries("a") orelse return error.ColumnNotFound;
-    const val = s.string.values.items[0].toSlice();
-    try std.testing.expectEqualStrings("he said \"hi\"", val);
+    try std.testing.expectEqualStrings("he said \"hi\"", s.string.values.items[0].toSlice());
 }
 
-test "csv: type inference detects integers" {
+test "parse: type inference detects integers" {
     const allocator = std.testing.allocator;
     const content = "num\n1\n2\n3\n";
-    var tokenizer = try CsvTokenizer.init(allocator, content, .{ .delimiter = ',' });
-    defer tokenizer.deinit();
-
-    try tokenizer.readAll();
-    try tokenizer.validate();
-
-    const df = try tokenizer.createOwnedDataframe();
+    const df = try parse(allocator, content, .{});
     defer df.deinit();
 
-    // Should be i64, not string
     const s = df.getSeries("num") orelse return error.ColumnNotFound;
     try std.testing.expect(s.* == .int64);
     try std.testing.expectEqual(@as(i64, 1), s.int64.values.items[0]);
@@ -576,16 +459,10 @@ test "csv: type inference detects integers" {
     try std.testing.expectEqual(@as(i64, 3), s.int64.values.items[2]);
 }
 
-test "csv: type inference detects floats" {
+test "parse: type inference detects floats" {
     const allocator = std.testing.allocator;
     const content = "price\n1.5\n2.7\n3.9\n";
-    var tokenizer = try CsvTokenizer.init(allocator, content, .{ .delimiter = ',' });
-    defer tokenizer.deinit();
-
-    try tokenizer.readAll();
-    try tokenizer.validate();
-
-    const df = try tokenizer.createOwnedDataframe();
+    const df = try parse(allocator, content, .{});
     defer df.deinit();
 
     const s = df.getSeries("price") orelse return error.ColumnNotFound;
@@ -593,51 +470,30 @@ test "csv: type inference detects floats" {
     try std.testing.expectEqual(@as(f64, 1.5), s.float64.values.items[0]);
 }
 
-test "csv: mixed int and float column infers as float" {
+test "parse: mixed int and float column infers as float" {
     const allocator = std.testing.allocator;
     const content = "val\n1\n2.5\n3\n";
-    var tokenizer = try CsvTokenizer.init(allocator, content, .{ .delimiter = ',' });
-    defer tokenizer.deinit();
-
-    try tokenizer.readAll();
-    try tokenizer.validate();
-
-    const df = try tokenizer.createOwnedDataframe();
+    const df = try parse(allocator, content, .{});
     defer df.deinit();
 
-    // "1" parses as float too, but "2.5" doesn't parse as int -> float64
     const s = df.getSeries("val") orelse return error.ColumnNotFound;
     try std.testing.expect(s.* == .float64);
 }
 
-test "csv: all-empty column infers as string" {
-    // Bug fix: all-empty column was inferred as int64 (filled with zeros)
+test "parse: all-empty column infers as string" {
     const allocator = std.testing.allocator;
     const content = "a,b\n,1\n,2\n";
-    var tokenizer = try CsvTokenizer.init(allocator, content, .{ .delimiter = ',' });
-    defer tokenizer.deinit();
-
-    try tokenizer.readAll();
-    try tokenizer.validate();
-
-    const df = try tokenizer.createOwnedDataframe();
+    const df = try parse(allocator, content, .{});
     defer df.deinit();
 
     const s = df.getSeries("a") orelse return error.ColumnNotFound;
     try std.testing.expect(s.* == .string);
 }
 
-test "csv: quoted numeric values are inferred as numeric" {
-    // Bug fix: getRawSlice included surrounding quotes, so "123" failed parseInt
+test "parse: quoted numeric values are inferred as numeric" {
     const allocator = std.testing.allocator;
     const content = "id\n\"100\"\n\"200\"\n\"300\"\n";
-    var tokenizer = try CsvTokenizer.init(allocator, content, .{ .delimiter = ',' });
-    defer tokenizer.deinit();
-
-    try tokenizer.readAll();
-    try tokenizer.validate();
-
-    const df = try tokenizer.createOwnedDataframe();
+    const df = try parse(allocator, content, .{});
     defer df.deinit();
 
     const s = df.getSeries("id") orelse return error.ColumnNotFound;
@@ -645,64 +501,40 @@ test "csv: quoted numeric values are inferred as numeric" {
     try std.testing.expectEqual(@as(i64, 100), s.int64.values.items[0]);
 }
 
-test "csv: no trailing newline" {
+test "parse: no trailing newline" {
     const allocator = std.testing.allocator;
     const content = "a,b\n1,2\n3,4";
-    var tokenizer = try CsvTokenizer.init(allocator, content, .{ .delimiter = ',' });
-    defer tokenizer.deinit();
-
-    try tokenizer.readAll();
-    try tokenizer.validate();
-
-    const df = try tokenizer.createOwnedDataframe();
+    const df = try parse(allocator, content, .{});
     defer df.deinit();
 
     try std.testing.expectEqual(@as(usize, 2), df.width());
     try std.testing.expectEqual(@as(usize, 2), df.height());
 }
 
-test "csv: CRLF line endings" {
+test "parse: CRLF line endings" {
     const allocator = std.testing.allocator;
     const content = "a,b\r\n1,2\r\n3,4\r\n";
-    var tokenizer = try CsvTokenizer.init(allocator, content, .{ .delimiter = ',' });
-    defer tokenizer.deinit();
-
-    try tokenizer.readAll();
-    try tokenizer.validate();
-
-    const df = try tokenizer.createOwnedDataframe();
+    const df = try parse(allocator, content, .{});
     defer df.deinit();
 
     try std.testing.expectEqual(@as(usize, 2), df.width());
     try std.testing.expectEqual(@as(usize, 2), df.height());
 }
 
-test "csv: tab delimiter" {
+test "parse: tab delimiter" {
     const allocator = std.testing.allocator;
     const content = "a\tb\n1\t2\n3\t4\n";
-    var tokenizer = try CsvTokenizer.init(allocator, content, .{ .delimiter = '\t' });
-    defer tokenizer.deinit();
-
-    try tokenizer.readAll();
-    try tokenizer.validate();
-
-    const df = try tokenizer.createOwnedDataframe();
+    const df = try parse(allocator, content, .{ .delimiter = '\t' });
     defer df.deinit();
 
     try std.testing.expectEqual(@as(usize, 2), df.width());
     try std.testing.expectEqual(@as(usize, 2), df.height());
 }
 
-test "csv: single column, single row" {
+test "parse: single column, single row" {
     const allocator = std.testing.allocator;
     const content = "x\n42\n";
-    var tokenizer = try CsvTokenizer.init(allocator, content, .{ .delimiter = ',' });
-    defer tokenizer.deinit();
-
-    try tokenizer.readAll();
-    try tokenizer.validate();
-
-    const df = try tokenizer.createOwnedDataframe();
+    const df = try parse(allocator, content, .{});
     defer df.deinit();
 
     try std.testing.expectEqual(@as(usize, 1), df.width());
@@ -713,17 +545,10 @@ test "csv: single column, single row" {
     try std.testing.expectEqual(@as(i64, 42), s.int64.values.items[0]);
 }
 
-test "csv: empty cells among numbers default to zero" {
+test "parse: empty cells among numbers default to zero" {
     const allocator = std.testing.allocator;
-    // Use two columns so empty cell is between delimiters, not an empty line
     const content = "key,val\na,10\nb,\nc,30\n";
-    var tokenizer = try CsvTokenizer.init(allocator, content, .{ .delimiter = ',' });
-    defer tokenizer.deinit();
-
-    try tokenizer.readAll();
-    try tokenizer.validate();
-
-    const df = try tokenizer.createOwnedDataframe();
+    const df = try parse(allocator, content, .{});
     defer df.deinit();
 
     const s = df.getSeries("val") orelse return error.ColumnNotFound;
@@ -733,16 +558,10 @@ test "csv: empty cells among numbers default to zero" {
     try std.testing.expectEqual(@as(i64, 30), s.int64.values.items[2]);
 }
 
-test "csv: negative integers are detected" {
+test "parse: negative integers are detected" {
     const allocator = std.testing.allocator;
     const content = "val\n-5\n10\n-20\n";
-    var tokenizer = try CsvTokenizer.init(allocator, content, .{ .delimiter = ',' });
-    defer tokenizer.deinit();
-
-    try tokenizer.readAll();
-    try tokenizer.validate();
-
-    const df = try tokenizer.createOwnedDataframe();
+    const df = try parse(allocator, content, .{});
     defer df.deinit();
 
     const s = df.getSeries("val") orelse return error.ColumnNotFound;
@@ -750,33 +569,20 @@ test "csv: negative integers are detected" {
     try std.testing.expectEqual(@as(i64, -5), s.int64.values.items[0]);
 }
 
-test "csv: string column with one non-numeric value stays string" {
+test "parse: string column with one non-numeric value stays string" {
     const allocator = std.testing.allocator;
     const content = "val\n1\nhello\n3\n";
-    var tokenizer = try CsvTokenizer.init(allocator, content, .{ .delimiter = ',' });
-    defer tokenizer.deinit();
-
-    try tokenizer.readAll();
-    try tokenizer.validate();
-
-    const df = try tokenizer.createOwnedDataframe();
+    const df = try parse(allocator, content, .{});
     defer df.deinit();
 
     const s = df.getSeries("val") orelse return error.ColumnNotFound;
     try std.testing.expect(s.* == .string);
 }
 
-test "csv: trailing empty field at end of file" {
-    // Bug fix: "a,b\n1," should have row [1, ""] not just [1]
+test "parse: trailing empty field at end of file" {
     const allocator = std.testing.allocator;
     const content = "a,b\n1,";
-    var tokenizer = try CsvTokenizer.init(allocator, content, .{ .delimiter = ',' });
-    defer tokenizer.deinit();
-
-    try tokenizer.readAll();
-    try tokenizer.validate();
-
-    const df = try tokenizer.createOwnedDataframe();
+    const df = try parse(allocator, content, .{});
     defer df.deinit();
 
     try std.testing.expectEqual(@as(usize, 2), df.width());
@@ -785,4 +591,90 @@ test "csv: trailing empty field at end of file" {
     const s = df.getSeries("b") orelse return error.ColumnNotFound;
     try std.testing.expect(s.* == .string);
     try std.testing.expectEqualStrings("", s.string.values.items[0].toSlice());
+}
+
+test "Scanner: produces correct token sequence" {
+    var scanner = Scanner.init("a,b\n1,2\n", ',');
+
+    // Row 1: a, b
+    try std.testing.expectEqualStrings("a", scanner.next().field.raw);
+    try std.testing.expectEqualStrings("b", scanner.next().field.raw);
+    try std.testing.expect(scanner.next() == .row_end);
+
+    // Row 2: 1, 2
+    try std.testing.expectEqualStrings("1", scanner.next().field.raw);
+    try std.testing.expectEqualStrings("2", scanner.next().field.raw);
+    try std.testing.expect(scanner.next() == .row_end);
+
+    // EOF
+    try std.testing.expect(scanner.next() == .eof);
+}
+
+test "Scanner: quoted field with comma inside" {
+    var scanner = Scanner.init("\"a,b\",c\n", ',');
+
+    const f1 = scanner.next().field;
+    try std.testing.expectEqualStrings("a,b", f1.raw);
+    try std.testing.expect(f1.quoted);
+
+    const f2 = scanner.next().field;
+    try std.testing.expectEqualStrings("c", f2.raw);
+    try std.testing.expect(!f2.quoted);
+
+    try std.testing.expect(scanner.next() == .row_end);
+    try std.testing.expect(scanner.next() == .eof);
+}
+
+test "Scanner: trailing empty field before newline" {
+    var scanner = Scanner.init("a,\n", ',');
+
+    try std.testing.expectEqualStrings("a", scanner.next().field.raw);
+    // Empty field after delimiter, before newline
+    try std.testing.expectEqualStrings("", scanner.next().field.raw);
+    try std.testing.expect(scanner.next() == .row_end);
+    try std.testing.expect(scanner.next() == .eof);
+}
+
+test "Scanner: trailing empty field at EOF" {
+    var scanner = Scanner.init("a,", ',');
+
+    try std.testing.expectEqualStrings("a", scanner.next().field.raw);
+    try std.testing.expectEqualStrings("", scanner.next().field.raw);
+    try std.testing.expect(scanner.next() == .eof);
+}
+
+test "Table: scan and validate" {
+    const allocator = std.testing.allocator;
+    var table = try Table.scan(allocator, "a,b\n1,2\n3,4\n", ',');
+    defer table.deinit();
+
+    try table.validate();
+    try std.testing.expectEqual(@as(usize, 3), table.rows.items.len);
+    try std.testing.expectEqual(@as(usize, 2), table.rows.items[0].items.len);
+}
+
+test "Table: deinit without toDataframe is safe" {
+    const allocator = std.testing.allocator;
+    var table = try Table.scan(allocator, "A,B\n1,2\n", ',');
+    table.deinit();
+    // No crash = success
+}
+
+test "Field: createString unescapes quotes" {
+    const allocator = std.testing.allocator;
+
+    const plain = Field{ .raw = "hello", .quoted = false };
+    var s1 = try plain.createString(allocator);
+    defer s1.deinit();
+    try std.testing.expectEqualStrings("hello", s1.toSlice());
+
+    const quoted = Field{ .raw = "he said \"\"hi\"\"", .quoted = true };
+    var s2 = try quoted.createString(allocator);
+    defer s2.deinit();
+    try std.testing.expectEqualStrings("he said \"hi\"", s2.toSlice());
+
+    const no_escape = Field{ .raw = "simple", .quoted = true };
+    var s3 = try no_escape.createString(allocator);
+    defer s3.deinit();
+    try std.testing.expectEqualStrings("simple", s3.toSlice());
 }

@@ -103,16 +103,11 @@ pub const Reader = struct {
         const content = try cwd.readFileAlloc(io, filename, self.allocator, .unlimited);
         defer self.allocator.free(content);
 
-        const tokenizer = try csv.CsvTokenizer.init(self.allocator, content, .{ .delimiter = self.delimiter, .has_header = self.has_header, .skip_rows = self.skip_rows });
-        defer tokenizer.deinit();
-
-        try tokenizer.readAll();
-        try tokenizer.validate();
-        // try tokenizer.print();
-
-        const df = try tokenizer.createOwnedDataframe();
-
-        return df;
+        return try csv.parse(self.allocator, content, .{
+            .delimiter = self.delimiter,
+            .has_header = self.has_header,
+            .skip_rows = self.skip_rows,
+        });
     }
 
     fn readJson(self: *Self) void {
