@@ -277,3 +277,172 @@ pub fn GroupBy(comptime T: type) type {
         }
     };
 }
+
+// --- Tests ---
+
+fn createTestDf(allocator: Allocator) !*Dataframe {
+    const df = try Dataframe.init(allocator);
+    errdefer df.deinit();
+
+    // category: [1, 2, 1, 2, 1]
+    var cat = try df.createSeries(i32);
+    try cat.rename("category");
+    try cat.append(1);
+    try cat.append(2);
+    try cat.append(1);
+    try cat.append(2);
+    try cat.append(1);
+
+    // values: [10, 20, 30, 40, 50]
+    var vals = try df.createSeries(i64);
+    try vals.rename("values");
+    try vals.append(10);
+    try vals.append(20);
+    try vals.append(30);
+    try vals.append(40);
+    try vals.append(50);
+
+    return df;
+}
+
+test "GroupBy: count produces correct group sizes" {
+    const allocator = std.testing.allocator;
+    var df = try createTestDf(allocator);
+    defer df.deinit();
+
+    var gb = try df.groupBy("category");
+    defer gb.deinit();
+
+    var counts = try gb.count();
+    defer counts.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), counts.len());
+
+    // Group 1 has 3 rows, group 2 has 2 rows (order may vary)
+    const a = counts.usize.values.items[0];
+    const b = counts.usize.values.items[1];
+    try std.testing.expect((a == 3 and b == 2) or (a == 2 and b == 3));
+}
+
+test "GroupBy: sum produces correct totals" {
+    const allocator = std.testing.allocator;
+    var df = try createTestDf(allocator);
+    defer df.deinit();
+
+    var gb = try df.groupBy("category");
+    defer gb.deinit();
+
+    var sum_result = try gb.sum("values");
+    defer sum_result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), sum_result.len());
+
+    // Group 1: 10+30+50=90, Group 2: 20+40=60 (order may vary)
+    const a = sum_result.int64.values.items[0];
+    const b = sum_result.int64.values.items[1];
+    try std.testing.expect((a == 90 and b == 60) or (a == 60 and b == 90));
+}
+
+test "GroupBy: mean produces correct averages" {
+    const allocator = std.testing.allocator;
+    var df = try createTestDf(allocator);
+    defer df.deinit();
+
+    var gb = try df.groupBy("category");
+    defer gb.deinit();
+
+    var mean_result = try gb.mean("values");
+    defer mean_result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), mean_result.len());
+
+    // Group 1: (10+30+50)/3=30.0, Group 2: (20+40)/2=30.0
+    const a = mean_result.float64.values.items[0];
+    const b = mean_result.float64.values.items[1];
+    try std.testing.expect((a == 30.0 and b == 30.0));
+}
+
+test "GroupBy: sum on nonexistent column returns error" {
+    const allocator = std.testing.allocator;
+    var df = try createTestDf(allocator);
+    defer df.deinit();
+
+    var gb = try df.groupBy("category");
+    defer gb.deinit();
+
+    try std.testing.expectError(error.ColumnNotFound, gb.sum("nonexistent"));
+}
+
+test "GroupBy: mean on nonexistent column returns error" {
+    const allocator = std.testing.allocator;
+    var df = try createTestDf(allocator);
+    defer df.deinit();
+
+    var gb = try df.groupBy("category");
+    defer gb.deinit();
+
+    try std.testing.expectError(error.ColumnNotFound, gb.mean("nonexistent"));
+}
+
+test "GroupBy: single group contains all rows" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    // All same key
+    var cat = try df.createSeries(i32);
+    try cat.rename("key");
+    try cat.append(1);
+    try cat.append(1);
+    try cat.append(1);
+
+    var vals = try df.createSeries(i64);
+    try vals.rename("val");
+    try vals.append(6);
+    try vals.append(12);
+    try vals.append(18);
+
+    var gb = try df.groupBy("key");
+    defer gb.deinit();
+
+    var counts = try gb.count();
+    defer counts.deinit();
+    try std.testing.expectEqual(@as(usize, 1), counts.len());
+    try std.testing.expectEqual(@as(usize, 3), counts.usize.values.items[0]);
+
+    var mean_result = try gb.mean("val");
+    defer mean_result.deinit();
+    try std.testing.expectEqual(12.0, mean_result.float64.values.items[0]);
+}
+
+test "GroupBy: f64 keys group correctly" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var keys = try df.createSeries(f64);
+    try keys.rename("price");
+    try keys.append(1.5);
+    try keys.append(2.5);
+    try keys.append(1.5);
+
+    var vals = try df.createSeries(i32);
+    try vals.rename("qty");
+    try vals.append(10);
+    try vals.append(20);
+    try vals.append(30);
+
+    var gb = try df.groupBy("price");
+    defer gb.deinit();
+
+    var counts = try gb.count();
+    defer counts.deinit();
+    try std.testing.expectEqual(@as(usize, 2), counts.len());
+
+    var sum_result = try gb.sum("qty");
+    defer sum_result.deinit();
+
+    const a = sum_result.int32.values.items[0];
+    const b = sum_result.int32.values.items[1];
+    try std.testing.expect((a == 40 and b == 20) or (a == 20 and b == 40));
+}
