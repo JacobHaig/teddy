@@ -14,8 +14,8 @@ pub fn main() !void {
     defer df_reader.deinit();
 
     var df3 = try df_reader
-        .withFileType(.csv)
-        .withPath("data/stock_apple.csv")
+        .withFileType(.parquet)
+        .withPath("data/addresses.parquet")
         .withDelimiter(',')
         .withHeaders(true)
         .withSkipRows(0)
@@ -25,12 +25,12 @@ pub fn main() !void {
     std.debug.print("height: {} width: {}\n", .{ df3.height(), df3.width() });
     try df3.print();
 
-    var group_by = try df3.groupBy("Symbol");
+    var group_by = try df3.groupBy("Zip");
     defer group_by.deinit();
 
-    var avg_volume = try group_by.mean("Volume");
-    defer avg_volume.deinit();
+    var zip_count = try group_by.count();
+    defer zip_count.deinit();
 
-    std.debug.print("Average Volume by Symbol:\n", .{});
-    avg_volume.print();
+    std.debug.print("Count by Zip:\n", .{});
+    zip_count.print();
 }
