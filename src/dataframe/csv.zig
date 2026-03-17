@@ -18,6 +18,7 @@ pub const ParseOptions = struct {
 };
 
 /// A single field extracted from CSV content.
+/// `raw` is a zero-copy slice into the original content buffer.
 /// For quoted fields, `raw` is the inner text (outer quotes removed)
 /// but escaped quotes ("") are NOT yet unescaped.
 pub const Field = struct {

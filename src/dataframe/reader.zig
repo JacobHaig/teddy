@@ -91,6 +91,7 @@ pub const Reader = struct {
     pub fn load(self: *Self) !*dataframe.Dataframe {
         return switch (self.file_type) {
             .csv => self.readCsv(),
+            .parquet => self.readParquet(),
             else => error.FileDoesNotExist,
         };
     }
@@ -116,7 +117,19 @@ pub const Reader = struct {
     }
 
     fn readParquet(self: *Self) !*dataframe.Dataframe {
-        _ = self.path orelse return error.InvalidFilePath;
-        return error.InvalidFilePath;
+        const filename = self.path orelse return error.InvalidFilePath;
+
+        const cwd = std.Io.Dir.cwd();
+        const io = std.Io.Threaded.global_single_threaded.io();
+        const content = try cwd.readFileAlloc(io, filename, self.allocator, .unlimited);
+        defer self.allocator.free(content);
+
+        const parquet_mod = @import("parquet");
+        const parquet_adapter = @import("parquet.zig");
+
+        var result = try parquet_mod.readParquet(self.allocator, content);
+        defer result.deinit();
+
+        return try parquet_adapter.toDataframe(self.allocator, &result);
     }
 };

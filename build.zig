@@ -4,10 +4,19 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const parquet_mod = b.createModule(.{
+        .root_source_file = b.path("src/parquet/parquet.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const dataframe_mod = b.createModule(.{
         .root_source_file = b.path("src/dataframe/dataframe.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{
+            .{ .name = "parquet", .module = parquet_mod },
+        },
     });
 
     const exe = b.addExecutable(.{
@@ -47,7 +56,14 @@ pub fn build(b: *std.Build) void {
 
     const run_exe_tests = b.addRunArtifact(exe_tests);
 
+    const parquet_tests = b.addTest(.{
+        .root_module = parquet_mod,
+    });
+
+    const run_parquet_tests = b.addRunArtifact(parquet_tests);
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
+    test_step.dependOn(&run_parquet_tests.step);
 }

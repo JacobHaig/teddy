@@ -1,8 +1,7 @@
 const std = @import("std");
 
-const dataframe = @import("dataframe/dataframe.zig");
-const boxed_series = @import("dataframe/boxed_series.zig");
-const parquet = @import("dataframe/parquet.zig");
+const teddy = @import("teddy");
+const dataframe = teddy;
 
 pub fn main() !void {
     var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
@@ -16,7 +15,6 @@ pub fn main() !void {
 
     var df3 = try df_reader
         .withFileType(.csv)
-        // .withPath("data/addresses.csv")
         .withPath("data/stock_apple.csv")
         .withDelimiter(',')
         .withHeaders(true)
