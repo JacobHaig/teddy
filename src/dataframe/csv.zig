@@ -11,6 +11,15 @@ const CSVType = union(enum) {
     end_of_file: void,
     parsing_error: void,
 
+    /// Returns the raw text slice for value types.
+    fn getRawSlice(self: CSVType) []const u8 {
+        return switch (self) {
+            .value => |v| v,
+            .quoted_value => |v| v,
+            else => unreachable,
+        };
+    }
+
     fn print(self: CSVType) void {
         switch (self) {
             .value => |v| std.debug.print("Value:{s}\n", .{v}),
@@ -113,9 +122,41 @@ pub const CsvTokenizer = struct {
         }
     }
 
-    // TODO: Consider parsing the datatypes of each column here.
-    // This could reduce the overall memory footprint of the dataframe.
-    /// Creates and returns a new Dataframe. Caller owns the returned pointer and must call deinit.
+    const InferredType = enum { int64, float64, string };
+
+    /// Infer the best numeric type for a column by scanning all data values.
+    /// Tries i64 first, then f64, falls back to string.
+    fn inferColumnType(self: *Self, col: usize, data_start: usize) InferredType {
+        const h = self.rows.items.len;
+        var all_int = true;
+        var all_float = true;
+
+        for (data_start..h) |row_idx| {
+            const raw = self.rows.items[row_idx].items[col].getRawSlice();
+            // Skip empty values — they don't disqualify a numeric type
+            if (raw.len == 0) continue;
+
+            if (all_int) {
+                _ = std.fmt.parseInt(i64, raw, 10) catch {
+                    all_int = false;
+                };
+            }
+            if (all_float) {
+                _ = std.fmt.parseFloat(f64, raw) catch {
+                    all_float = false;
+                };
+            }
+            if (!all_int and !all_float) break;
+        }
+
+        if (all_int) return .int64;
+        if (all_float) return .float64;
+        return .string;
+    }
+
+    /// Creates and returns a new Dataframe with inferred column types.
+    /// Numeric columns are stored as i64 or f64; everything else as String.
+    /// Caller owns the returned pointer and must call deinit.
     pub fn createOwnedDataframe(self: *Self) !*dataframe.Dataframe {
         const df = try dataframe.Dataframe.init(self.allocator);
         errdefer df.deinit();
@@ -124,23 +165,47 @@ pub const CsvTokenizer = struct {
         const h = self.rows.items.len;
 
         for (0..w) |dw| {
-            var series1 = try df.createSeries(strings.String);
+            var data_start: usize = 0;
 
-            var startingField: usize = 0;
+            // Extract header name if present
+            var header_name: ?strings.String = null;
+            defer if (header_name) |*hn| hn.deinit();
 
             if (self.flags.has_header) {
-                const csv_str: CSVType = self.rows.items[startingField].items[dw];
-                const header_string: strings.String = try csv_str.createString(self.allocator);
-                try series1.renameOwned(header_string);
-                startingField += 1;
+                header_name = try self.rows.items[0].items[dw].createString(self.allocator);
+                data_start = 1;
             }
+            data_start += self.flags.skip_rows;
 
-            startingField += self.flags.skip_rows;
+            const col_type = self.inferColumnType(dw, data_start);
 
-            for (startingField..h) |dh| {
-                const csv_str: CSVType = self.rows.items[dh].items[dw];
-                const str: strings.String = try csv_str.createString(self.allocator);
-                try series1.append(str);
+            switch (col_type) {
+                .int64 => {
+                    var s = try df.createSeries(i64);
+                    if (header_name) |hn| try s.renameOwned(try hn.clone());
+                    for (data_start..h) |dh| {
+                        const raw = self.rows.items[dh].items[dw].getRawSlice();
+                        const val = if (raw.len == 0) 0 else try std.fmt.parseInt(i64, raw, 10);
+                        try s.append(val);
+                    }
+                },
+                .float64 => {
+                    var s = try df.createSeries(f64);
+                    if (header_name) |hn| try s.renameOwned(try hn.clone());
+                    for (data_start..h) |dh| {
+                        const raw = self.rows.items[dh].items[dw].getRawSlice();
+                        const val = if (raw.len == 0) 0.0 else try std.fmt.parseFloat(f64, raw);
+                        try s.append(val);
+                    }
+                },
+                .string => {
+                    var s = try df.createSeries(strings.String);
+                    if (header_name) |hn| try s.renameOwned(try hn.clone());
+                    for (data_start..h) |dh| {
+                        const str = try self.rows.items[dh].items[dw].createString(self.allocator);
+                        try s.append(str);
+                    }
+                },
             }
         }
 

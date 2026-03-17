@@ -16,8 +16,8 @@ pub fn main() !void {
 
     var df3 = try df_reader
         .withFileType(.csv)
-        .withPath("data/addresses.csv")
-        // .withPath("data/stock_apple.csv")
+        // .withPath("data/addresses.csv")
+        .withPath("data/stock_apple.csv")
         .withDelimiter(',')
         .withHeaders(true)
         .withSkipRows(0)
@@ -27,6 +27,12 @@ pub fn main() !void {
     std.debug.print("height: {} width: {}\n", .{ df3.height(), df3.width() });
     try df3.print();
 
-    var group_by = try df3.groupBy("Age");
+    var group_by = try df3.groupBy("Symbol");
     defer group_by.deinit();
+
+    var avg_volume = try group_by.mean("Volume");
+    defer avg_volume.deinit();
+
+    std.debug.print("Average Volume by Symbol:\n", .{});
+    avg_volume.print();
 }
