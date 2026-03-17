@@ -9,7 +9,7 @@ const String = @import("strings.zig").String;
 
 /// Custom hash map context that supports f32, f64, and String keys
 /// in addition to the types supported by AutoHashMap.
-fn GroupByContext(comptime T: type) type {
+pub fn GroupByContext(comptime T: type) type {
     return struct {
         const Self = @This();
 
@@ -125,6 +125,17 @@ pub fn GroupBy(comptime T: type) type {
             };
         }
 
+        /// Appends a key to the key series, cloning Strings to avoid double-free.
+        fn appendKey(key_series: *Series(T), key: T) !void {
+            if (comptime T == String) {
+                var cloned = try key.clone();
+                errdefer cloned.deinit();
+                try key_series.values.append(key_series.allocator, cloned);
+            } else {
+                try key_series.append(key);
+            }
+        }
+
         pub fn count(self: *Self) !*Dataframe {
             const result_df = try Dataframe.init(self.allocator);
             errdefer result_df.deinit();
@@ -137,136 +148,89 @@ pub fn GroupBy(comptime T: type) type {
 
             var it = self.groups.iterator();
             while (it.next()) |entry| {
-                try key_series.append(entry.key_ptr.*);
+                try appendKey(key_series, entry.key_ptr.*);
                 try count_series.append(entry.value_ptr.items.len);
             }
 
             return result_df;
         }
 
-        pub fn sum(self: *Self, column: []const u8) !BoxedSeries {
+        pub fn sum(self: *Self, column: []const u8) !*Dataframe {
             const series_opt = self.dataframe.getSeries(column);
             if (series_opt == null) return error.ColumnNotFound;
 
-            return switch (series_opt.?.*) {
-                .int8 => |s| blk: {
-                    const result = try self.sumTyped(i8, s);
-                    break :blk result.toBoxedSeries();
-                },
-                .int16 => |s| blk: {
-                    const result = try self.sumTyped(i16, s);
-                    break :blk result.toBoxedSeries();
-                },
-                .int32 => |s| blk: {
-                    const result = try self.sumTyped(i32, s);
-                    break :blk result.toBoxedSeries();
-                },
-                .int64 => |s| blk: {
-                    const result = try self.sumTyped(i64, s);
-                    break :blk result.toBoxedSeries();
-                },
-                .uint8 => |s| blk: {
-                    const result = try self.sumTyped(u8, s);
-                    break :blk result.toBoxedSeries();
-                },
-                .uint16 => |s| blk: {
-                    const result = try self.sumTyped(u16, s);
-                    break :blk result.toBoxedSeries();
-                },
-                .uint32 => |s| blk: {
-                    const result = try self.sumTyped(u32, s);
-                    break :blk result.toBoxedSeries();
-                },
-                .uint64 => |s| blk: {
-                    const result = try self.sumTyped(u64, s);
-                    break :blk result.toBoxedSeries();
-                },
-                .float32 => |s| blk: {
-                    const result = try self.sumTyped(f32, s);
-                    break :blk result.toBoxedSeries();
-                },
-                .float64 => |s| blk: {
-                    const result = try self.sumTyped(f64, s);
-                    break :blk result.toBoxedSeries();
-                },
-                else => error.TypeNotSummable,
-            };
+            const result_df = try Dataframe.init(self.allocator);
+            errdefer result_df.deinit();
+
+            var key_series = try result_df.createSeries(T);
+            try key_series.rename(self.series.name.toSlice());
+
+            switch (series_opt.?.*) {
+                .int8 => |s| try self.sumTypedDf(i8, s, result_df, key_series),
+                .int16 => |s| try self.sumTypedDf(i16, s, result_df, key_series),
+                .int32 => |s| try self.sumTypedDf(i32, s, result_df, key_series),
+                .int64 => |s| try self.sumTypedDf(i64, s, result_df, key_series),
+                .uint8 => |s| try self.sumTypedDf(u8, s, result_df, key_series),
+                .uint16 => |s| try self.sumTypedDf(u16, s, result_df, key_series),
+                .uint32 => |s| try self.sumTypedDf(u32, s, result_df, key_series),
+                .uint64 => |s| try self.sumTypedDf(u64, s, result_df, key_series),
+                .float32 => |s| try self.sumTypedDf(f32, s, result_df, key_series),
+                .float64 => |s| try self.sumTypedDf(f64, s, result_df, key_series),
+                else => return error.TypeNotSummable,
+            }
+
+            return result_df;
         }
 
-        fn sumTyped(self: *Self, comptime ValType: type, series: *Series(ValType)) !*Series(ValType) {
-            const result_series = try Series(ValType).init(self.allocator);
-            errdefer result_series.deinit();
-            try result_series.rename(series.name.toSlice());
+        fn sumTypedDf(self: *Self, comptime ValType: type, series: *Series(ValType), result_df: *Dataframe, key_series: *Series(T)) !void {
+            var val_series = try result_df.createSeries(ValType);
+            try val_series.rename(series.name.toSlice());
 
             var it = self.groups.iterator();
             while (it.next()) |entry| {
+                try appendKey(key_series, entry.key_ptr.*);
                 var sum_val: ValType = 0;
                 for (entry.value_ptr.items) |idx| {
                     sum_val += series.values.items[idx];
                 }
-                try result_series.append(sum_val);
+                try val_series.append(sum_val);
             }
-
-            return result_series;
         }
 
-        pub fn mean(self: *Self, column: []const u8) !BoxedSeries {
+        pub fn mean(self: *Self, column: []const u8) !*Dataframe {
             const series_opt = self.dataframe.getSeries(column);
             if (series_opt == null) return error.ColumnNotFound;
 
-            const boxed_series = series_opt.?.*;
-            return switch (boxed_series) {
-                .int8 => |s| blk: {
-                    const result = try self.meanTyped(i8, s);
-                    break :blk result.toBoxedSeries();
-                },
-                .int16 => |s| blk: {
-                    const result = try self.meanTyped(i16, s);
-                    break :blk result.toBoxedSeries();
-                },
-                .int32 => |s| blk: {
-                    const result = try self.meanTyped(i32, s);
-                    break :blk result.toBoxedSeries();
-                },
-                .int64 => |s| blk: {
-                    const result = try self.meanTyped(i64, s);
-                    break :blk result.toBoxedSeries();
-                },
-                .uint8 => |s| blk: {
-                    const result = try self.meanTyped(u8, s);
-                    break :blk result.toBoxedSeries();
-                },
-                .uint16 => |s| blk: {
-                    const result = try self.meanTyped(u16, s);
-                    break :blk result.toBoxedSeries();
-                },
-                .uint32 => |s| blk: {
-                    const result = try self.meanTyped(u32, s);
-                    break :blk result.toBoxedSeries();
-                },
-                .uint64 => |s| blk: {
-                    const result = try self.meanTyped(u64, s);
-                    break :blk result.toBoxedSeries();
-                },
-                .float32 => |s| blk: {
-                    const result = try self.meanTyped(f32, s);
-                    break :blk result.toBoxedSeries();
-                },
-                .float64 => |s| blk: {
-                    const result = try self.meanTyped(f64, s);
-                    break :blk result.toBoxedSeries();
-                },
-                else => error.TypeNotAverageable,
-            };
+            const result_df = try Dataframe.init(self.allocator);
+            errdefer result_df.deinit();
+
+            var key_series = try result_df.createSeries(T);
+            try key_series.rename(self.series.name.toSlice());
+
+            switch (series_opt.?.*) {
+                .int8 => |s| try self.meanTypedDf(i8, s, result_df, key_series),
+                .int16 => |s| try self.meanTypedDf(i16, s, result_df, key_series),
+                .int32 => |s| try self.meanTypedDf(i32, s, result_df, key_series),
+                .int64 => |s| try self.meanTypedDf(i64, s, result_df, key_series),
+                .uint8 => |s| try self.meanTypedDf(u8, s, result_df, key_series),
+                .uint16 => |s| try self.meanTypedDf(u16, s, result_df, key_series),
+                .uint32 => |s| try self.meanTypedDf(u32, s, result_df, key_series),
+                .uint64 => |s| try self.meanTypedDf(u64, s, result_df, key_series),
+                .float32 => |s| try self.meanTypedDf(f32, s, result_df, key_series),
+                .float64 => |s| try self.meanTypedDf(f64, s, result_df, key_series),
+                else => return error.TypeNotAverageable,
+            }
+
+            return result_df;
         }
 
-        fn meanTyped(self: *Self, comptime ValType: type, series: *Series(ValType)) !*Series(f64) {
-            const result_series = try Series(f64).init(self.allocator);
-            errdefer result_series.deinit();
-            try result_series.rename(series.name.toSlice());
+        fn meanTypedDf(self: *Self, comptime ValType: type, series: *Series(ValType), result_df: *Dataframe, key_series: *Series(T)) !void {
+            var val_series = try result_df.createSeries(f64);
+            try val_series.rename(series.name.toSlice());
 
             var it = self.groups.iterator();
             while (it.next()) |entry| {
+                try appendKey(key_series, entry.key_ptr.*);
                 var sum_val: f64 = 0.0;
                 for (entry.value_ptr.items) |idx| {
                     const val = series.values.items[idx];
@@ -276,10 +240,133 @@ pub fn GroupBy(comptime T: type) type {
                         @floatFromInt(val));
                 }
                 const mean_val = sum_val / @as(f64, @floatFromInt(entry.value_ptr.items.len));
-                try result_series.append(mean_val);
+                try val_series.append(mean_val);
+            }
+        }
+        pub fn min(self: *Self, column: []const u8) !*Dataframe {
+            const series_opt = self.dataframe.getSeries(column);
+            if (series_opt == null) return error.ColumnNotFound;
+
+            const result_df = try Dataframe.init(self.allocator);
+            errdefer result_df.deinit();
+
+            var key_series = try result_df.createSeries(T);
+            try key_series.rename(self.series.name.toSlice());
+
+            switch (series_opt.?.*) {
+                .int8 => |s| try self.minMaxTypedDf(i8, s, result_df, key_series, true),
+                .int16 => |s| try self.minMaxTypedDf(i16, s, result_df, key_series, true),
+                .int32 => |s| try self.minMaxTypedDf(i32, s, result_df, key_series, true),
+                .int64 => |s| try self.minMaxTypedDf(i64, s, result_df, key_series, true),
+                .uint8 => |s| try self.minMaxTypedDf(u8, s, result_df, key_series, true),
+                .uint16 => |s| try self.minMaxTypedDf(u16, s, result_df, key_series, true),
+                .uint32 => |s| try self.minMaxTypedDf(u32, s, result_df, key_series, true),
+                .uint64 => |s| try self.minMaxTypedDf(u64, s, result_df, key_series, true),
+                .float32 => |s| try self.minMaxTypedDf(f32, s, result_df, key_series, true),
+                .float64 => |s| try self.minMaxTypedDf(f64, s, result_df, key_series, true),
+                else => return error.TypeNotComparable,
             }
 
-            return result_series;
+            return result_df;
+        }
+
+        pub fn max(self: *Self, column: []const u8) !*Dataframe {
+            const series_opt = self.dataframe.getSeries(column);
+            if (series_opt == null) return error.ColumnNotFound;
+
+            const result_df = try Dataframe.init(self.allocator);
+            errdefer result_df.deinit();
+
+            var key_series = try result_df.createSeries(T);
+            try key_series.rename(self.series.name.toSlice());
+
+            switch (series_opt.?.*) {
+                .int8 => |s| try self.minMaxTypedDf(i8, s, result_df, key_series, false),
+                .int16 => |s| try self.minMaxTypedDf(i16, s, result_df, key_series, false),
+                .int32 => |s| try self.minMaxTypedDf(i32, s, result_df, key_series, false),
+                .int64 => |s| try self.minMaxTypedDf(i64, s, result_df, key_series, false),
+                .uint8 => |s| try self.minMaxTypedDf(u8, s, result_df, key_series, false),
+                .uint16 => |s| try self.minMaxTypedDf(u16, s, result_df, key_series, false),
+                .uint32 => |s| try self.minMaxTypedDf(u32, s, result_df, key_series, false),
+                .uint64 => |s| try self.minMaxTypedDf(u64, s, result_df, key_series, false),
+                .float32 => |s| try self.minMaxTypedDf(f32, s, result_df, key_series, false),
+                .float64 => |s| try self.minMaxTypedDf(f64, s, result_df, key_series, false),
+                else => return error.TypeNotComparable,
+            }
+
+            return result_df;
+        }
+
+        fn minMaxTypedDf(self: *Self, comptime ValType: type, series: *Series(ValType), result_df: *Dataframe, key_series: *Series(T), is_min: bool) !void {
+            var val_series = try result_df.createSeries(ValType);
+            try val_series.rename(series.name.toSlice());
+
+            var it = self.groups.iterator();
+            while (it.next()) |entry| {
+                try appendKey(key_series, entry.key_ptr.*);
+                var result_val = series.values.items[entry.value_ptr.items[0]];
+                for (entry.value_ptr.items[1..]) |idx| {
+                    const val = series.values.items[idx];
+                    if (is_min) {
+                        if (val < result_val) result_val = val;
+                    } else {
+                        if (val > result_val) result_val = val;
+                    }
+                }
+                try val_series.append(result_val);
+            }
+        }
+
+        pub fn stdDev(self: *Self, column: []const u8) !*Dataframe {
+            const series_opt = self.dataframe.getSeries(column);
+            if (series_opt == null) return error.ColumnNotFound;
+
+            const result_df = try Dataframe.init(self.allocator);
+            errdefer result_df.deinit();
+
+            var key_series = try result_df.createSeries(T);
+            try key_series.rename(self.series.name.toSlice());
+
+            switch (series_opt.?.*) {
+                .int8 => |s| try self.stdDevTypedDf(i8, s, result_df, key_series),
+                .int16 => |s| try self.stdDevTypedDf(i16, s, result_df, key_series),
+                .int32 => |s| try self.stdDevTypedDf(i32, s, result_df, key_series),
+                .int64 => |s| try self.stdDevTypedDf(i64, s, result_df, key_series),
+                .uint8 => |s| try self.stdDevTypedDf(u8, s, result_df, key_series),
+                .uint16 => |s| try self.stdDevTypedDf(u16, s, result_df, key_series),
+                .uint32 => |s| try self.stdDevTypedDf(u32, s, result_df, key_series),
+                .uint64 => |s| try self.stdDevTypedDf(u64, s, result_df, key_series),
+                .float32 => |s| try self.stdDevTypedDf(f32, s, result_df, key_series),
+                .float64 => |s| try self.stdDevTypedDf(f64, s, result_df, key_series),
+                else => return error.TypeNotAverageable,
+            }
+
+            return result_df;
+        }
+
+        fn stdDevTypedDf(self: *Self, comptime ValType: type, series: *Series(ValType), result_df: *Dataframe, key_series: *Series(T)) !void {
+            var val_series = try result_df.createSeries(f64);
+            try val_series.rename(series.name.toSlice());
+
+            var it = self.groups.iterator();
+            while (it.next()) |entry| {
+                try appendKey(key_series, entry.key_ptr.*);
+                const n: f64 = @floatFromInt(entry.value_ptr.items.len);
+                var sum_val: f64 = 0.0;
+                for (entry.value_ptr.items) |idx| {
+                    const val = series.values.items[idx];
+                    sum_val += @as(f64, if (ValType == f32 or ValType == f64) val else @floatFromInt(val));
+                }
+                const mean_val = sum_val / n;
+                var sq_sum: f64 = 0.0;
+                for (entry.value_ptr.items) |idx| {
+                    const val = series.values.items[idx];
+                    const fval: f64 = @as(f64, if (ValType == f32 or ValType == f64) val else @floatFromInt(val));
+                    const diff = fval - mean_val;
+                    sq_sum += diff * diff;
+                }
+                try val_series.append(@sqrt(sq_sum / n));
+            }
         }
     };
 }
@@ -343,11 +430,12 @@ test "GroupBy: sum produces correct totals" {
     var sum_result = try gb.sum("values");
     defer sum_result.deinit();
 
-    try std.testing.expectEqual(@as(usize, 2), sum_result.len());
+    try std.testing.expectEqual(@as(usize, 2), sum_result.height());
 
     // Group 1: 10+30+50=90, Group 2: 20+40=60 (order may vary)
-    const a = sum_result.int64.values.items[0];
-    const b = sum_result.int64.values.items[1];
+    const sum_col = sum_result.getSeries("values") orelse return error.DoesNotExist;
+    const a = sum_col.int64.values.items[0];
+    const b = sum_col.int64.values.items[1];
     try std.testing.expect((a == 90 and b == 60) or (a == 60 and b == 90));
 }
 
@@ -362,11 +450,12 @@ test "GroupBy: mean produces correct averages" {
     var mean_result = try gb.mean("values");
     defer mean_result.deinit();
 
-    try std.testing.expectEqual(@as(usize, 2), mean_result.len());
+    try std.testing.expectEqual(@as(usize, 2), mean_result.height());
 
     // Group 1: (10+30+50)/3=30.0, Group 2: (20+40)/2=30.0
-    const a = mean_result.float64.values.items[0];
-    const b = mean_result.float64.values.items[1];
+    const mean_col = mean_result.getSeries("values") orelse return error.DoesNotExist;
+    const a = mean_col.float64.values.items[0];
+    const b = mean_col.float64.values.items[1];
     try std.testing.expect((a == 30.0 and b == 30.0));
 }
 
@@ -421,7 +510,8 @@ test "GroupBy: single group contains all rows" {
 
     var mean_result = try gb.mean("val");
     defer mean_result.deinit();
-    try std.testing.expectEqual(12.0, mean_result.float64.values.items[0]);
+    const mean_col = mean_result.getSeries("val") orelse return error.DoesNotExist;
+    try std.testing.expectEqual(12.0, mean_col.float64.values.items[0]);
 }
 
 test "GroupBy: f64 keys group correctly" {
@@ -451,7 +541,72 @@ test "GroupBy: f64 keys group correctly" {
     var sum_result = try gb.sum("qty");
     defer sum_result.deinit();
 
-    const a = sum_result.int32.values.items[0];
-    const b = sum_result.int32.values.items[1];
+    const sum_col = sum_result.getSeries("qty") orelse return error.DoesNotExist;
+    const a = sum_col.int32.values.items[0];
+    const b = sum_col.int32.values.items[1];
     try std.testing.expect((a == 40 and b == 20) or (a == 20 and b == 40));
+}
+
+test "GroupBy: min produces correct minimums" {
+    const allocator = std.testing.allocator;
+    var df = try createTestDf(allocator);
+    defer df.deinit();
+
+    var gb = try df.groupBy("category");
+    defer gb.deinit();
+
+    var min_result = try gb.min("values");
+    defer min_result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), min_result.height());
+    const min_col = min_result.getSeries("values") orelse return error.DoesNotExist;
+    // Group 1: min(10,30,50)=10, Group 2: min(20,40)=20
+    const a = min_col.int64.values.items[0];
+    const b = min_col.int64.values.items[1];
+    try std.testing.expect((a == 10 and b == 20) or (a == 20 and b == 10));
+}
+
+test "GroupBy: max produces correct maximums" {
+    const allocator = std.testing.allocator;
+    var df = try createTestDf(allocator);
+    defer df.deinit();
+
+    var gb = try df.groupBy("category");
+    defer gb.deinit();
+
+    var max_result = try gb.max("values");
+    defer max_result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), max_result.height());
+    const max_col = max_result.getSeries("values") orelse return error.DoesNotExist;
+    // Group 1: max(10,30,50)=50, Group 2: max(20,40)=40
+    const a = max_col.int64.values.items[0];
+    const b = max_col.int64.values.items[1];
+    try std.testing.expect((a == 50 and b == 40) or (a == 40 and b == 50));
+}
+
+test "GroupBy: stdDev produces correct standard deviations" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var cat = try df.createSeries(i32);
+    try cat.rename("key");
+    try cat.append(1);
+    try cat.append(1);
+
+    var vals = try df.createSeries(i64);
+    try vals.rename("val");
+    try vals.append(10);
+    try vals.append(20);
+
+    var gb = try df.groupBy("key");
+    defer gb.deinit();
+
+    var std_result = try gb.stdDev("val");
+    defer std_result.deinit();
+
+    const std_col = std_result.getSeries("val") orelse return error.DoesNotExist;
+    // stddev of [10,20]: mean=15, sqrt(((10-15)^2 + (20-15)^2)/2) = sqrt(25) = 5.0
+    try std.testing.expectEqual(@as(f64, 5.0), std_col.float64.values.items[0]);
 }

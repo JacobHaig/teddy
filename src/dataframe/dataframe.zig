@@ -153,6 +153,244 @@ pub const Dataframe = struct {
         return boxed_series.groupBy(self.allocator, self);
     }
 
+    /// Creates a new Dataframe containing only the rows at the given indices.
+    /// Caller owns the returned pointer and must call deinit.
+    pub fn filterByIndices(self: *Self, indices: []const usize) !*Self {
+        const new_df = try Self.init(self.allocator);
+        errdefer new_df.deinit();
+        for (self.series.items) |*s| {
+            const new_s = try s.filterByIndices(indices);
+            try new_df.series.append(self.allocator, new_s);
+        }
+        return new_df;
+    }
+
+    /// Returns a new Dataframe with only the named columns. Caller owns the returned pointer.
+    pub fn select(self: *Self, columns: []const []const u8) !*Self {
+        const new_df = try Self.init(self.allocator);
+        errdefer new_df.deinit();
+        for (columns) |col_name| {
+            var s = self.getSeries(col_name) orelse return error.ColumnNotFound;
+            const new_s = try s.deepCopy();
+            try new_df.series.append(self.allocator, new_s);
+        }
+        return new_df;
+    }
+
+    /// Returns a new Dataframe with the first n rows. Caller owns the returned pointer.
+    pub fn head(self: *Self, n: usize) !*Self {
+        const actual_n = @min(n, self.height());
+        var indices = try std.ArrayList(usize).initCapacity(self.allocator, actual_n);
+        defer indices.deinit(self.allocator);
+        for (0..actual_n) |i| try indices.append(self.allocator, i);
+        return self.filterByIndices(indices.items);
+    }
+
+    /// Returns a new Dataframe with the last n rows. Caller owns the returned pointer.
+    pub fn tail(self: *Self, n: usize) !*Self {
+        const h = self.height();
+        const actual_n = @min(n, h);
+        const start = h - actual_n;
+        var indices = try std.ArrayList(usize).initCapacity(self.allocator, actual_n);
+        defer indices.deinit(self.allocator);
+        for (start..h) |i| try indices.append(self.allocator, i);
+        return self.filterByIndices(indices.items);
+    }
+
+    pub const CompareOp = @import("boxed_series.zig").CompareOp;
+
+    /// Returns a new Dataframe with rows where column matches the comparison.
+    /// For numeric columns: df.filter("Age", i64, .gt, 30)
+    /// For string columns:  df.filter("City", []const u8, .eq, "Riverside")
+    pub fn filter(self: *Self, column: []const u8, comptime T: type, op: CompareOp, value: T) !*Self {
+        var boxed = self.getSeries(column) orelse return error.ColumnNotFound;
+
+        // Auto-convert string-like types to internal String for comparison
+        if (comptime T == []const u8 or T == []u8 or isStringLiteral(T)) {
+            var str_val = try String.fromSlice(self.allocator, value);
+            defer str_val.deinit();
+            var indices = try boxed.filterIndices(String, self.allocator, op, str_val);
+            defer indices.deinit(self.allocator);
+            return self.filterByIndices(indices.items);
+        }
+
+        var indices = try boxed.filterIndices(T, self.allocator, op, value);
+        defer indices.deinit(self.allocator);
+        return self.filterByIndices(indices.items);
+    }
+
+    fn isStringLiteral(comptime T: type) bool {
+        return @typeInfo(T) == .pointer and
+            @typeInfo(T).pointer.is_const and
+            @typeInfo(T).pointer.size == .one and
+            @typeInfo(@typeInfo(T).pointer.child) == .array and
+            @typeInfo(@typeInfo(T).pointer.child).array.child == u8;
+    }
+
+    /// Returns a new Dataframe sorted by the named column. Caller owns the returned pointer.
+    pub fn sort(self: *Self, column: []const u8, ascending: bool) !*Self {
+        var boxed = self.getSeries(column) orelse return error.ColumnNotFound;
+        var indices = try boxed.argSort(self.allocator, ascending);
+        defer indices.deinit(self.allocator);
+        return self.filterByIndices(indices.items);
+    }
+
+    /// Group by multiple columns using a composite string key.
+    /// Returns a BoxedGroupBy keyed by composite string. Caller must deinit.
+    /// The composite key column is added to the dataframe (named "_group_key").
+    /// Call dropSeries("_group_key") after you're done with the GroupBy if you want to clean it up.
+    pub fn groupByMultiple(self: *Self, columns: []const []const u8) !BoxedGroupBy {
+        // Build composite key series
+        var composite = try Series(String).init(self.allocator);
+        errdefer composite.deinit();
+        try composite.rename("_group_key");
+
+        for (0..self.height()) |row| {
+            var key = try String.init(self.allocator);
+            errdefer key.deinit();
+            for (columns, 0..) |col_name, ci| {
+                if (ci > 0) try key.appendSlice("|");
+                var s = self.getSeries(col_name) orelse {
+                    composite.deinit();
+                    return error.ColumnNotFound;
+                };
+                var str_val = try s.asStringAt(row);
+                defer str_val.deinit();
+                try key.appendSlice(str_val.toSlice());
+            }
+            try composite.values.append(self.allocator, key);
+        }
+
+        // Add composite to dataframe — it owns it, and GroupBy references it
+        try self.series.append(self.allocator, composite.toBoxedSeries());
+
+        return try self.groupBy("_group_key");
+    }
+
+    pub const CsvWriteOptions = @import("csv_writer.zig").WriteOptions;
+    pub const JsonFormat = @import("json_writer.zig").JsonFormat;
+    pub const JoinType = @import("join.zig").JoinType;
+
+    /// Join this dataframe with another on a key column. Caller owns the returned pointer.
+    pub fn join(self: *Self, other: *Self, on: []const u8, join_type: JoinType) !*Self {
+        return @import("join.zig").join(self.allocator, self, other, on, join_type);
+    }
+
+    /// Write this Dataframe to a CSV string. Caller must free the returned slice.
+    pub fn toCsvString(self: *Self, options: CsvWriteOptions) ![]u8 {
+        return @import("csv_writer.zig").writeToString(self.allocator, self, options);
+    }
+
+    /// Returns a new Dataframe with summary statistics for numeric columns.
+    /// Rows: count, mean, std, min, max. Caller owns the returned pointer.
+    pub fn describe(self: *Self) !*Self {
+        const result = try Self.init(self.allocator);
+        errdefer result.deinit();
+
+        // Create stat label column
+        var stat_col = try result.createSeries(String);
+        try stat_col.rename("stat");
+        try stat_col.tryAppend("count");
+        try stat_col.tryAppend("mean");
+        try stat_col.tryAppend("std");
+        try stat_col.tryAppend("min");
+        try stat_col.tryAppend("max");
+
+        // For each numeric column, compute stats
+        for (self.series.items) |*s| {
+            const stats = computeStats(s) orelse continue;
+            var val_col = try result.createSeries(f64);
+            try val_col.rename(s.name());
+            try val_col.append(stats.count);
+            try val_col.append(stats.mean_val);
+            try val_col.append(stats.std_val);
+            try val_col.append(stats.min_val);
+            try val_col.append(stats.max_val);
+        }
+
+        return result;
+    }
+
+    const Stats = struct { count: f64, mean_val: f64, std_val: f64, min_val: f64, max_val: f64 };
+
+    fn computeStats(s: *BoxedSeries) ?Stats {
+        return switch (s.*) {
+            .int8 => |p| numericStats(i8, p),
+            .int16 => |p| numericStats(i16, p),
+            .int32 => |p| numericStats(i32, p),
+            .int64 => |p| numericStats(i64, p),
+            .uint8 => |p| numericStats(u8, p),
+            .uint16 => |p| numericStats(u16, p),
+            .uint32 => |p| numericStats(u32, p),
+            .uint64 => |p| numericStats(u64, p),
+            .usize => |p| numericStats(usize, p),
+            .float32 => |p| numericStats(f32, p),
+            .float64 => |p| numericStats(f64, p),
+            else => null,
+        };
+    }
+
+    fn numericStats(comptime T: type, series: *Series(T)) Stats {
+        const n = series.len();
+        if (n == 0) return .{ .count = 0, .mean_val = 0, .std_val = 0, .min_val = 0, .max_val = 0 };
+        const is_float = (T == f32 or T == f64);
+        const count: f64 = @floatFromInt(n);
+        const mean_val = series.seriesMean();
+        const std_val = series.seriesStdDev();
+        const min_raw = series.minVal().?;
+        const max_raw = series.maxVal().?;
+        const min_val: f64 = if (comptime is_float) @as(f64, min_raw) else @floatFromInt(min_raw);
+        const max_val: f64 = if (comptime is_float) @as(f64, max_raw) else @floatFromInt(max_raw);
+        return .{ .count = count, .mean_val = mean_val, .std_val = std_val, .min_val = min_val, .max_val = max_val };
+    }
+
+    /// Write this Dataframe to a JSON string. Caller must free the returned slice.
+    pub fn toJsonString(self: *Self, format: JsonFormat) ![]u8 {
+        return @import("json_writer.zig").writeToString(self.allocator, self, format);
+    }
+
+    /// Vertically concatenate another dataframe. Columns must match by name and type.
+    /// Returns a new Dataframe. Caller owns the returned pointer.
+    pub fn concat(self: *Self, other: *Self) !*Self {
+        const new_df = try Self.init(self.allocator);
+        errdefer new_df.deinit();
+
+        for (self.series.items) |*s| {
+            const col_name = s.name();
+            const other_s = other.getSeries(col_name) orelse return error.ColumnNotFound;
+            var new_s = try s.deepCopy();
+            try new_s.appendFrom(other_s);
+            try new_df.series.append(self.allocator, new_s);
+        }
+        return new_df;
+    }
+
+    /// Returns a new Dataframe with duplicate rows removed based on a column.
+    /// Keeps the first occurrence. Caller owns the returned pointer.
+    pub fn unique(self: *Self, column: []const u8) !*Self {
+        var boxed = self.getSeries(column) orelse return error.ColumnNotFound;
+        var indices = try boxed.uniqueIndices(self.allocator);
+        defer indices.deinit(self.allocator);
+        return self.filterByIndices(indices.items);
+    }
+
+    /// Shorthand for groupBy(column).count(). Returns a *Dataframe with key + count columns.
+    pub fn valueCounts(self: *Self, column: []const u8) !*Self {
+        var gb = try self.groupBy(column);
+        defer gb.deinit();
+        return gb.count();
+    }
+
+    /// Returns a new Dataframe with rows [start..end). Caller owns the returned pointer.
+    pub fn slice(self: *Self, start: usize, end: usize) !*Self {
+        const actual_end = @min(end, self.height());
+        if (start >= actual_end) return Self.init(self.allocator);
+        var indices = try std.ArrayList(usize).initCapacity(self.allocator, actual_end - start);
+        defer indices.deinit(self.allocator);
+        for (start..actual_end) |i| try indices.append(self.allocator, i);
+        return self.filterByIndices(indices.items);
+    }
+
     /// Compares this Dataframe to another for equality. Returns true if all columns and values are equal.
     pub fn compareDataframe(self: *Self, other: *Self) !bool {
         if (self.height() != other.height() or self.width() != other.width()) {
@@ -522,9 +760,10 @@ test "groupBy: sum by group" {
     var sum_result = try gb.sum("values");
     defer sum_result.deinit();
 
-    try std.testing.expect(sum_result.len() == 2);
-    try std.testing.expectEqual(@as(i32, 25), sum_result.int32.values.items[0]);
-    try std.testing.expectEqual(@as(i32, 45), sum_result.int32.values.items[1]);
+    try std.testing.expect(sum_result.height() == 2);
+    const sum_col = sum_result.getSeries("values") orelse return error.DoesNotExist;
+    try std.testing.expectEqual(@as(i32, 25), sum_col.int32.values.items[0]);
+    try std.testing.expectEqual(@as(i32, 45), sum_col.int32.values.items[1]);
 }
 
 test "groupBy: mean by group" {
@@ -550,8 +789,433 @@ test "groupBy: mean by group" {
     var mean_result = try gb.mean("values");
     defer mean_result.deinit();
 
-    try std.testing.expect(mean_result.len() == 2);
+    try std.testing.expect(mean_result.height() == 2);
     // mean of [10, 20] for group 1 = 15.0, mean of [20] for group 2 = 20.0
-    try std.testing.expectEqual(15.0, mean_result.float64.values.items[0]);
-    try std.testing.expectEqual(20.0, mean_result.float64.values.items[1]);
+    const mean_col = mean_result.getSeries("values") orelse return error.DoesNotExist;
+    try std.testing.expectEqual(15.0, mean_col.float64.values.items[0]);
+    try std.testing.expectEqual(20.0, mean_col.float64.values.items[1]);
+}
+
+test "Dataframe: filterByIndices creates correct subset" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var col1 = try df.createSeries(i32);
+    try col1.rename("a");
+    try col1.append(10);
+    try col1.append(20);
+    try col1.append(30);
+    try col1.append(40);
+
+    var col2 = try df.createSeries(i32);
+    try col2.rename("b");
+    try col2.append(1);
+    try col2.append(2);
+    try col2.append(3);
+    try col2.append(4);
+
+    var filtered = try df.filterByIndices(&[_]usize{ 0, 2 });
+    defer filtered.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), filtered.height());
+    try std.testing.expectEqual(@as(usize, 2), filtered.width());
+
+    const a = filtered.getSeries("a") orelse return error.DoesNotExist;
+    try std.testing.expectEqual(@as(i32, 10), a.int32.values.items[0]);
+    try std.testing.expectEqual(@as(i32, 30), a.int32.values.items[1]);
+
+    const b = filtered.getSeries("b") orelse return error.DoesNotExist;
+    try std.testing.expectEqual(@as(i32, 1), b.int32.values.items[0]);
+    try std.testing.expectEqual(@as(i32, 3), b.int32.values.items[1]);
+}
+
+test "Dataframe: select picks named columns" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var a = try df.createSeries(i32);
+    try a.rename("a");
+    try a.append(1);
+
+    var b = try df.createSeries(i32);
+    try b.rename("b");
+    try b.append(2);
+
+    var c = try df.createSeries(i32);
+    try c.rename("c");
+    try c.append(3);
+
+    var selected = try df.select(&[_][]const u8{ "a", "c" });
+    defer selected.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), selected.width());
+    try std.testing.expect(selected.getSeries("a") != null);
+    try std.testing.expect(selected.getSeries("b") == null);
+    try std.testing.expect(selected.getSeries("c") != null);
+}
+
+test "Dataframe: select missing column returns error" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var a = try df.createSeries(i32);
+    try a.rename("a");
+    try a.append(1);
+
+    try std.testing.expectError(error.ColumnNotFound, df.select(&[_][]const u8{"nope"}));
+}
+
+test "Dataframe: head returns first n rows" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var col = try df.createSeries(i32);
+    try col.rename("x");
+    try col.append(10);
+    try col.append(20);
+    try col.append(30);
+
+    var h = try df.head(2);
+    defer h.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), h.height());
+    const s = h.getSeries("x") orelse return error.DoesNotExist;
+    try std.testing.expectEqual(@as(i32, 10), s.int32.values.items[0]);
+    try std.testing.expectEqual(@as(i32, 20), s.int32.values.items[1]);
+}
+
+test "Dataframe: tail returns last n rows" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var col = try df.createSeries(i32);
+    try col.rename("x");
+    try col.append(10);
+    try col.append(20);
+    try col.append(30);
+
+    var t = try df.tail(2);
+    defer t.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), t.height());
+    const s = t.getSeries("x") orelse return error.DoesNotExist;
+    try std.testing.expectEqual(@as(i32, 20), s.int32.values.items[0]);
+    try std.testing.expectEqual(@as(i32, 30), s.int32.values.items[1]);
+}
+
+test "Dataframe: slice returns row range" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var col = try df.createSeries(i32);
+    try col.rename("x");
+    try col.append(10);
+    try col.append(20);
+    try col.append(30);
+    try col.append(40);
+
+    var s = try df.slice(1, 3);
+    defer s.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), s.height());
+    const xs = s.getSeries("x") orelse return error.DoesNotExist;
+    try std.testing.expectEqual(@as(i32, 20), xs.int32.values.items[0]);
+    try std.testing.expectEqual(@as(i32, 30), xs.int32.values.items[1]);
+}
+
+test "Dataframe: head with n > height returns all rows" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var col = try df.createSeries(i32);
+    try col.rename("x");
+    try col.append(1);
+
+    var h = try df.head(100);
+    defer h.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), h.height());
+}
+
+test "Dataframe: sort ascending" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var col = try df.createSeries(i32);
+    try col.rename("x");
+    try col.append(30);
+    try col.append(10);
+    try col.append(20);
+
+    var sorted = try df.sort("x", true);
+    defer sorted.deinit();
+
+    const s = sorted.getSeries("x") orelse return error.DoesNotExist;
+    try std.testing.expectEqual(@as(i32, 10), s.int32.values.items[0]);
+    try std.testing.expectEqual(@as(i32, 20), s.int32.values.items[1]);
+    try std.testing.expectEqual(@as(i32, 30), s.int32.values.items[2]);
+}
+
+test "Dataframe: sort descending" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var col = try df.createSeries(i32);
+    try col.rename("x");
+    try col.append(10);
+    try col.append(30);
+    try col.append(20);
+
+    var sorted = try df.sort("x", false);
+    defer sorted.deinit();
+
+    const s = sorted.getSeries("x") orelse return error.DoesNotExist;
+    try std.testing.expectEqual(@as(i32, 30), s.int32.values.items[0]);
+    try std.testing.expectEqual(@as(i32, 20), s.int32.values.items[1]);
+    try std.testing.expectEqual(@as(i32, 10), s.int32.values.items[2]);
+}
+
+test "Dataframe: sort preserves other columns" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var ages = try df.createSeries(i32);
+    try ages.rename("age");
+    try ages.append(30);
+    try ages.append(10);
+    try ages.append(20);
+
+    var names = try df.createSeries(String);
+    try names.rename("name");
+    try names.tryAppend("Alice");
+    try names.tryAppend("Bob");
+    try names.tryAppend("Carol");
+
+    var sorted = try df.sort("age", true);
+    defer sorted.deinit();
+
+    const n = sorted.getSeries("name") orelse return error.DoesNotExist;
+    try std.testing.expectEqualStrings("Bob", n.string.values.items[0].toSlice());
+    try std.testing.expectEqualStrings("Carol", n.string.values.items[1].toSlice());
+    try std.testing.expectEqualStrings("Alice", n.string.values.items[2].toSlice());
+}
+
+test "Dataframe: filter gt" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var col = try df.createSeries(i32);
+    try col.rename("x");
+    try col.append(10);
+    try col.append(20);
+    try col.append(30);
+    try col.append(5);
+
+    var filtered = try df.filter("x", i32, .gt, 15);
+    defer filtered.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), filtered.height());
+    const s = filtered.getSeries("x") orelse return error.DoesNotExist;
+    try std.testing.expectEqual(@as(i32, 20), s.int32.values.items[0]);
+    try std.testing.expectEqual(@as(i32, 30), s.int32.values.items[1]);
+}
+
+test "Dataframe: filter eq" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var col = try df.createSeries(i32);
+    try col.rename("x");
+    try col.append(1);
+    try col.append(2);
+    try col.append(1);
+
+    var filtered = try df.filter("x", i32, .eq, 1);
+    defer filtered.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), filtered.height());
+}
+
+test "Dataframe: filter no matches returns empty" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var col = try df.createSeries(i32);
+    try col.rename("x");
+    try col.append(1);
+
+    var filtered = try df.filter("x", i32, .gt, 100);
+    defer filtered.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), filtered.height());
+}
+
+test "Dataframe: filter missing column returns error" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var col = try df.createSeries(i32);
+    try col.rename("x");
+    try col.append(1);
+
+    try std.testing.expectError(error.ColumnNotFound, df.filter("nope", i32, .eq, 1));
+}
+
+test "Dataframe: unique removes duplicates" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var col = try df.createSeries(i32);
+    try col.rename("x");
+    try col.append(1);
+    try col.append(2);
+    try col.append(1);
+    try col.append(3);
+    try col.append(2);
+
+    var u = try df.unique("x");
+    defer u.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), u.height());
+}
+
+test "Dataframe: valueCounts returns key and count" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var col = try df.createSeries(i32);
+    try col.rename("x");
+    try col.append(1);
+    try col.append(2);
+    try col.append(1);
+
+    var vc = try df.valueCounts("x");
+    defer vc.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), vc.width());
+    try std.testing.expectEqual(@as(usize, 2), vc.height());
+    try std.testing.expect(vc.getSeries("x") != null);
+    try std.testing.expect(vc.getSeries("count") != null);
+}
+
+test "Dataframe: concat stacks rows" {
+    const allocator = std.testing.allocator;
+    var df1 = try Dataframe.init(allocator);
+    defer df1.deinit();
+    var a1 = try df1.createSeries(i32);
+    try a1.rename("x");
+    try a1.append(1);
+    try a1.append(2);
+
+    var df2 = try Dataframe.init(allocator);
+    defer df2.deinit();
+    var a2 = try df2.createSeries(i32);
+    try a2.rename("x");
+    try a2.append(3);
+
+    var combined = try df1.concat(df2);
+    defer combined.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), combined.height());
+    const s = combined.getSeries("x") orelse return error.DoesNotExist;
+    try std.testing.expectEqual(@as(i32, 1), s.int32.values.items[0]);
+    try std.testing.expectEqual(@as(i32, 2), s.int32.values.items[1]);
+    try std.testing.expectEqual(@as(i32, 3), s.int32.values.items[2]);
+}
+
+test "Dataframe: concat missing column returns error" {
+    const allocator = std.testing.allocator;
+    var df1 = try Dataframe.init(allocator);
+    defer df1.deinit();
+    var a1 = try df1.createSeries(i32);
+    try a1.rename("x");
+    try a1.append(1);
+
+    var df2 = try Dataframe.init(allocator);
+    defer df2.deinit();
+    var a2 = try df2.createSeries(i32);
+    try a2.rename("y");
+    try a2.append(1);
+
+    try std.testing.expectError(error.ColumnNotFound, df1.concat(df2));
+}
+
+test "Dataframe: describe returns summary statistics" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var col = try df.createSeries(i32);
+    try col.rename("x");
+    try col.append(10);
+    try col.append(20);
+
+    var str_col = try df.createSeries(String);
+    try str_col.rename("name");
+    try str_col.tryAppend("a");
+    try str_col.tryAppend("b");
+
+    var desc = try df.describe();
+    defer desc.deinit();
+
+    // Should have "stat" + "x" columns (string column skipped)
+    try std.testing.expectEqual(@as(usize, 2), desc.width());
+    try std.testing.expectEqual(@as(usize, 5), desc.height());
+
+    const x_col = desc.getSeries("x") orelse return error.DoesNotExist;
+    // count=2, mean=15, std=5, min=10, max=20
+    try std.testing.expectEqual(@as(f64, 2.0), x_col.float64.values.items[0]);
+    try std.testing.expectEqual(@as(f64, 15.0), x_col.float64.values.items[1]);
+    try std.testing.expectEqual(@as(f64, 5.0), x_col.float64.values.items[2]);
+    try std.testing.expectEqual(@as(f64, 10.0), x_col.float64.values.items[3]);
+    try std.testing.expectEqual(@as(f64, 20.0), x_col.float64.values.items[4]);
+}
+
+test "Dataframe: groupByMultiple composite key" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var state = try df.createSeries(String);
+    try state.rename("state");
+    try state.tryAppend("NJ");
+    try state.tryAppend("PA");
+    try state.tryAppend("NJ");
+
+    var city = try df.createSeries(String);
+    try city.rename("city");
+    try city.tryAppend("Riverside");
+    try city.tryAppend("Phila");
+    try city.tryAppend("Riverside");
+
+    var val = try df.createSeries(i32);
+    try val.rename("val");
+    try val.append(10);
+    try val.append(20);
+    try val.append(30);
+
+    var gb = try df.groupByMultiple(&[_][]const u8{ "state", "city" });
+    defer gb.deinit();
+
+    var counts = try gb.count();
+    defer counts.deinit();
+
+    // NJ|Riverside=2, PA|Phila=1
+    try std.testing.expectEqual(@as(usize, 2), counts.height());
 }

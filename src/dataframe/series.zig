@@ -25,6 +25,9 @@ pub fn Series(comptime T: type) type {
         allocator: std.mem.Allocator,
         name: strings.String,
         values: std.ArrayList(T),
+        /// Optional validity bitmap. null means all values are valid.
+        /// When present, validity[i] == false means the value at index i is null/missing.
+        validity: ?std.ArrayList(bool) = null,
 
         /// Allocates a new Series on the heap. Caller owns the returned pointer and must call deinit.
         pub fn init(allocator: std.mem.Allocator) !*Self {
@@ -34,6 +37,7 @@ pub fn Series(comptime T: type) type {
             ptr.allocator = allocator;
             ptr.name = try strings.String.init(allocator);
             ptr.values = try std.ArrayList(T).initCapacity(allocator, 0);
+            ptr.validity = null;
             return ptr;
         }
 
@@ -44,6 +48,7 @@ pub fn Series(comptime T: type) type {
             series_ptr.allocator = allocator;
             series_ptr.name = try strings.String.init(allocator);
             series_ptr.values = try std.ArrayList(T).initCapacity(allocator, cap);
+            series_ptr.validity = null;
             return series_ptr;
         }
 
@@ -68,6 +73,7 @@ pub fn Series(comptime T: type) type {
                     item.deinit();
                 }
             }
+            if (self.validity) |*v| v.deinit(self.allocator);
             self.name.deinit();
             self.values.deinit(self.allocator);
             self.allocator.destroy(self);
@@ -171,6 +177,9 @@ pub fn Series(comptime T: type) type {
 
         pub fn append(self: *Self, value: T) !void {
             try self.values.append(self.allocator, value);
+            if (self.validity) |*v| {
+                try v.append(self.allocator, true);
+            }
         }
 
         pub fn appendSlice(self: *Self, slice: []const T) !void {
@@ -213,6 +222,52 @@ pub fn Series(comptime T: type) type {
             }
         }
 
+        /// Appends a null/missing value. Uses a default placeholder value internally.
+        pub fn appendNull(self: *Self) !void {
+            // Lazily initialize validity bitmap
+            if (self.validity == null) {
+                self.validity = try std.ArrayList(bool).initCapacity(self.allocator, self.values.items.len);
+                // All existing values are valid
+                for (0..self.values.items.len) |_| {
+                    try self.validity.?.append(self.allocator, true);
+                }
+            }
+            // Append default value as placeholder
+            if (comptime T == strings.String) {
+                var empty = try strings.String.init(self.allocator);
+                errdefer empty.deinit();
+                try self.values.append(self.allocator, empty);
+            } else {
+                try self.values.append(self.allocator, @as(T, 0));
+            }
+            try self.validity.?.append(self.allocator, false);
+        }
+
+        /// Returns true if the value at index i is null/missing.
+        pub fn isNull(self: *Self, i: usize) bool {
+            if (self.validity) |v| {
+                return !v.items[i];
+            }
+            return false;
+        }
+
+        /// Returns the number of null values.
+        pub fn nullCount(self: *Self) usize {
+            if (self.validity) |v| {
+                var count: usize = 0;
+                for (v.items) |valid| {
+                    if (!valid) count += 1;
+                }
+                return count;
+            }
+            return 0;
+        }
+
+        /// Returns true if the series has any null values.
+        pub fn hasNulls(self: *Self) bool {
+            return self.nullCount() > 0;
+        }
+
         pub fn dropRow(self: *Self, index: usize) void {
             switch (T) {
                 strings.String => {
@@ -236,6 +291,13 @@ pub fn Series(comptime T: type) type {
 
             try new_series.rename(self.name.toSlice());
             try new_series.values.ensureTotalCapacity(self.allocator, self.values.items.len);
+            // Copy validity bitmap if present
+            if (self.validity) |v| {
+                new_series.validity = try std.ArrayList(bool).initCapacity(self.allocator, v.items.len);
+                for (v.items) |valid| {
+                    try new_series.validity.?.append(self.allocator, valid);
+                }
+            }
             for (self.values.items) |*value| {
                 switch (comptime T) {
                     strings.String => {
@@ -245,7 +307,7 @@ pub fn Series(comptime T: type) type {
                         try new_series.values.append(self.allocator, new_value);
                     },
                     inline else => {
-                        try new_series.append(value.*);
+                        try new_series.values.append(self.allocator, value.*);
                     },
                 }
             }
@@ -302,8 +364,318 @@ pub fn Series(comptime T: type) type {
             };
         }
 
+        /// Creates a new Series containing only the rows at the given indices.
+        /// Caller owns the returned pointer and must call deinit.
+        pub fn filterByIndices(self: *Self, indices: []const usize) !*Self {
+            const new_series = try Self.initWithCapacity(self.allocator, indices.len);
+            errdefer new_series.deinit();
+            try new_series.rename(self.name.toSlice());
+            // Copy validity bitmap if present
+            if (self.validity != null) {
+                new_series.validity = try std.ArrayList(bool).initCapacity(self.allocator, indices.len);
+            }
+            for (indices) |idx| {
+                if (comptime T == strings.String) {
+                    var cloned = try self.values.items[idx].clone();
+                    errdefer cloned.deinit();
+                    try new_series.values.append(self.allocator, cloned);
+                } else {
+                    try new_series.values.append(self.allocator, self.values.items[idx]);
+                }
+                if (self.validity) |v| {
+                    try new_series.validity.?.append(self.allocator, v.items[idx]);
+                }
+            }
+            return new_series;
+        }
+
+        /// Returns indices that would sort this series.
+        /// Caller owns the returned ArrayList and must deinit it.
+        pub fn argSort(self: *Self, allocator: std.mem.Allocator, ascending: bool) !std.ArrayList(usize) {
+            const n = self.values.items.len;
+            var indices = try std.ArrayList(usize).initCapacity(allocator, n);
+            for (0..n) |i| try indices.append(allocator, i);
+
+            const items = self.values.items;
+            const Context = struct {
+                items_ptr: []const T,
+                asc: bool,
+
+                pub fn lessThan(ctx: @This(), a_idx: usize, b_idx: usize) bool {
+                    const a = ctx.items_ptr[a_idx];
+                    const b = ctx.items_ptr[b_idx];
+                    if (comptime T == strings.String) {
+                        const order = std.mem.order(u8, a.toSlice(), b.toSlice());
+                        return if (ctx.asc) order == .lt else order == .gt;
+                    } else if (comptime T == bool) {
+                        const ai: u1 = @intFromBool(a);
+                        const bi: u1 = @intFromBool(b);
+                        return if (ctx.asc) ai < bi else ai > bi;
+                    } else {
+                        return if (ctx.asc) a < b else a > b;
+                    }
+                }
+            };
+            std.mem.sortUnstable(usize, indices.items, Context{ .items_ptr = items, .asc = ascending }, Context.lessThan);
+            return indices;
+        }
+
+        /// Returns indices of first occurrence of each unique value.
+        /// Caller owns the returned ArrayList.
+        pub fn uniqueIndices(self: *Self, allocator: std.mem.Allocator) !std.ArrayList(usize) {
+            const GroupByContext = @import("group.zig").GroupByContext(T);
+            var seen = std.HashMap(T, void, GroupByContext, std.hash_map.default_max_load_percentage).init(allocator);
+            defer seen.deinit();
+
+            var indices = std.ArrayList(usize){};
+            for (self.values.items, 0..) |val, i| {
+                const gop = try seen.getOrPut(val);
+                if (!gop.found_existing) {
+                    try indices.append(allocator, i);
+                }
+            }
+            return indices;
+        }
+
+        const is_numeric = !(T == strings.String or T == bool);
+        const is_float = (T == f32 or T == f64);
+
+        /// Returns the sum of all values. Only available for numeric types.
+        pub fn seriesSum(self: *Self) T {
+            comptime if (!is_numeric) @compileError("sum not supported for " ++ @typeName(T));
+            var total: T = 0;
+            for (self.values.items) |v| total += v;
+            return total;
+        }
+
+        /// Returns the minimum value, or null if empty.
+        pub fn minVal(self: *Self) ?T {
+            comptime if (!is_numeric) @compileError("min not supported for " ++ @typeName(T));
+            if (self.values.items.len == 0) return null;
+            var m = self.values.items[0];
+            for (self.values.items[1..]) |v| {
+                if (v < m) m = v;
+            }
+            return m;
+        }
+
+        /// Returns the maximum value, or null if empty.
+        pub fn maxVal(self: *Self) ?T {
+            comptime if (!is_numeric) @compileError("max not supported for " ++ @typeName(T));
+            if (self.values.items.len == 0) return null;
+            var m = self.values.items[0];
+            for (self.values.items[1..]) |v| {
+                if (v > m) m = v;
+            }
+            return m;
+        }
+
+        /// Returns the mean as f64. Only available for numeric types.
+        pub fn seriesMean(self: *Self) f64 {
+            comptime if (!is_numeric) @compileError("mean not supported for " ++ @typeName(T));
+            if (self.values.items.len == 0) return 0.0;
+            var total: f64 = 0.0;
+            for (self.values.items) |v| {
+                total += if (comptime is_float) @as(f64, v) else @as(f64, @floatFromInt(v));
+            }
+            return total / @as(f64, @floatFromInt(self.values.items.len));
+        }
+
+        /// Returns the population standard deviation as f64.
+        pub fn seriesStdDev(self: *Self) f64 {
+            comptime if (!is_numeric) @compileError("stddev not supported for " ++ @typeName(T));
+            if (self.values.items.len == 0) return 0.0;
+            const m = self.seriesMean();
+            var sq_sum: f64 = 0.0;
+            for (self.values.items) |v| {
+                const fv: f64 = if (comptime is_float) @as(f64, v) else @as(f64, @floatFromInt(v));
+                const diff = fv - m;
+                sq_sum += diff * diff;
+            }
+            return @sqrt(sq_sum / @as(f64, @floatFromInt(self.values.items.len)));
+        }
+
         pub fn groupBy(self: *Self, allocator: std.mem.Allocator, dataframe: *Dataframe) !*GroupBy(T) {
             return GroupBy(T).init(allocator, dataframe, self);
         }
     };
+}
+
+// --- filterByIndices Tests ---
+
+test "Series: filterByIndices basic subset" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.rename("vals");
+    try s.append(10);
+    try s.append(20);
+    try s.append(30);
+    try s.append(40);
+
+    var filtered = try s.filterByIndices(&[_]usize{ 1, 3 });
+    defer filtered.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), filtered.len());
+    try std.testing.expectEqual(@as(i32, 20), filtered.values.items[0]);
+    try std.testing.expectEqual(@as(i32, 40), filtered.values.items[1]);
+    try std.testing.expectEqualStrings("vals", filtered.name.toSlice());
+}
+
+test "Series: filterByIndices empty indices" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(1);
+
+    var filtered = try s.filterByIndices(&[_]usize{});
+    defer filtered.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), filtered.len());
+}
+
+test "Series: filterByIndices with strings deep copies" {
+    const allocator = std.testing.allocator;
+    var s = try Series(strings.String).init(allocator);
+    defer s.deinit();
+    try s.tryAppend("hello");
+    try s.tryAppend("world");
+
+    var filtered = try s.filterByIndices(&[_]usize{1});
+    defer filtered.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), filtered.len());
+    try std.testing.expectEqualStrings("world", filtered.values.items[0].toSlice());
+}
+
+test "Series: filterByIndices out-of-order indices" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(10);
+    try s.append(20);
+    try s.append(30);
+
+    var filtered = try s.filterByIndices(&[_]usize{ 2, 0 });
+    defer filtered.deinit();
+
+    try std.testing.expectEqual(@as(i32, 30), filtered.values.items[0]);
+    try std.testing.expectEqual(@as(i32, 10), filtered.values.items[1]);
+}
+
+test "Series: seriesSum" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(10);
+    try s.append(20);
+    try s.append(30);
+
+    try std.testing.expectEqual(@as(i32, 60), s.seriesSum());
+}
+
+test "Series: minVal and maxVal" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(30);
+    try s.append(10);
+    try s.append(20);
+
+    try std.testing.expectEqual(@as(i32, 10), s.minVal().?);
+    try std.testing.expectEqual(@as(i32, 30), s.maxVal().?);
+}
+
+test "Series: minVal empty returns null" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+
+    try std.testing.expect(s.minVal() == null);
+}
+
+test "Series: seriesMean" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(10);
+    try s.append(20);
+
+    try std.testing.expectEqual(@as(f64, 15.0), s.seriesMean());
+}
+
+test "Series: seriesStdDev" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(10);
+    try s.append(20);
+
+    // mean=15, stddev = sqrt(((10-15)^2 + (20-15)^2) / 2) = sqrt(25) = 5
+    try std.testing.expectEqual(@as(f64, 5.0), s.seriesStdDev());
+}
+
+test "Series: float seriesMean" {
+    const allocator = std.testing.allocator;
+    var s = try Series(f64).init(allocator);
+    defer s.deinit();
+    try s.append(1.0);
+    try s.append(3.0);
+
+    try std.testing.expectEqual(@as(f64, 2.0), s.seriesMean());
+}
+
+test "Series: appendNull and isNull" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(10);
+    try s.appendNull();
+    try s.append(30);
+
+    try std.testing.expectEqual(@as(usize, 3), s.len());
+    try std.testing.expect(!s.isNull(0));
+    try std.testing.expect(s.isNull(1));
+    try std.testing.expect(!s.isNull(2));
+    try std.testing.expectEqual(@as(usize, 1), s.nullCount());
+    try std.testing.expect(s.hasNulls());
+}
+
+test "Series: no nulls by default" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(1);
+    try s.append(2);
+
+    try std.testing.expect(!s.isNull(0));
+    try std.testing.expectEqual(@as(usize, 0), s.nullCount());
+    try std.testing.expect(!s.hasNulls());
+}
+
+test "Series: appendNull with strings" {
+    const allocator = std.testing.allocator;
+    var s = try Series(strings.String).init(allocator);
+    defer s.deinit();
+    try s.tryAppend("hello");
+    try s.appendNull();
+
+    try std.testing.expectEqual(@as(usize, 2), s.len());
+    try std.testing.expect(!s.isNull(0));
+    try std.testing.expect(s.isNull(1));
+}
+
+test "Series: filterByIndices preserves validity" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(10);
+    try s.appendNull();
+    try s.append(30);
+
+    var filtered = try s.filterByIndices(&[_]usize{ 0, 1 });
+    defer filtered.deinit();
+
+    try std.testing.expect(!filtered.isNull(0));
+    try std.testing.expect(filtered.isNull(1));
 }

@@ -33,4 +33,33 @@ pub fn main() !void {
 
     std.debug.print("Count by Zip:\n", .{});
     try zip_count.print();
+
+    const df4 = try df3.sort("Age", true);
+    defer df4.deinit();
+    std.debug.print("Sorted by Age:\n", .{});
+    try df4.print();
+
+    const df5 = try df3.filter("Age", i64, .gte, 30);
+    defer df5.deinit();
+    std.debug.print("Filtered Age >= 30:\n", .{});
+    try df5.print();
+
+    const df6 = try df3.filter("City", []const u8, .eq, "Riverside");
+    defer df6.deinit();
+    std.debug.print("\nFiltered City == Riverside:\n", .{});
+    try df6.print();
+
+    const df7 = try df3.select(&.{ "First Name", "City" });
+    defer df7.deinit();
+    std.debug.print("\nSelected First Name and City:\n", .{});
+    try df7.print();
+
+    const s = try df3.toJsonString(.rows);
+    defer allocator.free(s);
+    std.debug.print("\n{s}\n", .{s});
+
+    const df8 = try df3.describe();
+    defer df8.deinit();
+    std.debug.print("\nDataframe Description:\n", .{});
+    try df8.print();
 }

@@ -36,15 +36,33 @@ pub const BoxedGroupBy = union(enum) {
         }
     }
 
-    pub fn sum(self: *Self, column: []const u8) !BoxedSeries {
+    pub fn sum(self: *Self, column: []const u8) !*Dataframe {
         switch (self.*) {
             inline else => |gb| return gb.sum(column),
         }
     }
 
-    pub fn mean(self: *Self, column: []const u8) !BoxedSeries {
+    pub fn mean(self: *Self, column: []const u8) !*Dataframe {
         switch (self.*) {
             inline else => |gb| return gb.mean(column),
+        }
+    }
+
+    pub fn min(self: *Self, column: []const u8) !*Dataframe {
+        switch (self.*) {
+            inline else => |gb| return gb.min(column),
+        }
+    }
+
+    pub fn max(self: *Self, column: []const u8) !*Dataframe {
+        switch (self.*) {
+            inline else => |gb| return gb.max(column),
+        }
+    }
+
+    pub fn stdDev(self: *Self, column: []const u8) !*Dataframe {
+        switch (self.*) {
+            inline else => |gb| return gb.stdDev(column),
         }
     }
 };

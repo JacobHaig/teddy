@@ -5,6 +5,8 @@ const GroupBy = @import("group.zig").GroupBy;
 const BoxedGroupBy = @import("boxed_groupby.zig").BoxedGroupBy;
 const Dataframe = @import("dataframe.zig").Dataframe;
 
+pub const CompareOp = enum { eq, neq, lt, lte, gt, gte };
+
 pub const BoxedSeries = union(enum) {
     const Self = @This();
 
@@ -119,6 +121,118 @@ pub const BoxedSeries = union(enum) {
                 return gb.toBoxedGroupBy();
             },
         }
+    }
+
+    /// Creates a new BoxedSeries containing only the rows at the given indices.
+    pub fn filterByIndices(self: *Self, indices: []const usize) !BoxedSeries {
+        switch (self.*) {
+            inline else => |s| {
+                const new_s = try s.filterByIndices(indices);
+                return new_s.toBoxedSeries();
+            },
+        }
+    }
+
+    /// Returns indices that would sort the contained series.
+    pub fn argSort(self: *Self, allocator: std.mem.Allocator, ascending: bool) !std.ArrayList(usize) {
+        switch (self.*) {
+            inline else => |s| return s.argSort(allocator, ascending),
+        }
+    }
+
+    /// Returns indices of first occurrence of each unique value.
+    pub fn uniqueIndices(self: *Self, allocator: std.mem.Allocator) !std.ArrayList(usize) {
+        switch (self.*) {
+            inline else => |s| return s.uniqueIndices(allocator),
+        }
+    }
+
+    /// Appends all values from another BoxedSeries of the same type.
+    pub fn appendFrom(self: *Self, other: *const Self) !void {
+        if (std.meta.activeTag(self.*) != std.meta.activeTag(other.*)) return error.TypeMismatch;
+        switch (self.*) {
+            inline else => |s, tag| {
+                const o = @field(other.*, @tagName(tag));
+                for (o.values.items) |*val| {
+                    if (comptime @TypeOf(val.*) == String) {
+                        var cloned = try val.clone();
+                        errdefer cloned.deinit();
+                        try s.values.append(s.allocator, cloned);
+                    } else {
+                        try s.values.append(s.allocator, val.*);
+                    }
+                }
+            },
+        }
+    }
+
+    /// Returns indices where comparison holds for the given typed value.
+    pub fn filterIndices(self: *Self, comptime T: type, allocator: std.mem.Allocator, op: CompareOp, value: T) !std.ArrayList(usize) {
+        switch (self.*) {
+            inline else => |s| {
+                if (comptime *Series(T) == @TypeOf(s)) {
+                    var indices = std.ArrayList(usize){};
+                    for (s.values.items, 0..) |item, i| {
+                        const match = if (comptime T == String) blk: {
+                            const ord = std.mem.order(u8, item.toSlice(), value.toSlice());
+                            break :blk switch (op) {
+                                .eq => ord == .eq,
+                                .neq => ord != .eq,
+                                .lt => ord == .lt,
+                                .lte => ord == .lt or ord == .eq,
+                                .gt => ord == .gt,
+                                .gte => ord == .gt or ord == .eq,
+                            };
+                        } else if (comptime T == bool) blk: {
+                            break :blk switch (op) {
+                                .eq => item == value,
+                                .neq => item != value,
+                                else => false,
+                            };
+                        } else blk: {
+                            break :blk switch (op) {
+                                .eq => item == value,
+                                .neq => item != value,
+                                .lt => item < value,
+                                .lte => item <= value,
+                                .gt => item > value,
+                                .gte => item >= value,
+                            };
+                        };
+                        if (match) try indices.append(allocator, i);
+                    }
+                    return indices;
+                }
+            },
+        }
+        // If we get here, no branch matched the requested type T
+        std.debug.print("filter type mismatch: column \"{s}\" has type {s}, but filter was called with type {s}\n", .{
+            self.name(),
+            self.typeName(),
+            @typeName(T),
+        });
+        return error.TypeMismatch;
+    }
+
+    /// Returns a human-readable name for the contained series type.
+    pub fn typeName(self: *const Self) []const u8 {
+        return switch (self.*) {
+            .bool => "bool",
+            .uint8 => "u8",
+            .uint16 => "u16",
+            .uint32 => "u32",
+            .uint64 => "u64",
+            .uint128 => "u128",
+            .usize => "usize",
+            .int8 => "i8",
+            .int16 => "i16",
+            .int32 => "i32",
+            .int64 => "i64",
+            .int128 => "i128",
+            .float32 => "f32",
+            .float64 => "f64",
+            .string => "String",
+        };
     }
 
     /// Returns the type of the contained Series
