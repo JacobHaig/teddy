@@ -22,6 +22,7 @@ pub const BoxedSeries = union(enum) {
     int32: *Series(i32),
     int64: *Series(i64),
     int128: *Series(i128),
+    isize: *Series(isize),
     float32: *Series(f32),
     float64: *Series(f64),
     string: *Series(String),
@@ -133,17 +134,8 @@ pub const BoxedSeries = union(enum) {
     /// Returns the sum of non-null values as f64. Returns null if not a numeric type.
     pub fn sum(self: *Self) ?f64 {
         switch (self.*) {
-            .int8   => |s| return @as(f64, @floatFromInt(s.sum())),
-            .int16  => |s| return @as(f64, @floatFromInt(s.sum())),
-            .int32  => |s| return @as(f64, @floatFromInt(s.sum())),
-            .int64  => |s| return @as(f64, @floatFromInt(s.sum())),
-            .int128 => |s| return @as(f64, @floatFromInt(s.sum())),
-            .uint8  => |s| return @as(f64, @floatFromInt(s.sum())),
-            .uint16 => |s| return @as(f64, @floatFromInt(s.sum())),
-            .uint32 => |s| return @as(f64, @floatFromInt(s.sum())),
-            .uint64 => |s| return @as(f64, @floatFromInt(s.sum())),
-            .uint128 => |s| return @as(f64, @floatFromInt(s.sum())),
-            .usize  => |s| return @as(f64, @floatFromInt(s.sum())),
+            .int8, .int16, .int32, .int64, .int128, .isize => |s| return @as(f64, @floatFromInt(s.sum())),
+            .uint8, .uint16, .uint32, .uint64, .uint128, .usize => |s| return @as(f64, @floatFromInt(s.sum())),
             .float32 => |s| return @as(f64, s.sum()),
             .float64 => |s| return s.sum(),
             else => return null,
@@ -152,42 +144,22 @@ pub const BoxedSeries = union(enum) {
 
     /// Returns the minimum non-null value as f64. Returns null if not numeric or all-null.
     pub fn min(self: *Self) ?f64 {
-        switch (self.*) {
-            .int8   => |s| return if (s.min()) |v| @as(f64, @floatFromInt(v)) else null,
-            .int16  => |s| return if (s.min()) |v| @as(f64, @floatFromInt(v)) else null,
-            .int32  => |s| return if (s.min()) |v| @as(f64, @floatFromInt(v)) else null,
-            .int64  => |s| return if (s.min()) |v| @as(f64, @floatFromInt(v)) else null,
-            .int128 => |s| return if (s.min()) |v| @as(f64, @floatFromInt(v)) else null,
-            .uint8  => |s| return if (s.min()) |v| @as(f64, @floatFromInt(v)) else null,
-            .uint16 => |s| return if (s.min()) |v| @as(f64, @floatFromInt(v)) else null,
-            .uint32 => |s| return if (s.min()) |v| @as(f64, @floatFromInt(v)) else null,
-            .uint64 => |s| return if (s.min()) |v| @as(f64, @floatFromInt(v)) else null,
-            .uint128 => |s| return if (s.min()) |v| @as(f64, @floatFromInt(v)) else null,
-            .usize  => |s| return if (s.min()) |v| @as(f64, @floatFromInt(v)) else null,
-            .float32 => |s| return if (s.min()) |v| @as(f64, v) else null,
-            .float64 => |s| return s.min(),
-            else => return null,
-        }
+        return switch (self.*) {
+            .bool, .string => null,
+            .float32 => |s| if (s.min()) |v| @as(f64, v) else null,
+            .float64 => |s| s.min(),
+            inline else => |s| if (s.min()) |v| @as(f64, @floatFromInt(v)) else null,
+        };
     }
 
     /// Returns the maximum non-null value as f64. Returns null if not numeric or all-null.
     pub fn max(self: *Self) ?f64 {
-        switch (self.*) {
-            .int8   => |s| return if (s.max()) |v| @as(f64, @floatFromInt(v)) else null,
-            .int16  => |s| return if (s.max()) |v| @as(f64, @floatFromInt(v)) else null,
-            .int32  => |s| return if (s.max()) |v| @as(f64, @floatFromInt(v)) else null,
-            .int64  => |s| return if (s.max()) |v| @as(f64, @floatFromInt(v)) else null,
-            .int128 => |s| return if (s.max()) |v| @as(f64, @floatFromInt(v)) else null,
-            .uint8  => |s| return if (s.max()) |v| @as(f64, @floatFromInt(v)) else null,
-            .uint16 => |s| return if (s.max()) |v| @as(f64, @floatFromInt(v)) else null,
-            .uint32 => |s| return if (s.max()) |v| @as(f64, @floatFromInt(v)) else null,
-            .uint64 => |s| return if (s.max()) |v| @as(f64, @floatFromInt(v)) else null,
-            .uint128 => |s| return if (s.max()) |v| @as(f64, @floatFromInt(v)) else null,
-            .usize  => |s| return if (s.max()) |v| @as(f64, @floatFromInt(v)) else null,
-            .float32 => |s| return if (s.max()) |v| @as(f64, v) else null,
-            .float64 => |s| return s.max(),
-            else => return null,
-        }
+        return switch (self.*) {
+            .bool, .string => null,
+            .float32 => |s| if (s.max()) |v| @as(f64, v) else null,
+            .float64 => |s| s.max(),
+            inline else => |s| if (s.max()) |v| @as(f64, @floatFromInt(v)) else null,
+        };
     }
 
     /// Returns the mean of non-null values as f64. Returns null if not numeric.
@@ -258,6 +230,152 @@ pub const BoxedSeries = union(enum) {
         }
     }
 
+    /// Checked sum as f64. Returns error.Overflow if any integer accumulation overflows.
+    pub fn sumChecked(self: *Self) !f64 {
+        return switch (self.*) {
+            .int8, .int16, .int32, .int64, .int128, .isize => |s| @as(f64, @floatFromInt(try s.sumChecked())),
+            .uint8, .uint16, .uint32, .uint64, .uint128, .usize => |s| @as(f64, @floatFromInt(try s.sumChecked())),
+            .float32 => |s| @as(f64, try s.sumChecked()),
+            .float64 => |s| try s.sumChecked(),
+            else => error.TypeNotNumeric,
+        };
+    }
+
+    /// Product of non-null values as f64. Returns null for non-numeric types.
+    pub fn prod(self: *Self) ?f64 {
+        return switch (self.*) {
+            .int8, .int16, .int32, .int64, .int128, .isize => |s| @as(f64, @floatFromInt(s.prod())),
+            .uint8, .uint16, .uint32, .uint64, .uint128, .usize => |s| @as(f64, @floatFromInt(s.prod())),
+            .float32 => |s| @as(f64, s.prod()),
+            .float64 => |s| s.prod(),
+            else => null,
+        };
+    }
+
+    /// First non-null value as f64. Returns null for non-numeric or all-null.
+    pub fn first(self: *Self) ?f64 {
+        return switch (self.*) {
+            .int8, .int16, .int32, .int64, .int128, .isize => |s| if (s.first()) |v| @as(f64, @floatFromInt(v)) else null,
+            .uint8, .uint16, .uint32, .uint64, .uint128, .usize => |s| if (s.first()) |v| @as(f64, @floatFromInt(v)) else null,
+            .float32 => |s| if (s.first()) |v| @as(f64, v) else null,
+            .float64 => |s| s.first(),
+            else => null,
+        };
+    }
+
+    /// Last non-null value as f64. Returns null for non-numeric or all-null.
+    pub fn last(self: *Self) ?f64 {
+        return switch (self.*) {
+            .int8, .int16, .int32, .int64, .int128, .isize => |s| if (s.last()) |v| @as(f64, @floatFromInt(v)) else null,
+            .uint8, .uint16, .uint32, .uint64, .uint128, .usize => |s| if (s.last()) |v| @as(f64, @floatFromInt(v)) else null,
+            .float32 => |s| if (s.last()) |v| @as(f64, v) else null,
+            .float64 => |s| s.last(),
+            else => null,
+        };
+    }
+
+    /// Median of non-null values as f64. Returns null for non-numeric or all-null.
+    pub fn median(self: *Self, allocator: std.mem.Allocator) !?f64 {
+        return switch (self.*) {
+            .string, .bool => null,
+            inline else => |s| s.median(allocator),
+        };
+    }
+
+    /// Quantile of non-null values. q must be in [0,1]. Returns null for non-numeric.
+    pub fn quantile(self: *Self, allocator: std.mem.Allocator, q: f64) !?f64 {
+        return switch (self.*) {
+            .string, .bool => null,
+            inline else => |s| s.quantile(allocator, q),
+        };
+    }
+
+    /// Count of distinct non-null values.
+    pub fn nunique(self: *Self, allocator: std.mem.Allocator) !usize {
+        switch (self.*) {
+            inline else => |s| return s.nunique(allocator),
+        }
+    }
+
+    /// Running cumulative sum. Nulls propagate. Numeric columns only.
+    pub fn cumSum(self: *Self) !BoxedSeries {
+        return switch (self.*) {
+            .string, .bool => error.TypeNotNumeric,
+            inline else => |s| (try s.cumSum()).toBoxedSeries(),
+        };
+    }
+
+    /// Running cumulative minimum.
+    pub fn cumMin(self: *Self) !BoxedSeries {
+        return switch (self.*) {
+            .string, .bool => error.TypeNotNumeric,
+            inline else => |s| (try s.cumMin()).toBoxedSeries(),
+        };
+    }
+
+    /// Running cumulative maximum.
+    pub fn cumMax(self: *Self) !BoxedSeries {
+        return switch (self.*) {
+            .string, .bool => error.TypeNotNumeric,
+            inline else => |s| (try s.cumMax()).toBoxedSeries(),
+        };
+    }
+
+    /// Running cumulative product.
+    pub fn cumProd(self: *Self) !BoxedSeries {
+        return switch (self.*) {
+            .string, .bool => error.TypeNotNumeric,
+            inline else => |s| (try s.cumProd()).toBoxedSeries(),
+        };
+    }
+
+    /// Shift values by n positions. Works on all column types.
+    pub fn shift(self: *Self, n: i64) !BoxedSeries {
+        switch (self.*) {
+            inline else => |s| return (try s.shift(n)).toBoxedSeries(),
+        }
+    }
+
+    /// Strict element-wise difference. Numeric only.
+    pub fn diff(self: *Self, n: usize) !BoxedSeries {
+        return switch (self.*) {
+            .string, .bool => error.TypeNotNumeric,
+            inline else => |s| (try s.diff(n)).toBoxedSeries(),
+        };
+    }
+
+    /// Permissive element-wise difference. Underflow/overflow → null.
+    pub fn diffLossy(self: *Self, n: usize) !BoxedSeries {
+        return switch (self.*) {
+            .string, .bool => error.TypeNotNumeric,
+            inline else => |s| (try s.diffLossy(n)).toBoxedSeries(),
+        };
+    }
+
+    /// Clamp values to [lower, upper]. Type must match the column.
+    pub fn clip(self: *Self, comptime T: type, lower: T, upper: T) !BoxedSeries {
+        switch (self.*) {
+            inline else => |s| {
+                if (comptime *Series(T) == @TypeOf(s)) {
+                    return (try s.clip(lower, upper)).toBoxedSeries();
+                }
+            },
+        }
+        return error.TypeMismatch;
+    }
+
+    /// Replace exact matches. Type must match the column.
+    pub fn replace(self: *Self, comptime T: type, old_value: T, new_value: T) !BoxedSeries {
+        switch (self.*) {
+            inline else => |s| {
+                if (comptime *Series(T) == @TypeOf(s)) {
+                    return (try s.replace(old_value, new_value)).toBoxedSeries();
+                }
+            },
+        }
+        return error.TypeMismatch;
+    }
+
     /// Returns indices that would sort the contained series.
     pub fn argSort(self: *Self, allocator: std.mem.Allocator, ascending: bool) !std.ArrayList(usize) {
         switch (self.*) {
@@ -278,6 +396,7 @@ pub const BoxedSeries = union(enum) {
         switch (self.*) {
             inline else => |s, tag| {
                 const o = @field(other.*, @tagName(tag));
+
                 for (0..o.values.items.len) |i| {
                     if (o.isNull(i)) {
                         try s.appendNull();
@@ -356,6 +475,7 @@ pub const BoxedSeries = union(enum) {
             .int32 => "i32",
             .int64 => "i64",
             .int128 => "i128",
+            .isize => "isize",
             .float32 => "f32",
             .float64 => "f64",
             .string => "String",
@@ -378,6 +498,7 @@ pub const BoxedSeries = union(enum) {
             .int32 => return i32,
             .int64 => return i64,
             .int128 => return i128,
+            .isize => return isize,
             .float32 => return f32,
             .float64 => return f64,
             .string => return String,

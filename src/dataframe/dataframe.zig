@@ -305,23 +305,23 @@ pub const Dataframe = struct {
             try val_col.append(stats.count);
             try val_col.append(stats.mean_val);
             try val_col.append(stats.std_val);
-            try val_col.append(stats.min_val);
-            try val_col.append(stats.max_val);
+            if (stats.min_val) |v| try val_col.append(v) else try val_col.appendNull();
+            if (stats.max_val) |v| try val_col.append(v) else try val_col.appendNull();
         }
 
         return result;
     }
 
-    const Stats = struct { count: f64, mean_val: f64, std_val: f64, min_val: f64, max_val: f64 };
+    const Stats = struct { count: f64, mean_val: f64, std_val: f64, min_val: ?f64, max_val: ?f64 };
 
     fn computeStats(s: *BoxedSeries) ?Stats {
         const mean_val = s.mean() orelse return null;
         return .{
-            .count   = @floatFromInt(s.len()),
+            .count    = @floatFromInt(s.len() - s.nullCount()),
             .mean_val = mean_val,
             .std_val  = s.stdDev() orelse 0,
-            .min_val  = s.min() orelse 0,
-            .max_val  = s.max() orelse 0,
+            .min_val  = s.min(),
+            .max_val  = s.max(),
         };
     }
 
@@ -456,6 +456,82 @@ pub const Dataframe = struct {
     /// Permissive cast. Conversion failures become null; float→int truncates.
     pub fn castLossy(self: *Self, column: []const u8, comptime Target: type) !*Self {
         return self.castImpl(column, Target, .lossy);
+    }
+
+    // --- Column transform helpers (replace one column, deepCopy the rest) ---
+
+    fn columnTransform(self: *Self, column: []const u8, new_boxed: BoxedSeries) !*Self {
+        var nb = new_boxed;
+        const result = try Self.init(self.allocator);
+        errdefer result.deinit();
+        var found = false;
+        for (self.series.items) |*boxed| {
+            if (!found and std.mem.eql(u8, boxed.name(), column)) {
+                try result.addSeries(nb);
+                found = true;
+            } else {
+                try result.addSeries(try boxed.deepCopy());
+            }
+        }
+        if (!found) {
+            nb.deinit();
+            return error.ColumnNotFound;
+        }
+        return result;
+    }
+
+    /// Running cumulative sum of `column`. Returns new Dataframe with column replaced.
+    pub fn cumSum(self: *Self, column: []const u8) !*Self {
+        var boxed = self.getSeries(column) orelse return error.ColumnNotFound;
+        return self.columnTransform(column, try boxed.cumSum());
+    }
+
+    /// Running cumulative minimum of `column`.
+    pub fn cumMin(self: *Self, column: []const u8) !*Self {
+        var boxed = self.getSeries(column) orelse return error.ColumnNotFound;
+        return self.columnTransform(column, try boxed.cumMin());
+    }
+
+    /// Running cumulative maximum of `column`.
+    pub fn cumMax(self: *Self, column: []const u8) !*Self {
+        var boxed = self.getSeries(column) orelse return error.ColumnNotFound;
+        return self.columnTransform(column, try boxed.cumMax());
+    }
+
+    /// Running cumulative product of `column`.
+    pub fn cumProd(self: *Self, column: []const u8) !*Self {
+        var boxed = self.getSeries(column) orelse return error.ColumnNotFound;
+        return self.columnTransform(column, try boxed.cumProd());
+    }
+
+    /// Shift `column` by n positions. Positive shifts down (prepends nulls).
+    pub fn shift(self: *Self, column: []const u8, n: i64) !*Self {
+        var boxed = self.getSeries(column) orelse return error.ColumnNotFound;
+        return self.columnTransform(column, try boxed.shift(n));
+    }
+
+    /// Strict element-wise diff of `column` by lag n. Underflow on unsigned → error.
+    pub fn diff(self: *Self, column: []const u8, n: usize) !*Self {
+        var boxed = self.getSeries(column) orelse return error.ColumnNotFound;
+        return self.columnTransform(column, try boxed.diff(n));
+    }
+
+    /// Permissive element-wise diff. Underflow/overflow → null.
+    pub fn diffLossy(self: *Self, column: []const u8, n: usize) !*Self {
+        var boxed = self.getSeries(column) orelse return error.ColumnNotFound;
+        return self.columnTransform(column, try boxed.diffLossy(n));
+    }
+
+    /// Clamp `column` values to [lower, upper]. Type must match the column.
+    pub fn clip(self: *Self, column: []const u8, comptime T: type, lower: T, upper: T) !*Self {
+        var boxed = self.getSeries(column) orelse return error.ColumnNotFound;
+        return self.columnTransform(column, try boxed.clip(T, lower, upper));
+    }
+
+    /// Replace exact matches in `column`. Type must match the column.
+    pub fn replace(self: *Self, column: []const u8, comptime T: type, old_value: T, new_value: T) !*Self {
+        var boxed = self.getSeries(column) orelse return error.ColumnNotFound;
+        return self.columnTransform(column, try boxed.replace(T, old_value, new_value));
     }
 
     /// Returns a new Dataframe with rows [start..end). Caller owns the returned pointer.
@@ -1531,4 +1607,141 @@ test "Dataframe: cast missing column returns error" {
     var df = try Dataframe.init(allocator);
     defer df.deinit();
     try std.testing.expectError(error.ColumnNotFound, df.cast("nope", f64));
+}
+
+// ---------------------------------------------------------------------------
+// Large pipeline integration test — composes multiple Priority 1 operations
+// ---------------------------------------------------------------------------
+
+test "Dataframe: pipeline — nulls, cast, shift, diff, clip, replace, groupby, cumsum" {
+    // Schema: category(i32), units(i32 with nulls), price(i64 cents)
+    //   row 0:  cat=1, units=10,  price=1500
+    //   row 1:  cat=2, units=null,price=2000
+    //   row 2:  cat=1, units=30,  price=500
+    //   row 3:  cat=2, units=200, price=3000   ← units will be clipped to 100
+    //   row 4:  cat=1, units=50,  price=1000
+    //   row 5:  cat=3, units=5,   price=800
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var cat = try Series(i32).init(allocator);
+    try cat.rename("cat");
+    try cat.append(1); try cat.append(2); try cat.append(1);
+    try cat.append(2); try cat.append(1); try cat.append(3);
+
+    var units = try Series(i32).init(allocator);
+    try units.rename("units");
+    try units.append(10); try units.appendNull(); try units.append(30);
+    try units.append(200); try units.append(50); try units.append(5);
+
+    var price = try Series(i64).init(allocator);
+    try price.rename("price");
+    try price.append(1500); try price.append(2000); try price.append(500);
+    try price.append(3000); try price.append(1000); try price.append(800);
+
+    try df.addSeries(cat.toBoxedSeries());
+    try df.addSeries(units.toBoxedSeries());
+    try df.addSeries(price.toBoxedSeries());
+
+    // 1. Verify null is present
+    try std.testing.expectEqual(@as(usize, 1), df.getSeries("units").?.nullCount());
+
+    // 2. Fill null units with 0
+    var df2 = try df.fillNull("units", i32, 0);
+    defer df2.deinit();
+    try std.testing.expectEqual(@as(usize, 0), df2.getSeries("units").?.nullCount());
+    try std.testing.expectEqual(@as(i32, 0), df2.getSeries("units").?.int32.values.items[1]);
+
+    // 3. Clip units to [0, 100] — row 3 was 200, should become 100
+    var df3 = try df2.clip("units", i32, 0, 100);
+    defer df3.deinit();
+    try std.testing.expectEqual(@as(i32, 100), df3.getSeries("units").?.int32.values.items[3]);
+    try std.testing.expectEqual(@as(i32, 10),  df3.getSeries("units").?.int32.values.items[0]);
+
+    // 4. Cast price from i64 to f64
+    var df4 = try df3.cast("price", f64);
+    defer df4.deinit();
+    try std.testing.expectEqualStrings("f64", df4.getSeries("price").?.typeName());
+    try std.testing.expectApproxEqAbs(@as(f64, 1500.0), df4.getSeries("price").?.float64.values.items[0], 1e-9);
+
+    // 5. Replace cat 3 with cat 99
+    var df5 = try df3.replace("cat", i32, 3, 99);
+    defer df5.deinit();
+    try std.testing.expectEqual(@as(i32, 99), df5.getSeries("cat").?.int32.values.items[5]);
+    try std.testing.expectEqual(@as(i32, 1),  df5.getSeries("cat").?.int32.values.items[0]);
+
+    // 6. Shift units down by 1 (prepend null, drop last)
+    var df6 = try df3.shift("units", 1);
+    defer df6.deinit();
+    try std.testing.expectEqual(@as(usize, 6), df6.height());
+    try std.testing.expect(df6.getSeries("units").?.isNull(0));
+    try std.testing.expectEqual(@as(i32, 10), df6.getSeries("units").?.int32.values.items[1]);
+
+    // 7. Diff units by lag 1 (strict — all values are signed so no underflow)
+    var df7 = try df3.diff("units", 1);
+    defer df7.deinit();
+    try std.testing.expect(df7.getSeries("units").?.isNull(0)); // first row always null
+    // row 2: 30 - 0 = 30
+    try std.testing.expectEqual(@as(i32, 30), df7.getSeries("units").?.int32.values.items[2]);
+
+    // 8. Cumulative sum of units
+    var df8 = try df3.cumSum("units");
+    defer df8.deinit();
+    // values: 10, 0, 30, 100, 50, 5  → cumsum: 10, 10, 40, 140, 190, 195
+    try std.testing.expectEqual(@as(i32, 10),  df8.getSeries("units").?.int32.values.items[0]);
+    try std.testing.expectEqual(@as(i32, 10),  df8.getSeries("units").?.int32.values.items[1]);
+    try std.testing.expectEqual(@as(i32, 40),  df8.getSeries("units").?.int32.values.items[2]);
+    try std.testing.expectEqual(@as(i32, 140), df8.getSeries("units").?.int32.values.items[3]);
+    try std.testing.expectEqual(@as(i32, 195), df8.getSeries("units").?.int32.values.items[5]);
+
+    // 9. GroupBy cat → sum units, median price
+    var gb = try df3.groupBy("cat");
+    defer gb.deinit();
+
+    var gb_sum = try gb.sum("units");
+    defer gb_sum.deinit();
+    try std.testing.expectEqual(@as(usize, 3), gb_sum.height()); // 3 categories
+
+    var gb_med = try gb.median("price");
+    defer gb_med.deinit();
+    try std.testing.expectEqual(@as(usize, 3), gb_med.height());
+    // Category 1 prices: 1500, 500, 1000 → median = 1000.0
+    const med_col = gb_med.getSeries("price") orelse return error.MissingColumn;
+    var cat1_med: ?f64 = null;
+    const cat_col = gb_sum.getSeries("cat") orelse return error.MissingColumn;
+    for (cat_col.int32.values.items, 0..) |c, i| {
+        if (c == 1) cat1_med = med_col.float64.values.items[i];
+    }
+    try std.testing.expectApproxEqAbs(@as(f64, 1000.0), cat1_med.?, 1e-9);
+
+    // 10. describe() — verify count reflects non-null rows, not total rows
+    //     (df3 has no nulls after fillNull+clip, so count should equal height=6)
+    var desc = try df3.describe();
+    defer desc.deinit();
+    // "stat" column + numeric columns
+    try std.testing.expect(desc.width() >= 2);
+    // count row is row 0; for units (6 non-null rows) count should be 6
+    const units_stats = desc.getSeries("units") orelse return error.MissingColumn;
+    try std.testing.expectApproxEqAbs(@as(f64, 6.0), units_stats.float64.values.items[0], 1e-9);
+
+    // 11. Filter then sort
+    var filtered = try df3.filter("cat", i32, .eq, 1);
+    defer filtered.deinit();
+    try std.testing.expectEqual(@as(usize, 3), filtered.height());
+    var sorted = try filtered.sort("units", true);
+    defer sorted.deinit();
+    // sorted units for cat=1: 10, 30, 50
+    try std.testing.expectEqual(@as(i32, 10), sorted.getSeries("units").?.int32.values.items[0]);
+    try std.testing.expectEqual(@as(i32, 50), sorted.getSeries("units").?.int32.values.items[2]);
+
+    // 12. Quantile on the units series directly
+    const units_series = df3.getSeries("units").?;
+    const q25 = try units_series.int32.quantile(allocator, 0.25);
+    try std.testing.expect(q25 != null);
+    const q75 = try units_series.int32.quantile(allocator, 0.75);
+    try std.testing.expect(q75.? >= q25.?);
+
+    // 13. nunique on categories
+    try std.testing.expectEqual(@as(usize, 3), try df3.getSeries("cat").?.int32.nunique(allocator));
 }

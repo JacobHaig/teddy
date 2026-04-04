@@ -137,6 +137,7 @@ pub fn fromDataframe(allocator: Allocator, df: *dataframe.Dataframe) !DataframeC
     return .{ .columns = cols, .string_bufs = bufs, .allocator = allocator };
 }
 
+// Convert a BoxedSeries to ColumnData for Parquet writing. Allocates string slices for string columns.
 fn boxedToColumnData(allocator: Allocator, boxed: *BoxedSeries, string_bufs: *std.ArrayList([]const []const u8)) !ColumnData {
     return switch (boxed.*) {
         .int32 => |s| .{
@@ -183,6 +184,10 @@ fn boxedToColumnData(allocator: Allocator, boxed: *BoxedSeries, string_bufs: *st
                 .byte_arrays = slices,
                 .num_values = s.values.items.len,
             };
+        },
+        .isize => |s| blk: {
+            _ = s;
+            break :blk error.UnsupportedType;
         },
         .int8 => |s| blk: {
             _ = s;

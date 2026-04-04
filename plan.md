@@ -17,6 +17,11 @@ ordered by priority (highest impact / lowest complexity first).
 - CSV read/write, JSON read/write, Parquet read/write
 - Null tracking via validity bitmap
 - Missing value operations: dropNulls, dropNullsAny, fillNull, fillNullForward, fillNullBackward (Series + DataFrame)
+- Type casting: castSafe / cast / castLossy (Series, BoxedSeries, DataFrame)
+- Cumulative ops: cumSum, cumMin, cumMax, cumProd (Series + DataFrame)
+- Shift / diff / diffLossy (Series + DataFrame)
+- Additional aggregations: median, quantile, nunique, prod/prodChecked, sumChecked, first, last (Series + BoxedSeries + GroupBy)
+- Clip, replace, replaceSlice (Series + DataFrame)
 
 ---
 
@@ -52,63 +57,58 @@ Three tiers matching Zig's own philosophy — see **API Design: Strictness Level
 
 ---
 
-### 1.3 Cumulative Operations
+### 1.3 Cumulative Operations ✓ COMPLETE
 pandas: `cumsum`, `cumprod`, `cummin`, `cummax`
 polars: `cum_sum`, `cum_prod`, `cum_min`, `cum_max`
 
-Very common for time-series and running totals.
-
-- `series.cumSum()` — running sum
-- `series.cumMin()` / `series.cumMax()` — running min/max
-- `series.cumProd()` — running product
-- Expose on DataFrame level: `df.cumSum(column)`
+- `series.cumSum()` / `cumMin()` / `cumMax()` / `cumProd()` ✓ — nulls propagate
+- `df.cumSum/cumMin/cumMax/cumProd(column)` ✓ — returns new DataFrame
+- BoxedSeries dispatch for all four ✓
 
 ---
 
-### 1.4 Shift / Diff
+### 1.4 Shift / Diff ✓ COMPLETE
 pandas: `series.shift(n)`, `series.diff(n)`
 polars: `series.shift(n)`, `series.diff(n)`
 
-Essential for time-series analysis and calculating period-over-period changes.
-
-- `series.shift(n)` — shift values by n positions (nulls fill the gap)
-- `series.diff(n)` — difference between element and element n positions prior
-- Expose on DataFrame: `df.shift(column, n)`, `df.diff(column, n)`
+- `series.shift(n)` ✓ — positive shifts down (prepends nulls), negative shifts up; all column types
+- `series.diff(n)` ✓ — strict: underflow on unsigned → error.Underflow
+- `series.diffLossy(n)` ✓ — underflow → null (strictness-level convention)
+- `df.shift/diff/diffLossy(column, n)` ✓ — DataFrame-level wrappers
 
 ---
 
-### 1.5 Additional Aggregations
+### 1.5 Additional Aggregations ✓ COMPLETE
 pandas: `median`, `quantile`, `var`, `count`, `nunique`, `prod`
 polars: same + `first`, `last`
 
-Currently missing from both Series and GroupBy:
-
-- `series.median()` — median value (requires sorting)
-- `series.quantile(q)` — arbitrary quantile (0.0–1.0)
-- `series.nunique()` — count of distinct values
-- `series.prod()` — product of all values
-- `series.first()` / `series.last()` — first/last element
-- GroupBy: add median, quantile, nunique, prod, first, last
+- `series.median(alloc)` ✓ / `series.quantile(alloc, q)` ✓ — returns `!?f64`
+- `series.nunique(alloc)` ✓ — distinct non-null count
+- `series.prod()` / `series.prodChecked()` ✓ — wrapping and overflow-checked
+- `series.sumChecked()` ✓ — overflow-checked sum
+- `series.first()` / `series.last()` ✓ — first/last non-null value
+- GroupBy: `median`, `nunique`, `prod`, `first`, `last` ✓
+- BoxedSeries: `prod`, `first`, `last`, `median`, `quantile`, `nunique`, `sumChecked` ✓
+- `describe()` null bug fixed ✓ — count now reflects non-null rows; min/max show null for all-null columns
 
 ---
 
-### 1.6 Clip
+### 1.6 Clip ✓ COMPLETE
 pandas: `series.clip(lower, upper)`
 polars: `series.clip(lower, upper)`
 
-Clamp values to a range — common for outlier handling.
-
-- `series.clip(lower, upper)` — values below lower become lower, above upper become upper
-- `df.clip(column, lower, upper)`
+- `series.clip(lower, upper)` ✓ — nulls preserved; numeric only
+- `df.clip(column, T, lower, upper)` ✓
 
 ---
 
-### 1.7 Replace / Map Values
+### 1.7 Replace / Map Values ✓ COMPLETE
 pandas: `series.replace(old, new)`, `series.map(dict)`
 polars: `series.replace(old, new)`
 
-- `series.replace(old_value, new_value)` — replace exact matches
-- `series.replaceSlice(pairs)` — multiple replacements at once
+- `series.replace(old_value, new_value)` ✓ — nulls never matched; String compared by content
+- `series.replaceSlice(pairs)` ✓ — multiple replacements, first match wins
+- `df.replace(column, T, old, new)` ✓
 
 ---
 
@@ -338,15 +338,13 @@ three tiers. Apply this consistently to new features going forward.
 | `*` (plain) | Data *should* be representable; bad data is a bug | Returns `error.*` |
 | `*Lossy` | Best-effort ETL; bad/unconvertible values should be skipped | Failures become `null` |
 
-**Examples already following this:**
-- `castSafe` / `cast` / `castLossy`
+**Examples following this:**
+- `castSafe` / `cast` / `castLossy` ✓
+- `diff` / `diffLossy` ✓ (underflow on unsigned: strict errors, lossy nulls)
+- `sum` / `sumChecked` ✓ (wrapping vs overflow-checked)
+- `prod` / `prodChecked` ✓
 
 **Apply to upcoming features where relevant:**
-- **Cumulative ops (1.3):** `cumSum` on integers can overflow → plain version uses checked add (`error.Overflow`), lossy version wraps/nulls.
-- **Diff (1.4):** `diff` on unsigned types could underflow → strict errors, lossy nulls.
-- **Aggregations (1.5):** `quantile(q)` with q out of [0,1] → plain errors, no lossy variant needed.
-- **Clip (1.6):** No failure modes — single implementation suffices (clamp never loses row data).
-- **Replace (1.7):** Type mismatch on `replace` → strict errors, lossy silently skips.
 - **withColumn (2.2):** Column arithmetic overflow → strict / lossy variants.
 
 The rule: if a function can silently discard or corrupt a value at runtime, it needs at
@@ -361,11 +359,11 @@ whenever "skip bad rows" is a plausible use case.
 |---|---|---|---|---|
 | Null fill/drop | ✓ | ✓ | ✓ | 1 |
 | Type casting | ✓ | ✓ | ✓ | 1 |
-| Cumulative ops | ✓ | ✓ | ✗ | 1 |
-| Shift / diff | ✓ | ✓ | ✗ | 1 |
-| Median / quantile | ✓ | ✓ | ✗ | 1 |
-| Clip | ✓ | ✓ | ✗ | 1 |
-| Replace | ✓ | ✓ | ✗ | 1 |
+| Cumulative ops | ✓ | ✓ | ✓ | 1 |
+| Shift / diff | ✓ | ✓ | ✓ | 1 |
+| Median / quantile | ✓ | ✓ | ✓ | 1 |
+| Clip | ✓ | ✓ | ✓ | 1 |
+| Replace | ✓ | ✓ | ✓ | 1 |
 | Horizontal concat | ✓ | ✓ | ✗ | 2 |
 | withColumn / derived cols | ✓ | ✓ | ✗ | 2 |
 | Melt | ✓ | ✓ | ✗ | 2 |

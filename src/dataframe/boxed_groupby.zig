@@ -20,6 +20,7 @@ pub const BoxedGroupBy = union(enum) {
     int32: *GroupBy(i32),
     int64: *GroupBy(i64),
     int128: *GroupBy(i128),
+    isize: *GroupBy(isize),
     float32: *GroupBy(f32),
     float64: *GroupBy(f64),
     string: *GroupBy(String),
@@ -63,6 +64,36 @@ pub const BoxedGroupBy = union(enum) {
     pub fn stdDev(self: *Self, column: []const u8) !*Dataframe {
         switch (self.*) {
             inline else => |gb| return gb.stdDev(column),
+        }
+    }
+
+    pub fn prod(self: *Self, column: []const u8) !*Dataframe {
+        switch (self.*) {
+            inline else => |gb| return gb.prod(column),
+        }
+    }
+
+    pub fn first(self: *Self, column: []const u8) !*Dataframe {
+        switch (self.*) {
+            inline else => |gb| return gb.first(column),
+        }
+    }
+
+    pub fn last(self: *Self, column: []const u8) !*Dataframe {
+        switch (self.*) {
+            inline else => |gb| return gb.last(column),
+        }
+    }
+
+    pub fn median(self: *Self, column: []const u8) !*Dataframe {
+        switch (self.*) {
+            inline else => |gb| return gb.median(column),
+        }
+    }
+
+    pub fn nunique(self: *Self, column: []const u8) !*Dataframe {
+        switch (self.*) {
+            inline else => |gb| return gb.nunique(column),
         }
     }
 };

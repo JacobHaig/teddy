@@ -118,6 +118,7 @@ pub fn GroupBy(comptime T: type) type {
                 i32 => BoxedGroupBy{ .int32 = self },
                 i64 => BoxedGroupBy{ .int64 = self },
                 i128 => BoxedGroupBy{ .int128 = self },
+                isize => BoxedGroupBy{ .isize = self },
                 f32 => BoxedGroupBy{ .float32 = self },
                 f64 => BoxedGroupBy{ .float64 = self },
                 String => BoxedGroupBy{ .string = self },
@@ -368,6 +369,207 @@ pub fn GroupBy(comptime T: type) type {
                 try val_series.append(@sqrt(sq_sum / n));
             }
         }
+
+        pub fn prod(self: *Self, column: []const u8) !*Dataframe {
+            const series_opt = self.dataframe.getSeries(column);
+            if (series_opt == null) return error.ColumnNotFound;
+            const result_df = try Dataframe.init(self.allocator);
+            errdefer result_df.deinit();
+            var key_series = try result_df.createSeries(T);
+            try key_series.rename(self.series.name.toSlice());
+            switch (series_opt.?.*) {
+                .int8 => |s| try self.prodTypedDf(i8, s, result_df, key_series),
+                .int16 => |s| try self.prodTypedDf(i16, s, result_df, key_series),
+                .int32 => |s| try self.prodTypedDf(i32, s, result_df, key_series),
+                .int64 => |s| try self.prodTypedDf(i64, s, result_df, key_series),
+                .uint8 => |s| try self.prodTypedDf(u8, s, result_df, key_series),
+                .uint16 => |s| try self.prodTypedDf(u16, s, result_df, key_series),
+                .uint32 => |s| try self.prodTypedDf(u32, s, result_df, key_series),
+                .uint64 => |s| try self.prodTypedDf(u64, s, result_df, key_series),
+                .float32 => |s| try self.prodTypedDf(f32, s, result_df, key_series),
+                .float64 => |s| try self.prodTypedDf(f64, s, result_df, key_series),
+                else => return error.TypeNotNumeric,
+            }
+            return result_df;
+        }
+
+        fn prodTypedDf(self: *Self, comptime ValType: type, series: *Series(ValType), result_df: *Dataframe, key_series: *Series(T)) !void {
+            var val_series = try result_df.createSeries(ValType);
+            try val_series.rename(series.name.toSlice());
+            var it = self.groups.iterator();
+            while (it.next()) |entry| {
+                try appendKey(key_series, entry.key_ptr.*);
+                var p: ValType = 1;
+                for (entry.value_ptr.items) |idx| {
+                    if (!series.isNull(idx)) p *= series.values.items[idx];
+                }
+                try val_series.append(p);
+            }
+        }
+
+        pub fn first(self: *Self, column: []const u8) !*Dataframe {
+            const series_opt = self.dataframe.getSeries(column);
+            if (series_opt == null) return error.ColumnNotFound;
+            const result_df = try Dataframe.init(self.allocator);
+            errdefer result_df.deinit();
+            var key_series = try result_df.createSeries(T);
+            try key_series.rename(self.series.name.toSlice());
+            switch (series_opt.?.*) {
+                .int8 => |s| try self.firstLastTypedDf(i8, s, result_df, key_series, true),
+                .int16 => |s| try self.firstLastTypedDf(i16, s, result_df, key_series, true),
+                .int32 => |s| try self.firstLastTypedDf(i32, s, result_df, key_series, true),
+                .int64 => |s| try self.firstLastTypedDf(i64, s, result_df, key_series, true),
+                .uint8 => |s| try self.firstLastTypedDf(u8, s, result_df, key_series, true),
+                .uint16 => |s| try self.firstLastTypedDf(u16, s, result_df, key_series, true),
+                .uint32 => |s| try self.firstLastTypedDf(u32, s, result_df, key_series, true),
+                .uint64 => |s| try self.firstLastTypedDf(u64, s, result_df, key_series, true),
+                .float32 => |s| try self.firstLastTypedDf(f32, s, result_df, key_series, true),
+                .float64 => |s| try self.firstLastTypedDf(f64, s, result_df, key_series, true),
+                else => return error.TypeNotNumeric,
+            }
+            return result_df;
+        }
+
+        pub fn last(self: *Self, column: []const u8) !*Dataframe {
+            const series_opt = self.dataframe.getSeries(column);
+            if (series_opt == null) return error.ColumnNotFound;
+            const result_df = try Dataframe.init(self.allocator);
+            errdefer result_df.deinit();
+            var key_series = try result_df.createSeries(T);
+            try key_series.rename(self.series.name.toSlice());
+            switch (series_opt.?.*) {
+                .int8 => |s| try self.firstLastTypedDf(i8, s, result_df, key_series, false),
+                .int16 => |s| try self.firstLastTypedDf(i16, s, result_df, key_series, false),
+                .int32 => |s| try self.firstLastTypedDf(i32, s, result_df, key_series, false),
+                .int64 => |s| try self.firstLastTypedDf(i64, s, result_df, key_series, false),
+                .uint8 => |s| try self.firstLastTypedDf(u8, s, result_df, key_series, false),
+                .uint16 => |s| try self.firstLastTypedDf(u16, s, result_df, key_series, false),
+                .uint32 => |s| try self.firstLastTypedDf(u32, s, result_df, key_series, false),
+                .uint64 => |s| try self.firstLastTypedDf(u64, s, result_df, key_series, false),
+                .float32 => |s| try self.firstLastTypedDf(f32, s, result_df, key_series, false),
+                .float64 => |s| try self.firstLastTypedDf(f64, s, result_df, key_series, false),
+                else => return error.TypeNotNumeric,
+            }
+            return result_df;
+        }
+
+        fn firstLastTypedDf(self: *Self, comptime ValType: type, series: *Series(ValType), result_df: *Dataframe, key_series: *Series(T), is_first: bool) !void {
+            var val_series = try result_df.createSeries(ValType);
+            try val_series.rename(series.name.toSlice());
+            var it = self.groups.iterator();
+            while (it.next()) |entry| {
+                try appendKey(key_series, entry.key_ptr.*);
+                const indices = entry.value_ptr.items;
+                var found: ?ValType = null;
+                if (is_first) {
+                    for (indices) |idx| {
+                        if (!series.isNull(idx)) {
+                            found = series.values.items[idx];
+                            break;
+                        }
+                    }
+                } else {
+                    var j = indices.len;
+                    while (j > 0) {
+                        j -= 1;
+                        if (!series.isNull(indices[j])) {
+                            found = series.values.items[indices[j]];
+                            break;
+                        }
+                    }
+                }
+                if (found) |v| try val_series.append(v) else try val_series.appendNull();
+            }
+        }
+
+        pub fn median(self: *Self, column: []const u8) !*Dataframe {
+            const series_opt = self.dataframe.getSeries(column);
+            if (series_opt == null) return error.ColumnNotFound;
+            const result_df = try Dataframe.init(self.allocator);
+            errdefer result_df.deinit();
+            var key_series = try result_df.createSeries(T);
+            try key_series.rename(self.series.name.toSlice());
+            switch (series_opt.?.*) {
+                .int8 => |s| try self.medianTypedDf(i8, s, result_df, key_series),
+                .int16 => |s| try self.medianTypedDf(i16, s, result_df, key_series),
+                .int32 => |s| try self.medianTypedDf(i32, s, result_df, key_series),
+                .int64 => |s| try self.medianTypedDf(i64, s, result_df, key_series),
+                .uint8 => |s| try self.medianTypedDf(u8, s, result_df, key_series),
+                .uint16 => |s| try self.medianTypedDf(u16, s, result_df, key_series),
+                .uint32 => |s| try self.medianTypedDf(u32, s, result_df, key_series),
+                .uint64 => |s| try self.medianTypedDf(u64, s, result_df, key_series),
+                .float32 => |s| try self.medianTypedDf(f32, s, result_df, key_series),
+                .float64 => |s| try self.medianTypedDf(f64, s, result_df, key_series),
+                else => return error.TypeNotNumeric,
+            }
+            return result_df;
+        }
+
+        fn medianTypedDf(self: *Self, comptime ValType: type, series: *Series(ValType), result_df: *Dataframe, key_series: *Series(T)) !void {
+            const is_float_type = ValType == f32 or ValType == f64;
+            var val_series = try result_df.createSeries(f64);
+            try val_series.rename(series.name.toSlice());
+            var it = self.groups.iterator();
+            while (it.next()) |entry| {
+                try appendKey(key_series, entry.key_ptr.*);
+                var buf = std.ArrayList(f64).empty;
+                defer buf.deinit(self.allocator);
+                for (entry.value_ptr.items) |idx| {
+                    if (!series.isNull(idx)) {
+                        const fv: f64 = if (is_float_type) @as(f64, series.values.items[idx]) else @as(f64, @floatFromInt(series.values.items[idx]));
+                        try buf.append(self.allocator, fv);
+                    }
+                }
+                if (buf.items.len == 0) {
+                    try val_series.appendNull();
+                    continue;
+                }
+                std.mem.sortUnstable(f64, buf.items, {}, std.sort.asc(f64));
+                const n = buf.items.len;
+                const med: f64 = if (n % 2 == 1) buf.items[n / 2] else (buf.items[n / 2 - 1] + buf.items[n / 2]) / 2.0;
+                try val_series.append(med);
+            }
+        }
+
+        pub fn nunique(self: *Self, column: []const u8) !*Dataframe {
+            const series_opt = self.dataframe.getSeries(column);
+            if (series_opt == null) return error.ColumnNotFound;
+            const result_df = try Dataframe.init(self.allocator);
+            errdefer result_df.deinit();
+            var key_series = try result_df.createSeries(T);
+            try key_series.rename(self.series.name.toSlice());
+            var count_series = try result_df.createSeries(usize);
+            try count_series.rename("nunique");
+            var it = self.groups.iterator();
+            while (it.next()) |entry| {
+                try appendKey(key_series, entry.key_ptr.*);
+                switch (series_opt.?.*) {
+                    .int8 => |s| try self.nuniqueTypedDf(i8, s, entry.value_ptr.items, count_series),
+                    .int16 => |s| try self.nuniqueTypedDf(i16, s, entry.value_ptr.items, count_series),
+                    .int32 => |s| try self.nuniqueTypedDf(i32, s, entry.value_ptr.items, count_series),
+                    .int64 => |s| try self.nuniqueTypedDf(i64, s, entry.value_ptr.items, count_series),
+                    .uint8 => |s| try self.nuniqueTypedDf(u8, s, entry.value_ptr.items, count_series),
+                    .uint16 => |s| try self.nuniqueTypedDf(u16, s, entry.value_ptr.items, count_series),
+                    .uint32 => |s| try self.nuniqueTypedDf(u32, s, entry.value_ptr.items, count_series),
+                    .uint64 => |s| try self.nuniqueTypedDf(u64, s, entry.value_ptr.items, count_series),
+                    .float32 => |s| try self.nuniqueTypedDf(f32, s, entry.value_ptr.items, count_series),
+                    .float64 => |s| try self.nuniqueTypedDf(f64, s, entry.value_ptr.items, count_series),
+                    else => return error.TypeNotNumeric,
+                }
+            }
+            return result_df;
+        }
+
+        fn nuniqueTypedDf(self: *Self, comptime ValType: type, series: *Series(ValType), indices: []const usize, count_series: *Series(usize)) !void {
+            var seen = std.HashMap(ValType, void, GroupByContext(ValType), std.hash_map.default_max_load_percentage).init(self.allocator);
+            defer seen.deinit();
+            for (indices) |idx| {
+                if (!series.isNull(idx)) {
+                    try seen.put(series.values.items[idx], {});
+                }
+            }
+            try count_series.append(seen.count());
+        }
     };
 }
 
@@ -609,4 +811,76 @@ test "GroupBy: stdDev produces correct standard deviations" {
     const std_col = std_result.getSeries("val") orelse return error.DoesNotExist;
     // stddev of [10,20]: mean=15, sqrt(((10-15)^2 + (20-15)^2)/2) = sqrt(25) = 5.0
     try std.testing.expectEqual(@as(f64, 5.0), std_col.float64.values.items[0]);
+}
+
+test "GroupBy: prod produces correct products" {
+    const allocator = std.testing.allocator;
+    var df = try createTestDf(allocator);
+    defer df.deinit();
+    var gb = try df.groupBy("category");
+    defer gb.deinit();
+    var prod_result = try gb.prod("values");
+    defer prod_result.deinit();
+    try std.testing.expectEqual(@as(usize, 2), prod_result.height());
+    const col = prod_result.getSeries("values") orelse return error.DoesNotExist;
+    // Group 1: 10*30*50=15000, Group 2: 20*40=800
+    const a = col.int64.values.items[0];
+    const b = col.int64.values.items[1];
+    try std.testing.expect((a == 15000 and b == 800) or (a == 800 and b == 15000));
+}
+
+test "GroupBy: first and last return correct boundary values" {
+    const allocator = std.testing.allocator;
+    var df = try createTestDf(allocator);
+    defer df.deinit();
+    var gb = try df.groupBy("category");
+    defer gb.deinit();
+    var first_result = try gb.first("values");
+    defer first_result.deinit();
+    try std.testing.expectEqual(@as(usize, 2), first_result.height());
+    var last_result = try gb.last("values");
+    defer last_result.deinit();
+    try std.testing.expectEqual(@as(usize, 2), last_result.height());
+}
+
+test "GroupBy: median produces correct medians" {
+    const allocator = std.testing.allocator;
+    var df = try createTestDf(allocator);
+    defer df.deinit();
+    var gb = try df.groupBy("category");
+    defer gb.deinit();
+    var med_result = try gb.median("values");
+    defer med_result.deinit();
+    try std.testing.expectEqual(@as(usize, 2), med_result.height());
+    const col = med_result.getSeries("values") orelse return error.DoesNotExist;
+    // Group 1: median(10,30,50)=30.0, Group 2: median(20,40)=30.0
+    const a = col.float64.values.items[0];
+    const b = col.float64.values.items[1];
+    try std.testing.expect((a == 30.0 and b == 30.0));
+}
+
+test "GroupBy: nunique counts distinct values per group" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+    var cat = try df.createSeries(i32);
+    try cat.rename("key");
+    try cat.append(1);
+    try cat.append(1);
+    try cat.append(2);
+    var vals = try df.createSeries(i32);
+    try vals.rename("val");
+    try vals.append(5);
+    try vals.append(5);
+    try vals.append(7);
+    var gb = try df.groupBy("key");
+    defer gb.deinit();
+    var result = try gb.nunique("val");
+    defer result.deinit();
+    try std.testing.expectEqual(@as(usize, 2), result.height());
+    const col = result.getSeries("nunique") orelse return error.DoesNotExist;
+    // Group 1: nunique([5,5])=1, Group 2: nunique([7])=1
+    const a = col.usize.values.items[0];
+    const b = col.usize.values.items[1];
+    try std.testing.expect((a == 1 and b == 1));
 }

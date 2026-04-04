@@ -383,6 +383,7 @@ pub fn Series(comptime T: type) type {
                 i32 => BoxedSeries{ .int32 = self },
                 i64 => BoxedSeries{ .int64 = self },
                 i128 => BoxedSeries{ .int128 = self },
+                isize => BoxedSeries{ .isize = self },
                 f32 => BoxedSeries{ .float32 = self },
                 f64 => BoxedSeries{ .float64 = self },
                 strings.String => BoxedSeries{ .string = self },
@@ -526,8 +527,8 @@ pub fn Series(comptime T: type) type {
             for (self.values.items, 0..) |v, i| {
                 if (self.isNull(i)) continue;
                 const fv: f64 = if (comptime is_float) @as(f64, v) else @as(f64, @floatFromInt(v));
-                const diff = fv - m;
-                sq_sum += diff * diff;
+                const delta = fv - m;
+                sq_sum += delta * delta;
             }
             return @sqrt(sq_sum / @as(f64, @floatFromInt(count)));
         }
@@ -624,7 +625,7 @@ pub fn Series(comptime T: type) type {
         pub fn castSafe(self: *Self, comptime Target: type) !*Series(Target) {
             comptime if (!isSafeCast(T, Target)) @compileError(
                 "castSafe: cast from " ++ @typeName(T) ++ " to " ++ @typeName(Target) ++
-                " may lose data — use cast() to fail on bad values or castLossy() to null them out",
+                    " may lose data — use cast() to fail on bad values or castLossy() to null them out",
             );
             return self.castImpl(Target, .strict); // safe casts never hit error paths
         }
@@ -679,6 +680,333 @@ pub fn Series(comptime T: type) type {
                         // Deinit any allocated String we won't use
                         if (comptime Target == strings.String) {} // castValueLossy returned null, no alloc
                         try result.appendNull();
+                    }
+                }
+            }
+            return result;
+        }
+
+        /// Checked sum: errors on integer overflow. Floats use regular addition.
+        pub fn sumChecked(self: *Self) !T {
+            comptime if (!is_numeric) @compileError("sumChecked not supported for " ++ @typeName(T));
+            var total: T = 0;
+            for (self.values.items, 0..) |v, i| {
+                if (self.isNull(i)) continue;
+                if (comptime is_float) {
+                    total += v;
+                } else {
+                    const r, const ov = @addWithOverflow(total, v);
+                    if (ov != 0) return error.Overflow;
+                    total = r;
+                }
+            }
+            return total;
+        }
+
+        /// Product of all non-null values. Wraps on integer overflow.
+        pub fn prod(self: *Self) T {
+            comptime if (!is_numeric) @compileError("prod not supported for " ++ @typeName(T));
+            var result: T = 1;
+            for (self.values.items, 0..) |v, i| {
+                if (!self.isNull(i)) result *= v;
+            }
+            return result;
+        }
+
+        /// Checked product: errors on integer overflow. Floats use regular multiplication.
+        pub fn prodChecked(self: *Self) !T {
+            comptime if (!is_numeric) @compileError("prodChecked not supported for " ++ @typeName(T));
+            var result: T = 1;
+            for (self.values.items, 0..) |v, i| {
+                if (self.isNull(i)) continue;
+                if (comptime is_float) {
+                    result *= v;
+                } else {
+                    const r, const ov = @mulWithOverflow(result, v);
+                    if (ov != 0) return error.Overflow;
+                    result = r;
+                }
+            }
+            return result;
+        }
+
+        /// First non-null value, or null if empty or all-null.
+        pub fn first(self: *Self) ?T {
+            for (self.values.items, 0..) |v, i| {
+                if (!self.isNull(i)) return v;
+            }
+            return null;
+        }
+
+        /// Last non-null value, or null if empty or all-null.
+        pub fn last(self: *Self) ?T {
+            var i = self.values.items.len;
+            while (i > 0) {
+                i -= 1;
+                if (!self.isNull(i)) return self.values.items[i];
+            }
+            return null;
+        }
+
+        /// Median of non-null values as f64. Sorts a temporary copy of valid values.
+        /// Returns null if there are no non-null values. Allocator is for the temp sort buffer.
+        pub fn median(self: *Self, allocator: std.mem.Allocator) !?f64 {
+            comptime if (!is_numeric) @compileError("median not supported for " ++ @typeName(T));
+            var valid = std.ArrayList(f64).empty;
+            defer valid.deinit(allocator);
+            for (self.values.items, 0..) |v, i| {
+                if (!self.isNull(i)) {
+                    const fv: f64 = if (comptime is_float) @as(f64, v) else @as(f64, @floatFromInt(v));
+                    try valid.append(allocator, fv);
+                }
+            }
+            if (valid.items.len == 0) return null;
+            std.mem.sortUnstable(f64, valid.items, {}, std.sort.asc(f64));
+            const n = valid.items.len;
+            if (n % 2 == 1) return valid.items[n / 2];
+            return (valid.items[n / 2 - 1] + valid.items[n / 2]) / 2.0;
+        }
+
+        /// Quantile of non-null values via linear interpolation. q must be in [0.0, 1.0].
+        /// Returns null if there are no non-null values. Allocator is for the temp sort buffer.
+        pub fn quantile(self: *Self, allocator: std.mem.Allocator, q: f64) !?f64 {
+            comptime if (!is_numeric) @compileError("quantile not supported for " ++ @typeName(T));
+            if (q < 0.0 or q > 1.0) return error.InvalidQuantile;
+            var valid = std.ArrayList(f64).empty;
+            defer valid.deinit(allocator);
+            for (self.values.items, 0..) |v, i| {
+                if (!self.isNull(i)) {
+                    const fv: f64 = if (comptime is_float) @as(f64, v) else @as(f64, @floatFromInt(v));
+                    try valid.append(allocator, fv);
+                }
+            }
+            if (valid.items.len == 0) return null;
+            std.mem.sortUnstable(f64, valid.items, {}, std.sort.asc(f64));
+            const n = valid.items.len;
+            if (n == 1) return valid.items[0];
+            const pos = q * @as(f64, @floatFromInt(n - 1));
+            const lo: usize = @intFromFloat(@floor(pos));
+            const hi: usize = @min(lo + 1, n - 1);
+            const frac = pos - @as(f64, @floatFromInt(lo));
+            return valid.items[lo] + frac * (valid.items[hi] - valid.items[lo]);
+        }
+
+        /// Count of distinct non-null values. Allocates a temporary hash map.
+        pub fn nunique(self: *Self, allocator: std.mem.Allocator) !usize {
+            var indices = try self.uniqueIndices(allocator);
+            defer indices.deinit(allocator);
+            return indices.items.len;
+        }
+
+        /// Running cumulative sum. Nulls produce null output; does not skip.
+        /// Wraps on integer overflow (debug mode panics).
+        pub fn cumSum(self: *Self) !*Self {
+            comptime if (!is_numeric) @compileError("cumSum not supported for " ++ @typeName(T));
+            const result = try Self.init(self.allocator);
+            errdefer result.deinit();
+            try result.rename(self.name.toSlice());
+            var running: T = 0;
+            for (self.values.items, 0..) |v, i| {
+                if (self.isNull(i)) {
+                    try result.appendNull();
+                } else {
+                    running += v;
+                    try result.append(running);
+                }
+            }
+            return result;
+        }
+
+        /// Running cumulative minimum. Nulls produce null output.
+        pub fn cumMin(self: *Self) !*Self {
+            comptime if (!is_numeric) @compileError("cumMin not supported for " ++ @typeName(T));
+            const result = try Self.init(self.allocator);
+            errdefer result.deinit();
+            try result.rename(self.name.toSlice());
+            var running: ?T = null;
+            for (self.values.items, 0..) |v, i| {
+                if (self.isNull(i)) {
+                    try result.appendNull();
+                } else {
+                    running = if (running) |r| @min(r, v) else v;
+                    try result.append(running.?);
+                }
+            }
+            return result;
+        }
+
+        /// Running cumulative maximum. Nulls produce null output.
+        pub fn cumMax(self: *Self) !*Self {
+            comptime if (!is_numeric) @compileError("cumMax not supported for " ++ @typeName(T));
+            const result = try Self.init(self.allocator);
+            errdefer result.deinit();
+            try result.rename(self.name.toSlice());
+            var running: ?T = null;
+            for (self.values.items, 0..) |v, i| {
+                if (self.isNull(i)) {
+                    try result.appendNull();
+                } else {
+                    running = if (running) |r| @max(r, v) else v;
+                    try result.append(running.?);
+                }
+            }
+            return result;
+        }
+
+        /// Running cumulative product. Nulls produce null output.
+        /// Wraps on integer overflow (debug mode panics).
+        pub fn cumProd(self: *Self) !*Self {
+            comptime if (!is_numeric) @compileError("cumProd not supported for " ++ @typeName(T));
+            const result = try Self.init(self.allocator);
+            errdefer result.deinit();
+            try result.rename(self.name.toSlice());
+            var running: T = 1;
+            for (self.values.items, 0..) |v, i| {
+                if (self.isNull(i)) {
+                    try result.appendNull();
+                } else {
+                    running *= v;
+                    try result.append(running);
+                }
+            }
+            return result;
+        }
+
+        /// Shift values by n positions. Positive n shifts down (prepends nulls),
+        /// negative n shifts up (appends nulls). Length is preserved; shifted-off values are dropped.
+        pub fn shift(self: *Self, n: i64) !*Self {
+            const result = try Self.init(self.allocator);
+            errdefer result.deinit();
+            try result.rename(self.name.toSlice());
+            const slen = self.values.items.len;
+            if (n >= 0) {
+                const sn: usize = @min(@as(usize, @intCast(n)), slen);
+                for (0..sn) |_| try result.appendNull();
+                for (0..slen - sn) |i| {
+                    if (self.isNull(i)) try result.appendNull() else {
+                        if (comptime T == strings.String) {
+                            var cloned = try self.values.items[i].clone();
+                            errdefer cloned.deinit();
+                            try result.values.append(self.allocator, cloned);
+                            if (result.validity) |*bm| try bm.append(self.allocator, true);
+                        } else {
+                            try result.append(self.values.items[i]);
+                        }
+                    }
+                }
+            } else {
+                const sn: usize = @min(@as(usize, @intCast(-n)), slen);
+                for (sn..slen) |i| {
+                    if (self.isNull(i)) try result.appendNull() else {
+                        if (comptime T == strings.String) {
+                            var cloned = try self.values.items[i].clone();
+                            errdefer cloned.deinit();
+                            try result.values.append(self.allocator, cloned);
+                            if (result.validity) |*bm| try bm.append(self.allocator, true);
+                        } else {
+                            try result.append(self.values.items[i]);
+                        }
+                    }
+                }
+                for (0..sn) |_| try result.appendNull();
+            }
+            return result;
+        }
+
+        /// Strict element-wise difference: result[i] = values[i] - values[i-n].
+        /// First n rows are null. Either operand null → null output.
+        /// For unsigned integers, underflow returns error.Underflow; use diffLossy to null instead.
+        pub fn diff(self: *Self, n: usize) !*Self {
+            comptime if (!is_numeric) @compileError("diff not supported for " ++ @typeName(T));
+            const result = try Self.init(self.allocator);
+            errdefer result.deinit();
+            try result.rename(self.name.toSlice());
+            for (0..self.values.items.len) |i| {
+                if (i < n or self.isNull(i) or self.isNull(i - n)) {
+                    try result.appendNull();
+                } else if (comptime is_float) {
+                    try result.append(self.values.items[i] - self.values.items[i - n]);
+                } else {
+                    const r, const ov = @subWithOverflow(self.values.items[i], self.values.items[i - n]);
+                    if (ov != 0) return error.Underflow;
+                    try result.append(r);
+                }
+            }
+            return result;
+        }
+
+        /// Permissive element-wise difference. Underflow/overflow → null instead of error.
+        pub fn diffLossy(self: *Self, n: usize) !*Self {
+            comptime if (!is_numeric) @compileError("diffLossy not supported for " ++ @typeName(T));
+            const result = try Self.init(self.allocator);
+            errdefer result.deinit();
+            try result.rename(self.name.toSlice());
+            for (0..self.values.items.len) |i| {
+                if (i < n or self.isNull(i) or self.isNull(i - n)) {
+                    try result.appendNull();
+                } else if (comptime is_float) {
+                    try result.append(self.values.items[i] - self.values.items[i - n]);
+                } else {
+                    const r, const ov = @subWithOverflow(self.values.items[i], self.values.items[i - n]);
+                    if (ov != 0) try result.appendNull() else try result.append(r);
+                }
+            }
+            return result;
+        }
+
+        /// Clamp all non-null values to [lower, upper]. Nulls are preserved.
+        pub fn clip(self: *Self, lower: T, upper: T) !*Self {
+            comptime if (!is_numeric) @compileError("clip not supported for " ++ @typeName(T));
+            const result = try self.deepCopy();
+            errdefer result.deinit();
+            for (result.values.items, 0..) |*v, i| {
+                if (!result.isNull(i)) v.* = @max(lower, @min(upper, v.*));
+            }
+            return result;
+        }
+
+        /// Returns a new series with exact matches of old_value replaced by new_value.
+        /// Null slots are never matched. String values are compared by content.
+        pub fn replace(self: *Self, old_value: T, new_value: T) !*Self {
+            const result = try self.deepCopy();
+            errdefer result.deinit();
+            for (result.values.items, 0..) |*v, i| {
+                if (result.isNull(i)) continue;
+                const matches = if (comptime T == strings.String)
+                    std.mem.eql(u8, v.toSlice(), old_value.toSlice())
+                else
+                    v.* == old_value;
+                if (matches) {
+                    if (comptime T == strings.String) {
+                        v.deinit();
+                        v.* = try new_value.clone();
+                    } else {
+                        v.* = new_value;
+                    }
+                }
+            }
+            return result;
+        }
+
+        /// Returns a new series applying multiple replacements. First matching pair wins.
+        pub fn replaceSlice(self: *Self, pairs: []const [2]T) !*Self {
+            const result = try self.deepCopy();
+            errdefer result.deinit();
+            for (result.values.items, 0..) |*v, i| {
+                if (result.isNull(i)) continue;
+                for (pairs) |pair| {
+                    const matches = if (comptime T == strings.String)
+                        std.mem.eql(u8, v.toSlice(), pair[0].toSlice())
+                    else
+                        v.* == pair[0];
+                    if (matches) {
+                        if (comptime T == strings.String) {
+                            v.deinit();
+                            v.* = try pair[1].clone();
+                        } else {
+                            v.* = pair[1];
+                        }
+                        break;
                     }
                 }
             }
@@ -1548,4 +1876,355 @@ test "Series.cast: bool to i32" {
 
     try std.testing.expectEqual(@as(i32, 1), casted.values.items[0]);
     try std.testing.expectEqual(@as(i32, 0), casted.values.items[1]);
+}
+
+// --- sumChecked Tests ---
+test "Series.sumChecked: normal sum" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(1);
+    try s.append(2);
+    try s.append(3);
+    try std.testing.expectEqual(@as(i32, 6), try s.sumChecked());
+}
+
+test "Series.sumChecked: overflow returns error" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(std.math.maxInt(i32));
+    try s.append(1);
+    try std.testing.expectError(error.Overflow, s.sumChecked());
+}
+
+// --- prod Tests ---
+test "Series.prod: basic product" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(2);
+    try s.append(3);
+    try s.append(4);
+    try std.testing.expectEqual(@as(i32, 24), s.prod());
+}
+
+test "Series.prod: skips nulls" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(2);
+    try s.appendNull();
+    try s.append(5);
+    try std.testing.expectEqual(@as(i32, 10), s.prod());
+}
+
+test "Series.prodChecked: overflow returns error" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(std.math.maxInt(i32));
+    try s.append(2);
+    try std.testing.expectError(error.Overflow, s.prodChecked());
+}
+
+// --- first / last Tests ---
+test "Series.first: returns first non-null" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.appendNull();
+    try s.append(10);
+    try s.append(20);
+    try std.testing.expectEqual(@as(?i32, 10), s.first());
+}
+
+test "Series.last: returns last non-null" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(10);
+    try s.append(20);
+    try s.appendNull();
+    try std.testing.expectEqual(@as(?i32, 20), s.last());
+}
+
+test "Series.first: all null returns null" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.appendNull();
+    try std.testing.expectEqual(@as(?i32, null), s.first());
+}
+
+// --- median / quantile Tests ---
+test "Series.median: odd count" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(3);
+    try s.append(1);
+    try s.append(2);
+    const m = try s.median(allocator);
+    try std.testing.expectEqual(@as(?f64, 2.0), m);
+}
+
+test "Series.median: even count averages middle two" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(1);
+    try s.append(2);
+    try s.append(3);
+    try s.append(4);
+    const m = try s.median(allocator);
+    try std.testing.expectEqual(@as(?f64, 2.5), m);
+}
+
+test "Series.median: skips nulls" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(1);
+    try s.appendNull();
+    try s.append(3);
+    const m = try s.median(allocator);
+    try std.testing.expectEqual(@as(?f64, 2.0), m);
+}
+
+test "Series.quantile: q=0 is min, q=1 is max" {
+    const allocator = std.testing.allocator;
+    var s = try Series(f64).init(allocator);
+    defer s.deinit();
+    try s.append(1.0);
+    try s.append(2.0);
+    try s.append(3.0);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), (try s.quantile(allocator, 0.0)).?, 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 3.0), (try s.quantile(allocator, 1.0)).?, 1e-9);
+}
+
+test "Series.quantile: invalid q returns error" {
+    const allocator = std.testing.allocator;
+    var s = try Series(f64).init(allocator);
+    defer s.deinit();
+    try s.append(1.0);
+    try std.testing.expectError(error.InvalidQuantile, s.quantile(allocator, 1.5));
+}
+
+// --- nunique Tests ---
+test "Series.nunique: counts distinct values" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(1);
+    try s.append(2);
+    try s.append(1);
+    try s.append(3);
+    try std.testing.expectEqual(@as(usize, 3), try s.nunique(allocator));
+}
+
+// --- cumSum / cumMin / cumMax / cumProd Tests ---
+test "Series.cumSum: basic" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(1);
+    try s.append(2);
+    try s.append(3);
+    var r = try s.cumSum();
+    defer r.deinit();
+    try std.testing.expectEqual(@as(i32, 1), r.values.items[0]);
+    try std.testing.expectEqual(@as(i32, 3), r.values.items[1]);
+    try std.testing.expectEqual(@as(i32, 6), r.values.items[2]);
+}
+
+test "Series.cumSum: null propagates" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(1);
+    try s.appendNull();
+    try s.append(3);
+    var r = try s.cumSum();
+    defer r.deinit();
+    try std.testing.expect(!r.isNull(0));
+    try std.testing.expect(r.isNull(1));
+    try std.testing.expect(!r.isNull(2));
+    try std.testing.expectEqual(@as(i32, 4), r.values.items[2]);
+}
+
+test "Series.cumMin: basic" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(3);
+    try s.append(1);
+    try s.append(2);
+    var r = try s.cumMin();
+    defer r.deinit();
+    try std.testing.expectEqual(@as(i32, 3), r.values.items[0]);
+    try std.testing.expectEqual(@as(i32, 1), r.values.items[1]);
+    try std.testing.expectEqual(@as(i32, 1), r.values.items[2]);
+}
+
+test "Series.cumMax: basic" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(1);
+    try s.append(3);
+    try s.append(2);
+    var r = try s.cumMax();
+    defer r.deinit();
+    try std.testing.expectEqual(@as(i32, 1), r.values.items[0]);
+    try std.testing.expectEqual(@as(i32, 3), r.values.items[1]);
+    try std.testing.expectEqual(@as(i32, 3), r.values.items[2]);
+}
+
+test "Series.cumProd: basic" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(1);
+    try s.append(2);
+    try s.append(3);
+    var r = try s.cumProd();
+    defer r.deinit();
+    try std.testing.expectEqual(@as(i32, 1), r.values.items[0]);
+    try std.testing.expectEqual(@as(i32, 2), r.values.items[1]);
+    try std.testing.expectEqual(@as(i32, 6), r.values.items[2]);
+}
+
+// --- shift Tests ---
+test "Series.shift: positive shift prepends nulls" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(10);
+    try s.append(20);
+    try s.append(30);
+    var r = try s.shift(1);
+    defer r.deinit();
+    try std.testing.expectEqual(@as(usize, 3), r.len());
+    try std.testing.expect(r.isNull(0));
+    try std.testing.expectEqual(@as(i32, 10), r.values.items[1]);
+    try std.testing.expectEqual(@as(i32, 20), r.values.items[2]);
+}
+
+test "Series.shift: negative shift appends nulls" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(10);
+    try s.append(20);
+    try s.append(30);
+    var r = try s.shift(-1);
+    defer r.deinit();
+    try std.testing.expectEqual(@as(i32, 20), r.values.items[0]);
+    try std.testing.expectEqual(@as(i32, 30), r.values.items[1]);
+    try std.testing.expect(r.isNull(2));
+}
+
+// --- diff Tests ---
+test "Series.diff: basic difference" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(10);
+    try s.append(13);
+    try s.append(11);
+    var r = try s.diff(1);
+    defer r.deinit();
+    try std.testing.expect(r.isNull(0));
+    try std.testing.expectEqual(@as(i32, 3), r.values.items[1]);
+    try std.testing.expectEqual(@as(i32, -2), r.values.items[2]);
+}
+
+test "Series.diff: unsigned underflow returns error" {
+    const allocator = std.testing.allocator;
+    var s = try Series(u32).init(allocator);
+    defer s.deinit();
+    try s.append(5);
+    try s.append(3); // 3 - 5 = underflow
+    try std.testing.expectError(error.Underflow, s.diff(1));
+}
+
+test "Series.diffLossy: underflow becomes null" {
+    const allocator = std.testing.allocator;
+    var s = try Series(u32).init(allocator);
+    defer s.deinit();
+    try s.append(5);
+    try s.append(3);
+    var r = try s.diffLossy(1);
+    defer r.deinit();
+    try std.testing.expect(r.isNull(0));
+    try std.testing.expect(r.isNull(1));
+}
+
+// --- clip Tests ---
+test "Series.clip: clamps values" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(-5);
+    try s.append(3);
+    try s.append(15);
+    var r = try s.clip(0, 10);
+    defer r.deinit();
+    try std.testing.expectEqual(@as(i32, 0), r.values.items[0]);
+    try std.testing.expectEqual(@as(i32, 3), r.values.items[1]);
+    try std.testing.expectEqual(@as(i32, 10), r.values.items[2]);
+}
+
+test "Series.clip: preserves nulls" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.appendNull();
+    try s.append(5);
+    var r = try s.clip(0, 10);
+    defer r.deinit();
+    try std.testing.expect(r.isNull(0));
+    try std.testing.expectEqual(@as(i32, 5), r.values.items[1]);
+}
+
+// --- replace / replaceSlice Tests ---
+test "Series.replace: replaces matching values" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(1);
+    try s.append(2);
+    try s.append(1);
+    var r = try s.replace(1, 99);
+    defer r.deinit();
+    try std.testing.expectEqual(@as(i32, 99), r.values.items[0]);
+    try std.testing.expectEqual(@as(i32, 2), r.values.items[1]);
+    try std.testing.expectEqual(@as(i32, 99), r.values.items[2]);
+}
+
+test "Series.replace: does not match nulls" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.appendNull();
+    try s.append(1);
+    var r = try s.replace(0, 99);
+    defer r.deinit();
+    try std.testing.expect(r.isNull(0));
+    try std.testing.expectEqual(@as(i32, 1), r.values.items[1]);
+}
+
+test "Series.replaceSlice: applies multiple replacements" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(1);
+    try s.append(2);
+    try s.append(3);
+    var r = try s.replaceSlice(&.{ .{ 1, 10 }, .{ 3, 30 } });
+    defer r.deinit();
+    try std.testing.expectEqual(@as(i32, 10), r.values.items[0]);
+    try std.testing.expectEqual(@as(i32, 2), r.values.items[1]);
+    try std.testing.expectEqual(@as(i32, 30), r.values.items[2]);
 }
