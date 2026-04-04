@@ -60,13 +60,13 @@ fn joinTyped(
     for (right_key.values.items, 0..) |key, i| {
         const gop = try right_map.getOrPut(key);
         if (!gop.found_existing) {
-            gop.value_ptr.* = std.ArrayList(usize){};
+            gop.value_ptr.* = std.ArrayList(usize).empty;
         }
         try gop.value_ptr.append(allocator, i);
     }
 
     // Collect index pairs: (left_idx or null, right_idx or null)
-    var pairs = std.ArrayList(IndexPair){};
+    var pairs = std.ArrayList(IndexPair).empty;
     defer pairs.deinit(allocator);
 
     // Track which right rows were matched (for right/outer joins)

@@ -475,7 +475,7 @@ pub const Dataframe = struct {
         }
 
         // Build the entire table into a buffer, then write all at once
-        var buf: std.ArrayList(u8) = .{};
+        var buf: std.ArrayList(u8) = .empty;
         defer buf.deinit(self.allocator);
 
         // +------+------+  top border

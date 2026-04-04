@@ -11,7 +11,7 @@ pub const WriteOptions = struct {
 /// Write a Dataframe to CSV format, returns an owned slice.
 /// Caller must free the returned slice with allocator.free().
 pub fn writeToString(allocator: Allocator, df: *Dataframe, options: WriteOptions) ![]u8 {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     const w = df.width();

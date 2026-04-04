@@ -18,7 +18,7 @@ pub const ThriftWriter = struct {
 
     pub fn init(allocator: std.mem.Allocator) ThriftWriter {
         return .{
-            .buf = .{},
+            .buf = .empty,
             .allocator = allocator,
             .last_field_id = 0,
             .field_id_stack = [_]i16{0} ** 16,

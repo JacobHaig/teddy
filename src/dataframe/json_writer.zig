@@ -9,7 +9,7 @@ pub const JsonFormat = enum { rows, columns };
 /// Write a Dataframe to JSON format, returns an owned slice.
 /// Caller must free the returned slice with allocator.free().
 pub fn writeToString(allocator: Allocator, df: *Dataframe, format: JsonFormat) ![]u8 {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     switch (format) {

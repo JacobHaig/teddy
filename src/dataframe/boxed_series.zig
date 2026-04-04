@@ -171,7 +171,7 @@ pub const BoxedSeries = union(enum) {
         switch (self.*) {
             inline else => |s| {
                 if (comptime *Series(T) == @TypeOf(s)) {
-                    var indices = std.ArrayList(usize){};
+                    var indices = std.ArrayList(usize).empty;
                     for (s.values.items, 0..) |item, i| {
                         const match = if (comptime T == String) blk: {
                             const ord = std.mem.order(u8, item.toSlice(), value.toSlice());

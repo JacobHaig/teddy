@@ -95,7 +95,7 @@ pub fn GroupBy(comptime T: type) type {
 
                 const list_ptr = self.groups.getPtr(key);
                 if (list_ptr == null) {
-                    var new_list = std.ArrayList(usize){};
+                    var new_list = std.ArrayList(usize).empty;
                     try new_list.append(self.allocator, i);
                     try self.groups.put(key, new_list);
                 } else {

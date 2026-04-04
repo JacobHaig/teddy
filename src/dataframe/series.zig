@@ -427,7 +427,7 @@ pub fn Series(comptime T: type) type {
             var seen = std.HashMap(T, void, GroupByContext, std.hash_map.default_max_load_percentage).init(allocator);
             defer seen.deinit();
 
-            var indices = std.ArrayList(usize){};
+            var indices = std.ArrayList(usize).empty;
             for (self.values.items, 0..) |val, i| {
                 const gop = try seen.getOrPut(val);
                 if (!gop.found_existing) {

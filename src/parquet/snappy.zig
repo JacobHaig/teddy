@@ -136,7 +136,7 @@ fn readSnappyVarint(data: []const u8, pos: *usize) ?usize {
 /// Produces valid Snappy that any compliant reader can decompress.
 /// Not optimally compressed, but correct and simple.
 pub fn compress(allocator: Allocator, input: []const u8) SnappyError![]u8 {
-    var buf: std.ArrayList(u8) = .{};
+    var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(allocator);
 
     // Write uncompressed length as Snappy varint

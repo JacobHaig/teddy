@@ -42,10 +42,10 @@ fn detectFormat(content: []const u8) JsonFormat {
 
 fn parseRows(allocator: Allocator, content: []const u8) !*Dataframe {
     // Phase 1: Parse all objects into intermediate storage
-    var col_names = std.ArrayList([]const u8){};
+    var col_names = std.ArrayList([]const u8).empty;
     defer col_names.deinit(allocator);
 
-    var all_values = std.ArrayList(std.ArrayList(JsonValue)){};
+    var all_values = std.ArrayList(std.ArrayList(JsonValue)).empty;
     defer {
         for (all_values.items) |*col_vals| {
             for (col_vals.items) |*v| v.deinit(allocator);
@@ -89,7 +89,7 @@ fn parseRows(allocator: Allocator, content: []const u8) !*Dataframe {
             const col_idx = findColIndex(col_names.items, key) orelse blk: {
                 const idx = col_names.items.len;
                 try col_names.append(allocator, key);
-                var new_col: std.ArrayList(JsonValue) = .{};
+                var new_col: std.ArrayList(JsonValue) = .empty;
                 for (0..row_count) |_| {
                     try new_col.append(allocator, .null);
                 }
@@ -118,10 +118,10 @@ fn parseRows(allocator: Allocator, content: []const u8) !*Dataframe {
 // ============================================================
 
 fn parseColumns(allocator: Allocator, content: []const u8) !*Dataframe {
-    var col_names = std.ArrayList([]const u8){};
+    var col_names = std.ArrayList([]const u8).empty;
     defer col_names.deinit(allocator);
 
-    var all_values = std.ArrayList(std.ArrayList(JsonValue)){};
+    var all_values = std.ArrayList(std.ArrayList(JsonValue)).empty;
     defer {
         for (all_values.items) |*col_vals| {
             for (col_vals.items) |*v| v.deinit(allocator);
@@ -153,7 +153,7 @@ fn parseColumns(allocator: Allocator, content: []const u8) !*Dataframe {
         if (pos >= content.len or content[pos] != '[') return error.InvalidJson;
         pos += 1;
 
-        var col_vals: std.ArrayList(JsonValue) = .{};
+        var col_vals: std.ArrayList(JsonValue) = .empty;
         while (pos < content.len) {
             skipWhitespace(content, &pos);
             if (pos >= content.len) break;
@@ -323,7 +323,7 @@ fn parseStringAlloc(allocator: Allocator, content: []const u8, pos: *usize) ![]u
     if (pos.* >= content.len or content[pos.*] != '"') return error.InvalidJson;
     pos.* += 1;
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(allocator);
 
     while (pos.* < content.len and content[pos.*] != '"') {

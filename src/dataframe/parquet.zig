@@ -126,7 +126,7 @@ pub fn fromDataframe(allocator: Allocator, df: *dataframe.Dataframe) !DataframeC
     errdefer allocator.free(cols);
 
     // Track string buffers that need cleanup
-    var string_bufs: std.ArrayList([]const []const u8) = .{};
+    var string_bufs: std.ArrayList([]const []const u8) = .empty;
     defer string_bufs.deinit(allocator);
 
     for (df.series.items, 0..) |*boxed, i| {

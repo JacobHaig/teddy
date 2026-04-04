@@ -13,7 +13,7 @@ pub const PlainEncoder = struct {
     allocator: Allocator,
 
     pub fn init(allocator: Allocator) PlainEncoder {
-        return .{ .buf = .{}, .allocator = allocator };
+        return .{ .buf = .empty, .allocator = allocator };
     }
 
     pub fn deinit(self: *PlainEncoder) void {
