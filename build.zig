@@ -45,7 +45,15 @@ pub fn build(b: *std.Build) void {
     }
 
     const mod_tests = b.addTest(.{
-        .root_module = dataframe_mod,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/dataframe/tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "parquet", .module = parquet_mod },
+                .{ .name = "dataframe", .module = dataframe_mod },
+            },
+        }),
     });
 
     const run_mod_tests = b.addRunArtifact(mod_tests);
@@ -57,7 +65,11 @@ pub fn build(b: *std.Build) void {
     const run_exe_tests = b.addRunArtifact(exe_tests);
 
     const parquet_tests = b.addTest(.{
-        .root_module = parquet_mod,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/parquet/tests.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
 
     const run_parquet_tests = b.addRunArtifact(parquet_tests);
