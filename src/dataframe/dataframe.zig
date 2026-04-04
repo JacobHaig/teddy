@@ -210,12 +210,12 @@ pub const Dataframe = struct {
         if (comptime T == []const u8 or T == []u8 or isStringLiteral(T)) {
             var str_val = try String.fromSlice(self.allocator, value);
             defer str_val.deinit();
-            var indices = try boxed.filterIndices(String, self.allocator, op, str_val);
+            var indices = try boxed.indicesWhere(String, self.allocator, op, str_val);
             defer indices.deinit(self.allocator);
             return self.filterByIndices(indices.items);
         }
 
-        var indices = try boxed.filterIndices(T, self.allocator, op, value);
+        var indices = try boxed.indicesWhere(T, self.allocator, op, value);
         defer indices.deinit(self.allocator);
         return self.filterByIndices(indices.items);
     }
@@ -315,34 +315,14 @@ pub const Dataframe = struct {
     const Stats = struct { count: f64, mean_val: f64, std_val: f64, min_val: f64, max_val: f64 };
 
     fn computeStats(s: *BoxedSeries) ?Stats {
-        return switch (s.*) {
-            .int8 => |p| numericStats(i8, p),
-            .int16 => |p| numericStats(i16, p),
-            .int32 => |p| numericStats(i32, p),
-            .int64 => |p| numericStats(i64, p),
-            .uint8 => |p| numericStats(u8, p),
-            .uint16 => |p| numericStats(u16, p),
-            .uint32 => |p| numericStats(u32, p),
-            .uint64 => |p| numericStats(u64, p),
-            .usize => |p| numericStats(usize, p),
-            .float32 => |p| numericStats(f32, p),
-            .float64 => |p| numericStats(f64, p),
-            else => null,
+        const mean_val = s.mean() orelse return null;
+        return .{
+            .count   = @floatFromInt(s.len()),
+            .mean_val = mean_val,
+            .std_val  = s.stdDev() orelse 0,
+            .min_val  = s.min() orelse 0,
+            .max_val  = s.max() orelse 0,
         };
-    }
-
-    fn numericStats(comptime T: type, series: *Series(T)) Stats {
-        const n = series.len();
-        if (n == 0) return .{ .count = 0, .mean_val = 0, .std_val = 0, .min_val = 0, .max_val = 0 };
-        const is_float = (T == f32 or T == f64);
-        const count: f64 = @floatFromInt(n);
-        const mean_val = series.seriesMean();
-        const std_val = series.seriesStdDev();
-        const min_raw = series.minVal().?;
-        const max_raw = series.maxVal().?;
-        const min_val: f64 = if (comptime is_float) @as(f64, min_raw) else @floatFromInt(min_raw);
-        const max_val: f64 = if (comptime is_float) @as(f64, max_raw) else @floatFromInt(max_raw);
-        return .{ .count = count, .mean_val = mean_val, .std_val = std_val, .min_val = min_val, .max_val = max_val };
     }
 
     /// Write this Dataframe to a JSON string. Caller must free the returned slice.
@@ -360,7 +340,7 @@ pub const Dataframe = struct {
             const col_name = s.name();
             const other_s = other.getSeries(col_name) orelse return error.ColumnNotFound;
             var new_s = try s.deepCopy();
-            try new_s.appendFrom(other_s);
+            try new_s.appendSeries(other_s);
             try new_df.series.append(self.allocator, new_s);
         }
         return new_df;
@@ -380,6 +360,66 @@ pub const Dataframe = struct {
         var gb = try self.groupBy(column);
         defer gb.deinit();
         return gb.count();
+    }
+
+    /// Returns a new Dataframe with rows dropped where `column` is null. Caller owns the returned pointer.
+    /// Private: collects row indices where `is_row_invalid` returns false, then filters.
+    /// `column` is the single column to check (null means check all columns).
+    fn dropNullsImpl(self: *Self, column: ?[]const u8) !*Self {
+        // Validate the column name up front if one was given.
+        if (column) |col| {
+            if (self.getSeries(col) == null) return error.ColumnNotFound;
+        }
+        var valid_indices = std.ArrayList(usize).empty;
+        defer valid_indices.deinit(self.allocator);
+        outer: for (0..self.height()) |i| {
+            if (column) |col| {
+                // Safe to unwrap: validated above.
+                if (self.getSeries(col).?.isNull(i)) continue :outer;
+            } else {
+                for (self.series.items) |*boxed| {
+                    if (boxed.isNull(i)) continue :outer;
+                }
+            }
+            try valid_indices.append(self.allocator, i);
+        }
+        return self.filterByIndices(valid_indices.items);
+    }
+
+    /// Returns a new Dataframe with rows dropped where `column` is null. Caller owns the returned pointer.
+    pub fn dropNulls(self: *Self, column: []const u8) !*Self {
+        return self.dropNullsImpl(column);
+    }
+
+    /// Returns a new Dataframe with rows dropped where any column is null. Caller owns the returned pointer.
+    pub fn dropNullsAny(self: *Self) !*Self {
+        return self.dropNullsImpl(null);
+    }
+
+    /// Returns a new Dataframe with nulls in `column` filled by `value`. Caller owns the returned pointer.
+    /// Builds the result column-by-column: the target column goes through Series.fillNull (one pass,
+    /// one allocation), all others are deep-copied. No full-dataframe copy is made.
+    pub fn fillNull(self: *Self, column: []const u8, comptime T: type, value: T) !*Self {
+        const result = try Self.init(self.allocator);
+        errdefer result.deinit();
+
+        var found = false;
+        for (self.series.items) |*boxed| {
+            if (std.mem.eql(u8, boxed.name(), column)) {
+                const typed: *Series(T) = switch (boxed.*) {
+                    inline else => |s| if (@TypeOf(s) == *Series(T)) s else return error.TypeMismatch,
+                };
+                const filled = try typed.fillNull(value);
+                errdefer filled.deinit();
+                try result.addSeries(filled.toBoxedSeries());
+                found = true;
+            } else {
+                try result.addSeries(try boxed.deepCopy());
+            }
+        }
+
+        if (!found) return error.ColumnNotFound;
+        return result;
     }
 
     /// Returns a new Dataframe with rows [start..end). Caller owns the returned pointer.
@@ -1273,4 +1313,134 @@ test {
     _ = @import("csv_writer.zig");
     _ = @import("join.zig");
     _ = @import("writer.zig");
+}
+
+// --- Nullable DataFrame Tests ---
+
+test "Dataframe: dropNulls removes rows where column is null" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var col = try Series(i64).init(allocator);
+    try col.rename("x");
+    try col.append(1);
+    try col.appendNull();
+    try col.append(3);
+    try df.addSeries(col.toBoxedSeries());
+
+    var result = try df.dropNulls("x");
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), result.height());
+    const s = result.getSeries("x").?;
+    for (0..result.height()) |i| try std.testing.expect(!s.isNull(i));
+}
+
+test "Dataframe: dropNulls unknown column returns error" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+    try std.testing.expectError(error.ColumnNotFound, df.dropNulls("nope"));
+}
+
+test "Dataframe: dropNullsAny removes rows with any null" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var a = try Series(i64).init(allocator);
+    try a.rename("a");
+    try a.append(1);
+    try a.appendNull(); // row 1 has null in "a"
+    try a.append(3);
+    try df.addSeries(a.toBoxedSeries());
+
+    var b = try Series(i64).init(allocator);
+    try b.rename("b");
+    try b.append(10);
+    try b.append(20);
+    try b.appendNull(); // row 2 has null in "b"
+    try df.addSeries(b.toBoxedSeries());
+
+    var result = try df.dropNullsAny();
+    defer result.deinit();
+
+    // Only row 0 has no nulls in either column.
+    try std.testing.expectEqual(@as(usize, 1), result.height());
+}
+
+test "Dataframe: dropNullsAny with no nulls returns full copy" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var col = try Series(i64).init(allocator);
+    try col.rename("x");
+    try col.append(1);
+    try col.append(2);
+    try df.addSeries(col.toBoxedSeries());
+
+    var result = try df.dropNullsAny();
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), result.height());
+}
+
+test "Dataframe: fillNull replaces nulls in target column only" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var a = try Series(i64).init(allocator);
+    try a.rename("a");
+    try a.append(1);
+    try a.appendNull();
+    try a.append(3);
+    try df.addSeries(a.toBoxedSeries());
+
+    var b = try Series(i64).init(allocator);
+    try b.rename("b");
+    try b.appendNull();
+    try b.append(20);
+    try b.append(30);
+    try df.addSeries(b.toBoxedSeries());
+
+    var result = try df.fillNull("a", i64, 99);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), result.height());
+
+    // Column "a": null at index 1 should be filled.
+    const ra = result.getSeries("a").?;
+    try std.testing.expect(!ra.isNull(0));
+    try std.testing.expect(!ra.isNull(1));
+    try std.testing.expect(!ra.isNull(2));
+    var v = try ra.asStringAt(1);
+    defer v.deinit();
+    try std.testing.expectEqualStrings("99", v.toSlice());
+
+    // Column "b": still has its original null at index 0.
+    const rb = result.getSeries("b").?;
+    try std.testing.expect(rb.isNull(0));
+}
+
+test "Dataframe: fillNull unknown column returns error" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+    try std.testing.expectError(error.ColumnNotFound, df.fillNull("nope", i64, 0));
+}
+
+test "Dataframe: fillNull type mismatch returns error" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var col = try Series(i64).init(allocator);
+    try col.rename("x");
+    try col.appendNull();
+    try df.addSeries(col.toBoxedSeries());
+
+    try std.testing.expectError(error.TypeMismatch, df.fillNull("x", f64, 0.0));
 }

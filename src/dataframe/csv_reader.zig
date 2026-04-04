@@ -293,7 +293,7 @@ const Table = struct {
             switch (self.inferColumnType(col, data_start)) {
                 .int64 => {
                     var s = try df.createSeries(i64);
-                    if (header) |h| try s.renameOwned(try h.clone());
+                    if (header) |h| try s.rename(h.toSlice());
                     for (data_start..height) |row_i| {
                         const raw = self.rows.items[row_i].items[col].text();
                         try s.append(if (raw.len == 0) 0 else try std.fmt.parseInt(i64, raw, 10));
@@ -301,7 +301,7 @@ const Table = struct {
                 },
                 .float64 => {
                     var s = try df.createSeries(f64);
-                    if (header) |h| try s.renameOwned(try h.clone());
+                    if (header) |h| try s.rename(h.toSlice());
                     for (data_start..height) |row_i| {
                         const raw = self.rows.items[row_i].items[col].text();
                         try s.append(if (raw.len == 0) 0.0 else try std.fmt.parseFloat(f64, raw));
@@ -309,7 +309,7 @@ const Table = struct {
                 },
                 .string => {
                     var s = try df.createSeries(String);
-                    if (header) |h| try s.renameOwned(try h.clone());
+                    if (header) |h| try s.rename(h.toSlice());
                     for (data_start..height) |row_i| {
                         try s.append(try self.rows.items[row_i].items[col].createString(allocator));
                     }

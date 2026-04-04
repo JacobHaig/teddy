@@ -102,6 +102,110 @@ pub const BoxedSeries = union(enum) {
         }
     }
 
+    /// Returns true if the value at index i is null/missing.
+    pub fn isNull(self: *Self, i: usize) bool {
+        switch (self.*) {
+            inline else => |s| return s.*.isNull(i),
+        }
+    }
+
+    /// Returns the number of null values in the series.
+    pub fn nullCount(self: *Self) usize {
+        switch (self.*) {
+            inline else => |s| return s.*.nullCount(),
+        }
+    }
+
+    /// Returns true if the series contains any null values.
+    pub fn hasNulls(self: *Self) bool {
+        switch (self.*) {
+            inline else => |s| return s.*.hasNulls(),
+        }
+    }
+
+    /// Appends a null/missing value to the series.
+    pub fn appendNull(self: *Self) !void {
+        switch (self.*) {
+            inline else => |s| return s.*.appendNull(),
+        }
+    }
+
+    /// Returns the sum of non-null values as f64. Returns null if not a numeric type.
+    pub fn sum(self: *Self) ?f64 {
+        switch (self.*) {
+            .int8   => |s| return @as(f64, @floatFromInt(s.sum())),
+            .int16  => |s| return @as(f64, @floatFromInt(s.sum())),
+            .int32  => |s| return @as(f64, @floatFromInt(s.sum())),
+            .int64  => |s| return @as(f64, @floatFromInt(s.sum())),
+            .int128 => |s| return @as(f64, @floatFromInt(s.sum())),
+            .uint8  => |s| return @as(f64, @floatFromInt(s.sum())),
+            .uint16 => |s| return @as(f64, @floatFromInt(s.sum())),
+            .uint32 => |s| return @as(f64, @floatFromInt(s.sum())),
+            .uint64 => |s| return @as(f64, @floatFromInt(s.sum())),
+            .uint128 => |s| return @as(f64, @floatFromInt(s.sum())),
+            .usize  => |s| return @as(f64, @floatFromInt(s.sum())),
+            .float32 => |s| return @as(f64, s.sum()),
+            .float64 => |s| return s.sum(),
+            else => return null,
+        }
+    }
+
+    /// Returns the minimum non-null value as f64. Returns null if not numeric or all-null.
+    pub fn min(self: *Self) ?f64 {
+        switch (self.*) {
+            .int8   => |s| return if (s.min()) |v| @as(f64, @floatFromInt(v)) else null,
+            .int16  => |s| return if (s.min()) |v| @as(f64, @floatFromInt(v)) else null,
+            .int32  => |s| return if (s.min()) |v| @as(f64, @floatFromInt(v)) else null,
+            .int64  => |s| return if (s.min()) |v| @as(f64, @floatFromInt(v)) else null,
+            .int128 => |s| return if (s.min()) |v| @as(f64, @floatFromInt(v)) else null,
+            .uint8  => |s| return if (s.min()) |v| @as(f64, @floatFromInt(v)) else null,
+            .uint16 => |s| return if (s.min()) |v| @as(f64, @floatFromInt(v)) else null,
+            .uint32 => |s| return if (s.min()) |v| @as(f64, @floatFromInt(v)) else null,
+            .uint64 => |s| return if (s.min()) |v| @as(f64, @floatFromInt(v)) else null,
+            .uint128 => |s| return if (s.min()) |v| @as(f64, @floatFromInt(v)) else null,
+            .usize  => |s| return if (s.min()) |v| @as(f64, @floatFromInt(v)) else null,
+            .float32 => |s| return if (s.min()) |v| @as(f64, v) else null,
+            .float64 => |s| return s.min(),
+            else => return null,
+        }
+    }
+
+    /// Returns the maximum non-null value as f64. Returns null if not numeric or all-null.
+    pub fn max(self: *Self) ?f64 {
+        switch (self.*) {
+            .int8   => |s| return if (s.max()) |v| @as(f64, @floatFromInt(v)) else null,
+            .int16  => |s| return if (s.max()) |v| @as(f64, @floatFromInt(v)) else null,
+            .int32  => |s| return if (s.max()) |v| @as(f64, @floatFromInt(v)) else null,
+            .int64  => |s| return if (s.max()) |v| @as(f64, @floatFromInt(v)) else null,
+            .int128 => |s| return if (s.max()) |v| @as(f64, @floatFromInt(v)) else null,
+            .uint8  => |s| return if (s.max()) |v| @as(f64, @floatFromInt(v)) else null,
+            .uint16 => |s| return if (s.max()) |v| @as(f64, @floatFromInt(v)) else null,
+            .uint32 => |s| return if (s.max()) |v| @as(f64, @floatFromInt(v)) else null,
+            .uint64 => |s| return if (s.max()) |v| @as(f64, @floatFromInt(v)) else null,
+            .uint128 => |s| return if (s.max()) |v| @as(f64, @floatFromInt(v)) else null,
+            .usize  => |s| return if (s.max()) |v| @as(f64, @floatFromInt(v)) else null,
+            .float32 => |s| return if (s.max()) |v| @as(f64, v) else null,
+            .float64 => |s| return s.max(),
+            else => return null,
+        }
+    }
+
+    /// Returns the mean of non-null values as f64. Returns null if not numeric.
+    pub fn mean(self: *Self) ?f64 {
+        switch (self.*) {
+            .string, .bool => return null,
+            inline else => |s| return s.*.mean(),
+        }
+    }
+
+    /// Returns the population stddev of non-null values as f64. Returns null if not numeric.
+    pub fn stdDev(self: *Self) ?f64 {
+        switch (self.*) {
+            .string, .bool => return null,
+            inline else => |s| return s.*.stdDev(),
+        }
+    }
+
     pub fn getNameOwned(self: *const Self) !String {
         switch (self.*) {
             inline else => |p| return p.getNameOwned(),
@@ -147,19 +251,21 @@ pub const BoxedSeries = union(enum) {
         }
     }
 
-    /// Appends all values from another BoxedSeries of the same type.
-    pub fn appendFrom(self: *Self, other: *const Self) !void {
+    /// Appends all rows from another BoxedSeries of the same type, preserving nulls.
+    pub fn appendSeries(self: *Self, other: *const Self) !void {
         if (std.meta.activeTag(self.*) != std.meta.activeTag(other.*)) return error.TypeMismatch;
         switch (self.*) {
             inline else => |s, tag| {
                 const o = @field(other.*, @tagName(tag));
-                for (o.values.items) |*val| {
-                    if (comptime @TypeOf(val.*) == String) {
-                        var cloned = try val.clone();
+                for (0..o.values.items.len) |i| {
+                    if (o.isNull(i)) {
+                        try s.appendNull();
+                    } else if (comptime @TypeOf(o.values.items[i]) == String) {
+                        var cloned = try o.values.items[i].clone();
                         errdefer cloned.deinit();
-                        try s.values.append(s.allocator, cloned);
+                        try s.append(cloned);
                     } else {
-                        try s.values.append(s.allocator, val.*);
+                        try s.append(o.values.items[i]);
                     }
                 }
             },
@@ -167,7 +273,7 @@ pub const BoxedSeries = union(enum) {
     }
 
     /// Returns indices where comparison holds for the given typed value.
-    pub fn filterIndices(self: *Self, comptime T: type, allocator: std.mem.Allocator, op: CompareOp, value: T) !std.ArrayList(usize) {
+    pub fn indicesWhere(self: *Self, comptime T: type, allocator: std.mem.Allocator, op: CompareOp, value: T) !std.ArrayList(usize) {
         switch (self.*) {
             inline else => |s| {
                 if (comptime *Series(T) == @TypeOf(s)) {

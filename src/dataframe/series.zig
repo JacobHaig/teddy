@@ -59,7 +59,7 @@ pub fn Series(comptime T: type) type {
         }
 
         /// Renames the series using an UnmanagedString. Ownership of new_name is transferred to the series; caller must not deinit new_name after this call.
-        pub fn renameOwned(self: *Self, new_name: strings.String) !void {
+        fn renameOwned(self: *Self, new_name: strings.String) !void {
             if (self.name.len() > 0) {
                 self.name.deinit();
             }
@@ -118,10 +118,14 @@ pub fn Series(comptime T: type) type {
         }
 
         // asStringAt returns a string representation of the value at index n.
-        // It uses the allocator to create a new string and formats the value.
+        // Returns "null" if the value at index n is null/missing.
         // The owner of the string is responsible for deallocating it.
         pub fn asStringAt(self: *Self, n: usize) !strings.String {
             var string = try strings.String.init(self.allocator);
+            if (self.isNull(n)) {
+                try string.appendSlice("null");
+                return string;
+            }
             var buf: [128]u8 = undefined;
             const slice = switch (comptime T) {
                 strings.String => try std.fmt.bufPrint(&buf, "{s}", .{self.values.items[n].toSlice()}),
@@ -131,6 +135,12 @@ pub fn Series(comptime T: type) type {
             };
             try string.appendSlice(slice);
             return string;
+        }
+
+        /// Returns the value at index i as an optional. Returns null if the slot is null/missing.
+        pub fn getAt(self: *Self, i: usize) ?T {
+            if (self.isNull(i)) return null;
+            return self.values.items[i];
         }
 
         /// toSlice returns a slice of the values in the series.
@@ -185,6 +195,9 @@ pub fn Series(comptime T: type) type {
         pub fn appendSlice(self: *Self, slice: []const T) !void {
             for (slice) |item| {
                 try self.values.append(self.allocator, item);
+                if (self.validity) |*v| {
+                    try v.append(self.allocator, true);
+                }
             }
         }
 
@@ -232,11 +245,13 @@ pub fn Series(comptime T: type) type {
                     try self.validity.?.append(self.allocator, true);
                 }
             }
-            // Append default value as placeholder
+            // Append default value as placeholder (value is irrelevant — validity marks it null).
             if (comptime T == strings.String) {
                 var empty = try strings.String.init(self.allocator);
                 errdefer empty.deinit();
                 try self.values.append(self.allocator, empty);
+            } else if (comptime T == bool) {
+                try self.values.append(self.allocator, false);
             } else {
                 try self.values.append(self.allocator, @as(T, 0));
             }
@@ -275,6 +290,9 @@ pub fn Series(comptime T: type) type {
                     a.deinit();
                 },
                 inline else => _ = self.values.orderedRemove(index),
+            }
+            if (self.validity) |*v| {
+                _ = v.orderedRemove(index);
             }
         }
 
@@ -328,14 +346,23 @@ pub fn Series(comptime T: type) type {
             }
 
             self.values.shrinkAndFree(self.allocator, n_limit);
+            if (self.validity) |*v| {
+                v.shrinkAndFree(self.allocator, n_limit);
+            }
         }
 
         pub fn compareSeries(self: *Self, other: *Self) bool {
             if (self.len() != other.len()) return false;
 
             for (self.values.items, 0..) |value, index| {
-                if (value != other.values.items[index]) {
-                    return false;
+                const self_null = self.isNull(index);
+                const other_null = other.isNull(index);
+                if (self_null != other_null) return false; // one null, one not
+                if (self_null) continue; // both null — equal, check next
+                if (comptime T == strings.String) {
+                    if (!std.mem.eql(u8, value.toSlice(), other.values.items[index].toSlice())) return false;
+                } else {
+                    if (value != other.values.items[index]) return false;
                 }
             }
 
@@ -440,59 +467,155 @@ pub fn Series(comptime T: type) type {
         const is_numeric = !(T == strings.String or T == bool);
         const is_float = (T == f32 or T == f64);
 
-        /// Returns the sum of all values. Only available for numeric types.
-        pub fn seriesSum(self: *Self) T {
+        /// Returns the sum of all non-null values. Only available for numeric types.
+        pub fn sum(self: *Self) T {
             comptime if (!is_numeric) @compileError("sum not supported for " ++ @typeName(T));
             var total: T = 0;
-            for (self.values.items) |v| total += v;
+            for (self.values.items, 0..) |v, i| {
+                if (!self.isNull(i)) total += v;
+            }
             return total;
         }
 
-        /// Returns the minimum value, or null if empty.
-        pub fn minVal(self: *Self) ?T {
+        /// Returns the minimum non-null value, or null if empty or all-null.
+        pub fn min(self: *Self) ?T {
             comptime if (!is_numeric) @compileError("min not supported for " ++ @typeName(T));
-            if (self.values.items.len == 0) return null;
-            var m = self.values.items[0];
-            for (self.values.items[1..]) |v| {
-                if (v < m) m = v;
+            var result: ?T = null;
+            for (self.values.items, 0..) |v, i| {
+                if (self.isNull(i)) continue;
+                if (result == null or v < result.?) result = v;
             }
-            return m;
+            return result;
         }
 
-        /// Returns the maximum value, or null if empty.
-        pub fn maxVal(self: *Self) ?T {
+        /// Returns the maximum non-null value, or null if empty or all-null.
+        pub fn max(self: *Self) ?T {
             comptime if (!is_numeric) @compileError("max not supported for " ++ @typeName(T));
-            if (self.values.items.len == 0) return null;
-            var m = self.values.items[0];
-            for (self.values.items[1..]) |v| {
-                if (v > m) m = v;
+            var result: ?T = null;
+            for (self.values.items, 0..) |v, i| {
+                if (self.isNull(i)) continue;
+                if (result == null or v > result.?) result = v;
             }
-            return m;
+            return result;
         }
 
-        /// Returns the mean as f64. Only available for numeric types.
-        pub fn seriesMean(self: *Self) f64 {
+        /// Returns the mean of non-null values as f64. Only available for numeric types.
+        pub fn mean(self: *Self) f64 {
             comptime if (!is_numeric) @compileError("mean not supported for " ++ @typeName(T));
-            if (self.values.items.len == 0) return 0.0;
             var total: f64 = 0.0;
-            for (self.values.items) |v| {
+            var count: usize = 0;
+            for (self.values.items, 0..) |v, i| {
+                if (self.isNull(i)) continue;
                 total += if (comptime is_float) @as(f64, v) else @as(f64, @floatFromInt(v));
+                count += 1;
             }
-            return total / @as(f64, @floatFromInt(self.values.items.len));
+            if (count == 0) return 0.0;
+            return total / @as(f64, @floatFromInt(count));
         }
 
-        /// Returns the population standard deviation as f64.
-        pub fn seriesStdDev(self: *Self) f64 {
+        /// Returns the population standard deviation of non-null values as f64.
+        pub fn stdDev(self: *Self) f64 {
             comptime if (!is_numeric) @compileError("stddev not supported for " ++ @typeName(T));
-            if (self.values.items.len == 0) return 0.0;
-            const m = self.seriesMean();
+            var count: usize = 0;
+            for (0..self.values.items.len) |i| {
+                if (!self.isNull(i)) count += 1;
+            }
+            if (count == 0) return 0.0;
+            const m = self.mean();
             var sq_sum: f64 = 0.0;
-            for (self.values.items) |v| {
+            for (self.values.items, 0..) |v, i| {
+                if (self.isNull(i)) continue;
                 const fv: f64 = if (comptime is_float) @as(f64, v) else @as(f64, @floatFromInt(v));
                 const diff = fv - m;
                 sq_sum += diff * diff;
             }
-            return @sqrt(sq_sum / @as(f64, @floatFromInt(self.values.items.len)));
+            return @sqrt(sq_sum / @as(f64, @floatFromInt(count)));
+        }
+
+        /// Returns a new series with all null slots replaced by `value`.
+        /// The result has no nulls. Caller owns the returned pointer.
+        pub fn fillNull(self: *Self, value: T) !*Self {
+            const result = try Self.init(self.allocator);
+            errdefer result.deinit();
+            try result.rename(self.name.toSlice());
+            for (self.values.items, 0..) |v, i| {
+                if (self.isNull(i)) {
+                    if (comptime T == strings.String) {
+                        var cloned = try value.clone();
+                        errdefer cloned.deinit();
+                        try result.values.append(self.allocator, cloned);
+                    } else {
+                        try result.values.append(self.allocator, value);
+                    }
+                } else {
+                    if (comptime T == strings.String) {
+                        var cloned = try v.clone();
+                        errdefer cloned.deinit();
+                        try result.values.append(self.allocator, cloned);
+                    } else {
+                        try result.values.append(self.allocator, v);
+                    }
+                }
+            }
+            // No validity bitmap — result has no nulls.
+            return result;
+        }
+
+        /// Returns a new series with null slots filled by carrying the last valid value forward (LOCF).
+        /// Leading nulls (before any valid value) remain null. Caller owns the returned pointer.
+        pub fn fillNullForward(self: *Self) !*Self {
+            const result = try self.deepCopy();
+            errdefer result.deinit();
+            var last_valid: ?T = null;
+            for (result.values.items, 0..) |*v, i| {
+                if (!result.isNull(i)) {
+                    last_valid = v.*;
+                } else if (last_valid) |lv| {
+                    if (comptime T == strings.String) {
+                        v.deinit();
+                        v.* = try lv.clone();
+                    } else {
+                        v.* = lv;
+                    }
+                    if (result.validity) |*bm| bm.items[i] = true;
+                }
+            }
+            return result;
+        }
+
+        /// Returns a new series with null slots filled by carrying the next valid value backward (NOCB).
+        /// Trailing nulls (after the last valid value) remain null. Caller owns the returned pointer.
+        pub fn fillNullBackward(self: *Self) !*Self {
+            const result = try self.deepCopy();
+            errdefer result.deinit();
+            var next_valid: ?T = null;
+            var i = result.values.items.len;
+            while (i > 0) {
+                i -= 1;
+                if (!result.isNull(i)) {
+                    next_valid = result.values.items[i];
+                } else if (next_valid) |nv| {
+                    if (comptime T == strings.String) {
+                        result.values.items[i].deinit();
+                        result.values.items[i] = try nv.clone();
+                    } else {
+                        result.values.items[i] = nv;
+                    }
+                    if (result.validity) |*bm| bm.items[i] = true;
+                }
+            }
+            return result;
+        }
+
+        /// Returns a new series with all null rows removed. Caller owns the returned pointer.
+        pub fn dropNulls(self: *Self) !*Self {
+            if (!self.hasNulls()) return self.deepCopy();
+            var valid_indices = std.ArrayList(usize).empty;
+            defer valid_indices.deinit(self.allocator);
+            for (0..self.values.items.len) |i| {
+                if (!self.isNull(i)) try valid_indices.append(self.allocator, i);
+            }
+            return self.filterByIndices(valid_indices.items);
         }
 
         pub fn groupBy(self: *Self, allocator: std.mem.Allocator, dataframe: *Dataframe) !*GroupBy(T) {
@@ -563,7 +686,7 @@ test "Series: filterByIndices out-of-order indices" {
     try std.testing.expectEqual(@as(i32, 10), filtered.values.items[1]);
 }
 
-test "Series: seriesSum" {
+test "Series: sum" {
     const allocator = std.testing.allocator;
     var s = try Series(i32).init(allocator);
     defer s.deinit();
@@ -571,10 +694,10 @@ test "Series: seriesSum" {
     try s.append(20);
     try s.append(30);
 
-    try std.testing.expectEqual(@as(i32, 60), s.seriesSum());
+    try std.testing.expectEqual(@as(i32, 60), s.sum());
 }
 
-test "Series: minVal and maxVal" {
+test "Series: min and max" {
     const allocator = std.testing.allocator;
     var s = try Series(i32).init(allocator);
     defer s.deinit();
@@ -582,29 +705,29 @@ test "Series: minVal and maxVal" {
     try s.append(10);
     try s.append(20);
 
-    try std.testing.expectEqual(@as(i32, 10), s.minVal().?);
-    try std.testing.expectEqual(@as(i32, 30), s.maxVal().?);
+    try std.testing.expectEqual(@as(i32, 10), s.min().?);
+    try std.testing.expectEqual(@as(i32, 30), s.max().?);
 }
 
-test "Series: minVal empty returns null" {
+test "Series: min empty returns null" {
     const allocator = std.testing.allocator;
     var s = try Series(i32).init(allocator);
     defer s.deinit();
 
-    try std.testing.expect(s.minVal() == null);
+    try std.testing.expect(s.min() == null);
 }
 
-test "Series: seriesMean" {
+test "Series: mean" {
     const allocator = std.testing.allocator;
     var s = try Series(i32).init(allocator);
     defer s.deinit();
     try s.append(10);
     try s.append(20);
 
-    try std.testing.expectEqual(@as(f64, 15.0), s.seriesMean());
+    try std.testing.expectEqual(@as(f64, 15.0), s.mean());
 }
 
-test "Series: seriesStdDev" {
+test "Series: stdDev" {
     const allocator = std.testing.allocator;
     var s = try Series(i32).init(allocator);
     defer s.deinit();
@@ -612,17 +735,17 @@ test "Series: seriesStdDev" {
     try s.append(20);
 
     // mean=15, stddev = sqrt(((10-15)^2 + (20-15)^2) / 2) = sqrt(25) = 5
-    try std.testing.expectEqual(@as(f64, 5.0), s.seriesStdDev());
+    try std.testing.expectEqual(@as(f64, 5.0), s.stdDev());
 }
 
-test "Series: float seriesMean" {
+test "Series: float mean" {
     const allocator = std.testing.allocator;
     var s = try Series(f64).init(allocator);
     defer s.deinit();
     try s.append(1.0);
     try s.append(3.0);
 
-    try std.testing.expectEqual(@as(f64, 2.0), s.seriesMean());
+    try std.testing.expectEqual(@as(f64, 2.0), s.mean());
 }
 
 test "Series: appendNull and isNull" {
@@ -678,4 +801,330 @@ test "Series: filterByIndices preserves validity" {
 
     try std.testing.expect(!filtered.isNull(0));
     try std.testing.expect(filtered.isNull(1));
+}
+
+// --- getAt Tests ---
+
+test "Series: getAt returns value when not null" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(42);
+    try std.testing.expectEqual(@as(?i32, 42), s.getAt(0));
+}
+
+test "Series: getAt returns null for null slot" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(1);
+    try s.appendNull();
+    try s.append(3);
+    try std.testing.expectEqual(@as(?i32, 1), s.getAt(0));
+    try std.testing.expectEqual(@as(?i32, null), s.getAt(1));
+    try std.testing.expectEqual(@as(?i32, 3), s.getAt(2));
+}
+
+// --- asStringAt null Tests ---
+
+test "Series: asStringAt returns 'null' for null slot" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(10);
+    try s.appendNull();
+
+    var v0 = try s.asStringAt(0);
+    defer v0.deinit();
+    var v1 = try s.asStringAt(1);
+    defer v1.deinit();
+
+    try std.testing.expectEqualStrings("10", v0.toSlice());
+    try std.testing.expectEqualStrings("null", v1.toSlice());
+}
+
+// --- dropRow validity Tests ---
+
+test "Series: dropRow removes validity entry" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(1);
+    try s.appendNull(); // index 1
+    try s.append(3);
+
+    s.dropRow(1); // remove the null
+
+    try std.testing.expectEqual(@as(usize, 2), s.len());
+    try std.testing.expect(!s.isNull(0));
+    try std.testing.expect(!s.isNull(1));
+    try std.testing.expectEqual(@as(usize, 0), s.nullCount());
+}
+
+test "Series: dropRow keeping null slot updates indices correctly" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(1);
+    try s.appendNull(); // index 1
+    try s.append(3);
+
+    s.dropRow(0); // remove the first valid value
+
+    try std.testing.expectEqual(@as(usize, 2), s.len());
+    try std.testing.expect(s.isNull(0)); // null moved to index 0
+    try std.testing.expect(!s.isNull(1));
+}
+
+// --- limit validity Tests ---
+
+test "Series: limit truncates validity bitmap" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(1);
+    try s.appendNull();
+    try s.append(3);
+
+    s.limit(1);
+
+    try std.testing.expectEqual(@as(usize, 1), s.len());
+    try std.testing.expect(!s.isNull(0));
+    try std.testing.expectEqual(@as(usize, 0), s.nullCount());
+}
+
+// --- appendSlice validity Tests ---
+
+test "Series: appendSlice marks entries valid in existing bitmap" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.appendNull(); // triggers bitmap init
+    try s.appendSlice(&[_]i32{ 10, 20 });
+
+    try std.testing.expectEqual(@as(usize, 3), s.len());
+    try std.testing.expect(s.isNull(0));
+    try std.testing.expect(!s.isNull(1));
+    try std.testing.expect(!s.isNull(2));
+}
+
+// --- compareSeries null-aware Tests ---
+
+test "Series: compareSeries null == null" {
+    const allocator = std.testing.allocator;
+    var a = try Series(i32).init(allocator);
+    defer a.deinit();
+    var b = try Series(i32).init(allocator);
+    defer b.deinit();
+    try a.appendNull();
+    try b.appendNull();
+    try std.testing.expect(a.compareSeries(b));
+}
+
+test "Series: compareSeries null != value" {
+    const allocator = std.testing.allocator;
+    var a = try Series(i32).init(allocator);
+    defer a.deinit();
+    var b = try Series(i32).init(allocator);
+    defer b.deinit();
+    try a.appendNull();
+    try b.append(0); // same placeholder, different nullness
+    try std.testing.expect(!a.compareSeries(b));
+}
+
+// --- Aggregation null-skipping Tests ---
+
+test "Series: sum skips nulls" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(10);
+    try s.appendNull();
+    try s.append(30);
+    try std.testing.expectEqual(@as(i32, 40), s.sum());
+}
+
+test "Series: min skips nulls" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.appendNull();
+    try s.append(5);
+    try s.append(3);
+    try std.testing.expectEqual(@as(?i32, 3), s.min());
+}
+
+test "Series: max skips nulls" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(5);
+    try s.appendNull();
+    try s.append(3);
+    try std.testing.expectEqual(@as(?i32, 5), s.max());
+}
+
+test "Series: min all nulls returns null" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.appendNull();
+    try s.appendNull();
+    try std.testing.expectEqual(@as(?i32, null), s.min());
+}
+
+test "Series: mean skips nulls" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(10);
+    try s.appendNull();
+    try s.append(30);
+    // mean of [10, 30] = 20, not mean of [10, 0, 30] = 13.33
+    try std.testing.expectEqual(@as(f64, 20.0), s.mean());
+}
+
+test "Series: stdDev skips nulls" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(10);
+    try s.appendNull();
+    try s.append(20);
+    // stddev of [10, 20] = 5
+    try std.testing.expectEqual(@as(f64, 5.0), s.stdDev());
+}
+
+// --- fillNull Tests ---
+
+test "Series: fillNull replaces nulls with value" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(1);
+    try s.appendNull();
+    try s.append(3);
+
+    var filled = try s.fillNull(99);
+    defer filled.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), filled.len());
+    try std.testing.expectEqual(@as(?i32, 1), filled.getAt(0));
+    try std.testing.expectEqual(@as(?i32, 99), filled.getAt(1));
+    try std.testing.expectEqual(@as(?i32, 3), filled.getAt(2));
+    try std.testing.expect(!filled.hasNulls());
+}
+
+test "Series: fillNull with no nulls is a copy" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(1);
+    try s.append(2);
+
+    var filled = try s.fillNull(0);
+    defer filled.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), filled.len());
+    try std.testing.expect(!filled.hasNulls());
+}
+
+// --- fillNullForward Tests ---
+
+test "Series: fillNullForward carries last valid value forward" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(1);
+    try s.appendNull();
+    try s.appendNull();
+    try s.append(4);
+
+    var filled = try s.fillNullForward();
+    defer filled.deinit();
+
+    try std.testing.expectEqual(@as(?i32, 1), filled.getAt(0));
+    try std.testing.expectEqual(@as(?i32, 1), filled.getAt(1));
+    try std.testing.expectEqual(@as(?i32, 1), filled.getAt(2));
+    try std.testing.expectEqual(@as(?i32, 4), filled.getAt(3));
+}
+
+test "Series: fillNullForward leaves leading nulls alone" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.appendNull();
+    try s.append(5);
+
+    var filled = try s.fillNullForward();
+    defer filled.deinit();
+
+    try std.testing.expectEqual(@as(?i32, null), filled.getAt(0));
+    try std.testing.expectEqual(@as(?i32, 5), filled.getAt(1));
+}
+
+// --- fillNullBackward Tests ---
+
+test "Series: fillNullBackward carries next valid value backward" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(1);
+    try s.appendNull();
+    try s.appendNull();
+    try s.append(4);
+
+    var filled = try s.fillNullBackward();
+    defer filled.deinit();
+
+    try std.testing.expectEqual(@as(?i32, 1), filled.getAt(0));
+    try std.testing.expectEqual(@as(?i32, 4), filled.getAt(1));
+    try std.testing.expectEqual(@as(?i32, 4), filled.getAt(2));
+    try std.testing.expectEqual(@as(?i32, 4), filled.getAt(3));
+}
+
+test "Series: fillNullBackward leaves trailing nulls alone" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(5);
+    try s.appendNull();
+
+    var filled = try s.fillNullBackward();
+    defer filled.deinit();
+
+    try std.testing.expectEqual(@as(?i32, 5), filled.getAt(0));
+    try std.testing.expectEqual(@as(?i32, null), filled.getAt(1));
+}
+
+// --- dropNulls Tests ---
+
+test "Series: dropNulls removes null rows" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(1);
+    try s.appendNull();
+    try s.append(3);
+
+    var dropped = try s.dropNulls();
+    defer dropped.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), dropped.len());
+    try std.testing.expectEqual(@as(?i32, 1), dropped.getAt(0));
+    try std.testing.expectEqual(@as(?i32, 3), dropped.getAt(1));
+    try std.testing.expect(!dropped.hasNulls());
+}
+
+test "Series: dropNulls with no nulls returns full copy" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(1);
+    try s.append(2);
+
+    var dropped = try s.dropNulls();
+    defer dropped.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), dropped.len());
 }
