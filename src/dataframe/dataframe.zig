@@ -422,6 +422,42 @@ pub const Dataframe = struct {
         return result;
     }
 
+    fn castImpl(self: *Self, column: []const u8, comptime Target: type, comptime mode: enum { safe, strict, lossy }) !*Self {
+        const result = try Self.init(self.allocator);
+        errdefer result.deinit();
+        var found = false;
+        for (self.series.items) |*boxed| {
+            if (std.mem.eql(u8, boxed.name(), column)) {
+                const new_s = switch (mode) {
+                    .safe => try boxed.castSafe(Target),
+                    .strict => try boxed.cast(Target),
+                    .lossy => try boxed.castLossy(Target),
+                };
+                try result.addSeries(new_s);
+                found = true;
+            } else {
+                try result.addSeries(try boxed.deepCopy());
+            }
+        }
+        if (!found) return error.ColumnNotFound;
+        return result;
+    }
+
+    /// Comptime-verified lossless cast. Compile error if the types are not safely widening.
+    pub fn castSafe(self: *Self, column: []const u8, comptime Target: type) !*Self {
+        return self.castImpl(column, Target, .safe);
+    }
+
+    /// Strict cast. Returns error if any value overflows or fails to parse.
+    pub fn cast(self: *Self, column: []const u8, comptime Target: type) !*Self {
+        return self.castImpl(column, Target, .strict);
+    }
+
+    /// Permissive cast. Conversion failures become null; float→int truncates.
+    pub fn castLossy(self: *Self, column: []const u8, comptime Target: type) !*Self {
+        return self.castImpl(column, Target, .lossy);
+    }
+
     /// Returns a new Dataframe with rows [start..end). Caller owns the returned pointer.
     pub fn slice(self: *Self, start: usize, end: usize) !*Self {
         const actual_end = @min(end, self.height());
@@ -1443,4 +1479,56 @@ test "Dataframe: fillNull type mismatch returns error" {
     try df.addSeries(col.toBoxedSeries());
 
     try std.testing.expectError(error.TypeMismatch, df.fillNull("x", f64, 0.0));
+}
+
+test "Dataframe: cast i32 column to f64" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var col = try Series(i32).init(allocator);
+    try col.rename("val");
+    try col.append(1);
+    try col.append(2);
+    try col.append(3);
+    try df.addSeries(col.toBoxedSeries());
+
+    var result = try df.cast("val", f64);
+    defer result.deinit();
+
+    const s = result.getSeries("val") orelse return error.TestFailed;
+    try std.testing.expectEqualStrings("f64", s.typeName());
+    try std.testing.expectEqual(@as(usize, 3), s.len());
+}
+
+test "Dataframe: cast preserves other columns" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var a = try Series(i32).init(allocator);
+    try a.rename("a");
+    try a.append(10);
+    try df.addSeries(a.toBoxedSeries());
+
+    var b = try Series(i32).init(allocator);
+    try b.rename("b");
+    try b.append(20);
+    try df.addSeries(b.toBoxedSeries());
+
+    var result = try df.cast("a", f64);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), result.width());
+    const sa = result.getSeries("a") orelse return error.TestFailed;
+    const sb = result.getSeries("b") orelse return error.TestFailed;
+    try std.testing.expectEqualStrings("f64", sa.typeName());
+    try std.testing.expectEqualStrings("i32", sb.typeName());
+}
+
+test "Dataframe: cast missing column returns error" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+    try std.testing.expectError(error.ColumnNotFound, df.cast("nope", f64));
 }

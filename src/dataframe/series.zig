@@ -618,10 +618,267 @@ pub fn Series(comptime T: type) type {
             return self.filterByIndices(valid_indices.items);
         }
 
+        /// Comptime-safe cast. Compile error if `T → Target` could ever lose data.
+        /// Nulls are preserved. Only allocation errors can occur at runtime.
+        /// Use when you can prove at the call site that the types are compatible.
+        pub fn castSafe(self: *Self, comptime Target: type) !*Series(Target) {
+            comptime if (!isSafeCast(T, Target)) @compileError(
+                "castSafe: cast from " ++ @typeName(T) ++ " to " ++ @typeName(Target) ++
+                " may lose data — use cast() to fail on bad values or castLossy() to null them out",
+            );
+            return self.castImpl(Target, .strict); // safe casts never hit error paths
+        }
+
+        /// Strict runtime cast. Returns error if any value overflows, loses fractional
+        /// data (float → int with non-integer value), or fails to parse (String → numeric).
+        /// Nulls are preserved. Use when bad data should surface as a hard failure.
+        pub fn cast(self: *Self, comptime Target: type) !*Series(Target) {
+            return self.castImpl(Target, .strict);
+        }
+
+        /// Permissive cast. Values that cannot be represented become null rather than
+        /// errors: overflow → null, String parse failure → null, NaN/Inf → null.
+        /// float → int truncates (1.9 → 1). Nulls are preserved.
+        /// Use for best-effort ETL where corrupt values should be skipped.
+        pub fn castLossy(self: *Self, comptime Target: type) !*Series(Target) {
+            return self.castImpl(Target, .lossy);
+        }
+
+        const CastMode = enum { strict, lossy };
+
+        fn castImpl(self: *Self, comptime Target: type, comptime mode: CastMode) !*Series(Target) {
+            const result = try Series(Target).init(self.allocator);
+            errdefer result.deinit();
+            try result.rename(self.name.toSlice());
+            for (self.values.items, 0..) |v, i| {
+                if (self.isNull(i)) {
+                    try result.appendNull();
+                    continue;
+                }
+                if (comptime mode == .strict) {
+                    if (comptime Target == strings.String) {
+                        var converted = try castValueStrict(T, Target, v, self.allocator);
+                        errdefer converted.deinit();
+                        try result.values.append(self.allocator, converted);
+                        if (result.validity) |*bm| try bm.append(self.allocator, true);
+                    } else {
+                        try result.append(try castValueStrict(T, Target, v, self.allocator));
+                    }
+                } else {
+                    // lossy mode
+                    const maybe = try castValueLossy(T, Target, v, self.allocator);
+                    if (maybe) |converted| {
+                        if (comptime Target == strings.String) {
+                            // converted is already allocated; just push it
+                            try result.values.append(self.allocator, converted);
+                            if (result.validity) |*bm| try bm.append(self.allocator, true);
+                        } else {
+                            try result.append(converted);
+                        }
+                    } else {
+                        // Deinit any allocated String we won't use
+                        if (comptime Target == strings.String) {} // castValueLossy returned null, no alloc
+                        try result.appendNull();
+                    }
+                }
+            }
+            return result;
+        }
+
         pub fn groupBy(self: *Self, allocator: std.mem.Allocator, dataframe: *Dataframe) !*GroupBy(T) {
             return GroupBy(T).init(allocator, dataframe, self);
         }
     };
+}
+
+// ---------------------------------------------------------------------------
+// Cast helpers — three tiers matching Zig's own philosophy:
+//
+//   castSafe   — comptime-verified lossless widening; compile error if not safe.
+//                Never errors at runtime (beyond OOM). Use when you *know* the
+//                types are compatible (e.g. i32 → i64, u16 → f64).
+//
+//   cast       — strict runtime cast; returns error on overflow or parse failure.
+//                float → int requires an exact integer value (1.0 ok, 1.5 → error).
+//                Use when the data *should* be representable and you want a loud
+//                failure if it isn't.
+//
+//   castLossy  — permissive; conversion failures become null rather than errors.
+//                float → int truncates. Overflow → null. Bad string → null.
+//                Use for best-effort ETL where corrupt values should be skipped.
+// ---------------------------------------------------------------------------
+
+/// Comptime predicate: is casting From → To guaranteed lossless?
+/// True only for widening numerics, any → String, and bool → numeric.
+pub fn isSafeCast(comptime From: type, comptime To: type) bool {
+    if (From == To) return true;
+    if (To == strings.String) return true; // formatting always succeeds
+    if (From == strings.String) return false; // parsing can fail
+    if (From == bool) return true; // 0 or 1 always fits any numeric
+    if (To == bool) return false; // loses information
+
+    const from_info = @typeInfo(From);
+    const to_info = @typeInfo(To);
+
+    // float → int: always lossy (truncation or range issues)
+    if (comptime (From == f32 or From == f64) and to_info == .int) return false;
+
+    // float widening
+    if (From == f32 and To == f64) return true;
+    if (From == f64 and To == f32) return false;
+    if (From == f32 and To == f32) return true;
+    if (From == f64 and To == f64) return true;
+
+    // int → float: safe only when the mantissa can represent all values exactly.
+    // f32 has 23 explicit mantissa bits; f64 has 52.
+    if (from_info == .int and (To == f32 or To == f64)) {
+        const mantissa: usize = if (To == f32) 23 else 52;
+        const value_bits: usize = if (from_info.int.signedness == .signed)
+            from_info.int.bits - 1
+        else
+            from_info.int.bits;
+        return value_bits <= mantissa;
+    }
+
+    // int → int
+    if (from_info == .int and to_info == .int) {
+        const fb = from_info.int.bits;
+        const tb = to_info.int.bits;
+        const fs = from_info.int.signedness == .signed;
+        const ts = to_info.int.signedness == .signed;
+        if (fs == ts) return tb >= fb; // same sign: widening is safe
+        if (!fs and ts) return tb > fb; // u8 → i16: need one extra bit
+        return false; // signed → unsigned: could be negative
+    }
+
+    return false;
+}
+
+/// Strict: errors on overflow (int→smaller int) or non-integer float→int.
+/// String parsing errors propagate directly.
+fn castValueStrict(comptime From: type, comptime To: type, value: From, allocator: std.mem.Allocator) !To {
+    if (comptime From == To) {
+        if (comptime From == strings.String) return value.clone();
+        return value;
+    }
+
+    if (comptime From == strings.String) {
+        const slice = value.toSlice();
+        if (comptime To == bool) return std.mem.eql(u8, slice, "true") or std.mem.eql(u8, slice, "1");
+        if (comptime To == f32 or To == f64) return @floatCast(try std.fmt.parseFloat(f64, slice));
+        const info = @typeInfo(To);
+        if (comptime info == .int and info.int.signedness == .signed) {
+            return @intCast(try std.fmt.parseInt(i128, slice, 10));
+        } else {
+            return @intCast(try std.fmt.parseInt(u128, slice, 10));
+        }
+    }
+
+    if (comptime To == strings.String) {
+        var s = try strings.String.init(allocator);
+        errdefer s.deinit();
+        var buf: [128]u8 = undefined;
+        const slice = switch (comptime From) {
+            f32, f64 => try std.fmt.bufPrint(&buf, "{d}", .{value}),
+            bool => if (value) "true"[0..] else "false"[0..],
+            else => try std.fmt.bufPrint(&buf, "{}", .{value}),
+        };
+        try s.appendSlice(slice);
+        return s;
+    }
+
+    if (comptime From == bool) {
+        const i: u1 = @intFromBool(value);
+        if (comptime To == f32 or To == f64) return @floatFromInt(i);
+        return @intCast(i);
+    }
+    if (comptime To == bool) {
+        if (comptime From == f32 or From == f64) return value != 0.0;
+        return value != 0;
+    }
+
+    // float → int: require exact integer value
+    if (comptime (From == f32 or From == f64) and @typeInfo(To) == .int) {
+        if (std.math.isNan(value) or std.math.isInf(value)) return error.InvalidCast;
+        if (value != @trunc(value)) return error.LossyCast;
+        return std.math.cast(To, @as(i128, @intFromFloat(value))) orelse return error.Overflow;
+    }
+
+    if (comptime @typeInfo(From) == .int and (To == f32 or To == f64)) return @floatFromInt(value);
+    if (comptime (From == f32 or From == f64) and (To == f32 or To == f64)) return @floatCast(value);
+
+    // int → int: overflow is an error
+    if (comptime @typeInfo(From) == .int and @typeInfo(To) == .int) {
+        return std.math.cast(To, value) orelse error.Overflow;
+    }
+
+    @compileError("Unsupported cast from " ++ @typeName(From) ++ " to " ++ @typeName(To));
+}
+
+/// Lossy: conversion failures return null (→ null row) rather than an error.
+/// float → int truncates. int overflow → null. String parse failure → null.
+/// Only allocation errors propagate.
+fn castValueLossy(comptime From: type, comptime To: type, value: From, allocator: std.mem.Allocator) !?To {
+    if (comptime From == To) {
+        if (comptime From == strings.String) return try value.clone();
+        return value;
+    }
+
+    if (comptime From == strings.String) {
+        const slice = value.toSlice();
+        if (comptime To == bool) return std.mem.eql(u8, slice, "true") or std.mem.eql(u8, slice, "1");
+        if (comptime To == f32 or To == f64) {
+            const parsed = std.fmt.parseFloat(f64, slice) catch return null;
+            return @as(To, @floatCast(parsed));
+        }
+        const info = @typeInfo(To);
+        if (comptime info == .int and info.int.signedness == .signed) {
+            const parsed = std.fmt.parseInt(i128, slice, 10) catch return null;
+            return std.math.cast(To, parsed);
+        } else {
+            const parsed = std.fmt.parseInt(u128, slice, 10) catch return null;
+            return std.math.cast(To, parsed);
+        }
+    }
+
+    if (comptime To == strings.String) {
+        var s = try strings.String.init(allocator);
+        errdefer s.deinit();
+        var buf: [128]u8 = undefined;
+        const slice = switch (comptime From) {
+            f32, f64 => try std.fmt.bufPrint(&buf, "{d}", .{value}),
+            bool => if (value) "true"[0..] else "false"[0..],
+            else => try std.fmt.bufPrint(&buf, "{}", .{value}),
+        };
+        try s.appendSlice(slice);
+        return s;
+    }
+
+    if (comptime From == bool) {
+        const i: u1 = @intFromBool(value);
+        if (comptime To == f32 or To == f64) return @as(To, @floatFromInt(i));
+        return @as(To, @intCast(i));
+    }
+    if (comptime To == bool) {
+        if (comptime From == f32 or From == f64) return value != 0.0;
+        return value != 0;
+    }
+
+    // float → int: truncate (lossy by definition), null for NaN/Inf
+    if (comptime (From == f32 or From == f64) and @typeInfo(To) == .int) {
+        if (std.math.isNan(value) or std.math.isInf(value)) return null;
+        return std.math.cast(To, @as(i128, @intFromFloat(value)));
+    }
+
+    if (comptime @typeInfo(From) == .int and (To == f32 or To == f64)) return @as(To, @floatFromInt(value));
+    if (comptime (From == f32 or From == f64) and (To == f32 or To == f64)) return @as(To, @floatCast(value));
+
+    // int → int: overflow → null
+    if (comptime @typeInfo(From) == .int and @typeInfo(To) == .int) {
+        return std.math.cast(To, value);
+    }
+
+    @compileError("Unsupported cast from " ++ @typeName(From) ++ " to " ++ @typeName(To));
 }
 
 // --- filterByIndices Tests ---
@@ -1127,4 +1384,168 @@ test "Series: dropNulls with no nulls returns full copy" {
     defer dropped.deinit();
 
     try std.testing.expectEqual(@as(usize, 2), dropped.len());
+}
+
+// --- cast Tests ---
+
+test "Series.cast: i32 to f64" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.rename("x");
+    try s.append(1);
+    try s.append(2);
+    try s.append(3);
+
+    var casted = try s.cast(f64);
+    defer casted.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), casted.len());
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), casted.values.items[0], 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 2.0), casted.values.items[1], 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 3.0), casted.values.items[2], 1e-9);
+    try std.testing.expectEqualStrings("x", casted.name.toSlice());
+}
+
+test "Series.cast: f64 to i32 fails on fractional value" {
+    const allocator = std.testing.allocator;
+    var s = try Series(f64).init(allocator);
+    defer s.deinit();
+    try s.append(1.9);
+    try std.testing.expectError(error.LossyCast, s.cast(i32));
+}
+
+test "Series.cast: f64 to i32 succeeds for exact integer" {
+    const allocator = std.testing.allocator;
+    var s = try Series(f64).init(allocator);
+    defer s.deinit();
+    try s.append(3.0);
+    try s.append(-2.0);
+
+    var casted = try s.cast(i32);
+    defer casted.deinit();
+
+    try std.testing.expectEqual(@as(i32, 3), casted.values.items[0]);
+    try std.testing.expectEqual(@as(i32, -2), casted.values.items[1]);
+}
+
+test "Series.castLossy: f64 to i32 truncates" {
+    const allocator = std.testing.allocator;
+    var s = try Series(f64).init(allocator);
+    defer s.deinit();
+    try s.append(1.9);
+    try s.append(-2.7);
+
+    var casted = try s.castLossy(i32);
+    defer casted.deinit();
+
+    try std.testing.expectEqual(@as(i32, 1), casted.values.items[0]);
+    try std.testing.expectEqual(@as(i32, -2), casted.values.items[1]);
+}
+
+test "Series.castLossy: overflow becomes null" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i64).init(allocator);
+    defer s.deinit();
+    try s.append(300); // overflows i8
+    try s.append(1);
+
+    var casted = try s.castLossy(i8);
+    defer casted.deinit();
+
+    try std.testing.expect(casted.isNull(0));
+    try std.testing.expect(!casted.isNull(1));
+    try std.testing.expectEqual(@as(i8, 1), casted.values.items[1]);
+}
+
+test "Series.castLossy: bad String becomes null" {
+    const allocator = std.testing.allocator;
+    var s = try Series(strings.String).init(allocator);
+    defer s.deinit();
+    var good = try strings.String.fromSlice(allocator, "42");
+    defer good.deinit();
+    var bad = try strings.String.fromSlice(allocator, "not_a_number");
+    defer bad.deinit();
+    try s.append(try good.clone());
+    try s.append(try bad.clone());
+
+    var casted = try s.castLossy(i32);
+    defer casted.deinit();
+
+    try std.testing.expect(!casted.isNull(0));
+    try std.testing.expectEqual(@as(i32, 42), casted.values.items[0]);
+    try std.testing.expect(casted.isNull(1));
+}
+
+test "Series.cast: strict int overflow returns error" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i64).init(allocator);
+    defer s.deinit();
+    try s.append(300); // doesn't fit in i8
+    try std.testing.expectError(error.Overflow, s.cast(i8));
+}
+
+test "Series.cast: i32 to String" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(42);
+    try s.append(-7);
+
+    var casted = try s.cast(strings.String);
+    defer casted.deinit();
+
+    try std.testing.expectEqualStrings("42", casted.values.items[0].toSlice());
+    try std.testing.expectEqualStrings("-7", casted.values.items[1].toSlice());
+}
+
+test "Series.cast: String to i64" {
+    const allocator = std.testing.allocator;
+    var s = try Series(strings.String).init(allocator);
+    defer s.deinit();
+    var a = try strings.String.fromSlice(allocator, "100");
+    defer a.deinit();
+    var b = try strings.String.fromSlice(allocator, "-50");
+    defer b.deinit();
+    try s.append(try a.clone());
+    try s.append(try b.clone());
+
+    var casted = try s.cast(i64);
+    defer casted.deinit();
+
+    try std.testing.expectEqual(@as(i64, 100), casted.values.items[0]);
+    try std.testing.expectEqual(@as(i64, -50), casted.values.items[1]);
+}
+
+test "Series.cast: preserves nulls" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(10);
+    try s.appendNull();
+    try s.append(30);
+
+    var casted = try s.cast(f64);
+    defer casted.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), casted.len());
+    try std.testing.expect(!casted.isNull(0));
+    try std.testing.expect(casted.isNull(1));
+    try std.testing.expect(!casted.isNull(2));
+    try std.testing.expectApproxEqAbs(@as(f64, 10.0), casted.values.items[0], 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 30.0), casted.values.items[2], 1e-9);
+}
+
+test "Series.cast: bool to i32" {
+    const allocator = std.testing.allocator;
+    var s = try Series(bool).init(allocator);
+    defer s.deinit();
+    try s.append(true);
+    try s.append(false);
+
+    var casted = try s.cast(i32);
+    defer casted.deinit();
+
+    try std.testing.expectEqual(@as(i32, 1), casted.values.items[0]);
+    try std.testing.expectEqual(@as(i32, 0), casted.values.items[1]);
 }

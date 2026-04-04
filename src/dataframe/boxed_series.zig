@@ -237,6 +237,27 @@ pub const BoxedSeries = union(enum) {
         }
     }
 
+    /// Comptime-verified lossless cast. Compile error if the conversion could lose data.
+    pub fn castSafe(self: *Self, comptime Target: type) !BoxedSeries {
+        switch (self.*) {
+            inline else => |s| return (try s.castSafe(Target)).toBoxedSeries(),
+        }
+    }
+
+    /// Strict cast. Returns error on overflow, non-integer float→int, or String parse failure.
+    pub fn cast(self: *Self, comptime Target: type) !BoxedSeries {
+        switch (self.*) {
+            inline else => |s| return (try s.cast(Target)).toBoxedSeries(),
+        }
+    }
+
+    /// Permissive cast. Conversion failures become null; float→int truncates.
+    pub fn castLossy(self: *Self, comptime Target: type) !BoxedSeries {
+        switch (self.*) {
+            inline else => |s| return (try s.castLossy(Target)).toBoxedSeries(),
+        }
+    }
+
     /// Returns indices that would sort the contained series.
     pub fn argSort(self: *Self, allocator: std.mem.Allocator, ascending: bool) !std.ArrayList(usize) {
         switch (self.*) {
