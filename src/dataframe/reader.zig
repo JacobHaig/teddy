@@ -15,23 +15,20 @@ pub const Reader = struct {
     const Self = @This();
 
     allocator: std.mem.Allocator,
+    io: std.Io,
 
     file_type: FileType,
     path: ?[]const u8, // Owned
     delimiter: u8,
     has_header: bool,
     skip_rows: usize,
-    // column_names: []const u8,
-    // column_types: []const u8,
-    // column_indices: []const usize,
-    // column_count: usize,
-    // row_count: usize,
 
     pub fn init(allocator: std.mem.Allocator) !*Self {
         const reader_ptr = try allocator.create(Reader);
         errdefer allocator.destroy(reader_ptr);
 
         reader_ptr.allocator = allocator;
+        reader_ptr.io = std.Io.Threaded.global_single_threaded.io();
         reader_ptr.path = null;
         reader_ptr.file_type = FileType.csv;
         reader_ptr.delimiter = ',';
@@ -39,6 +36,11 @@ pub const Reader = struct {
         reader_ptr.skip_rows = 0;
 
         return reader_ptr;
+    }
+
+    pub fn withIo(self: *Self, io: std.Io) *Self {
+        self.io = io;
+        return self;
     }
 
     pub fn deinit(self: *Self) void {
@@ -101,8 +103,7 @@ pub const Reader = struct {
         const filename = self.path orelse return error.InvalidFilePath;
 
         const cwd = std.Io.Dir.cwd();
-        const io = std.Io.Threaded.global_single_threaded.io();
-        const content = try cwd.readFileAlloc(io, filename, self.allocator, .unlimited);
+        const content = try cwd.readFileAlloc(self.io, filename, self.allocator, .unlimited);
         defer self.allocator.free(content);
 
         return try csv.parse(self.allocator, content, .{
@@ -116,8 +117,7 @@ pub const Reader = struct {
         const filename = self.path orelse return error.InvalidFilePath;
 
         const cwd = std.Io.Dir.cwd();
-        const io = std.Io.Threaded.global_single_threaded.io();
-        const content = try cwd.readFileAlloc(io, filename, self.allocator, .unlimited);
+        const content = try cwd.readFileAlloc(self.io, filename, self.allocator, .unlimited);
         defer self.allocator.free(content);
 
         const json_reader = @import("json_reader.zig");
@@ -128,8 +128,7 @@ pub const Reader = struct {
         const filename = self.path orelse return error.InvalidFilePath;
 
         const cwd = std.Io.Dir.cwd();
-        const io = std.Io.Threaded.global_single_threaded.io();
-        const content = try cwd.readFileAlloc(io, filename, self.allocator, .unlimited);
+        const content = try cwd.readFileAlloc(self.io, filename, self.allocator, .unlimited);
         defer self.allocator.free(content);
 
         const parquet_mod = @import("parquet");

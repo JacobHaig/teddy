@@ -134,8 +134,8 @@ pub const BoxedSeries = union(enum) {
     /// Returns the sum of non-null values as f64. Returns null if not a numeric type.
     pub fn sum(self: *Self) ?f64 {
         switch (self.*) {
-            .int8, .int16, .int32, .int64, .int128, .isize => |s| return @as(f64, @floatFromInt(s.sum())),
-            .uint8, .uint16, .uint32, .uint64, .uint128, .usize => |s| return @as(f64, @floatFromInt(s.sum())),
+            inline .int8, .int16, .int32, .int64, .int128, .isize => |s| return @as(f64, @floatFromInt(s.sum())),
+            inline .uint8, .uint16, .uint32, .uint64, .uint128, .usize => |s| return @as(f64, @floatFromInt(s.sum())),
             .float32 => |s| return @as(f64, s.sum()),
             .float64 => |s| return s.sum(),
             else => return null,
@@ -144,22 +144,24 @@ pub const BoxedSeries = union(enum) {
 
     /// Returns the minimum non-null value as f64. Returns null if not numeric or all-null.
     pub fn min(self: *Self) ?f64 {
-        return switch (self.*) {
-            .bool, .string => null,
-            .float32 => |s| if (s.min()) |v| @as(f64, v) else null,
-            .float64 => |s| s.min(),
-            inline else => |s| if (s.min()) |v| @as(f64, @floatFromInt(v)) else null,
-        };
+        switch (self.*) {
+            inline .int8, .int16, .int32, .int64, .int128, .isize => |s| return if (s.min()) |v| @as(f64, @floatFromInt(v)) else null,
+            inline .uint8, .uint16, .uint32, .uint64, .uint128, .usize => |s| return if (s.min()) |v| @as(f64, @floatFromInt(v)) else null,
+            .float32 => |s| return if (s.min()) |v| @as(f64, v) else null,
+            .float64 => |s| return s.min(),
+            else => return null,
+        }
     }
 
     /// Returns the maximum non-null value as f64. Returns null if not numeric or all-null.
     pub fn max(self: *Self) ?f64 {
-        return switch (self.*) {
-            .bool, .string => null,
-            .float32 => |s| if (s.max()) |v| @as(f64, v) else null,
-            .float64 => |s| s.max(),
-            inline else => |s| if (s.max()) |v| @as(f64, @floatFromInt(v)) else null,
-        };
+        switch (self.*) {
+            inline .int8, .int16, .int32, .int64, .int128, .isize => |s| return if (s.max()) |v| @as(f64, @floatFromInt(v)) else null,
+            inline .uint8, .uint16, .uint32, .uint64, .uint128, .usize => |s| return if (s.max()) |v| @as(f64, @floatFromInt(v)) else null,
+            .float32 => |s| return if (s.max()) |v| @as(f64, v) else null,
+            .float64 => |s| return s.max(),
+            else => return null,
+        }
     }
 
     /// Returns the mean of non-null values as f64. Returns null if not numeric.

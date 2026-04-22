@@ -43,7 +43,7 @@ pub const Field = struct {
             return String.fromSlice(allocator, self.raw);
         }
         // Fast path: no escaped quotes
-        if (std.mem.indexOf(u8, self.raw, "\"\"") == null) {
+        if (std.mem.find(u8, self.raw, "\"\"") == null) {
             return String.fromSlice(allocator, self.raw);
         }
         // Unescape "" -> "

@@ -142,7 +142,7 @@ test "csv_writer: quoting fields with commas" {
     const output = try csv_writer.writeToString(allocator, df, .{});
     defer allocator.free(output);
 
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"hello, world\"") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"hello, world\"") != null);
 }
 
 test "csv_writer: no header option" {

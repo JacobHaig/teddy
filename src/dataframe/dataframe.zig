@@ -1,9 +1,9 @@
 const std = @import("std");
 
 // const strings = @import("strings.zig");
-const String = @import("strings.zig").String;
+pub const String = @import("strings.zig").String;
 
-const Series = @import("series.zig").Series;
+pub const Series = @import("series.zig").Series;
 const BoxedSeries = @import("boxed_series.zig").BoxedSeries;
 const BoxedGroupBy = @import("boxed_groupby.zig").BoxedGroupBy;
 pub const Reader = @import("reader.zig").Reader;

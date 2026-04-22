@@ -12,6 +12,7 @@ pub const Writer = struct {
     const Self = @This();
 
     allocator: Allocator,
+    io: std.Io,
     file_type: FileType,
     path: ?[]const u8,
 
@@ -29,6 +30,7 @@ pub const Writer = struct {
         const ptr = try allocator.create(Self);
         ptr.* = .{
             .allocator = allocator,
+            .io = std.Io.Threaded.global_single_threaded.io(),
             .file_type = .csv,
             .path = null,
             .delimiter = ',',
@@ -37,6 +39,11 @@ pub const Writer = struct {
             .compression = .uncompressed,
         };
         return ptr;
+    }
+
+    pub fn withIo(self: *Self, io: std.Io) *Self {
+        self.io = io;
+        return self;
     }
 
     pub fn deinit(self: *Self) void {
@@ -101,8 +108,7 @@ pub const Writer = struct {
 
         const path = self.path orelse return error.InvalidFilePath;
         const cwd = std.Io.Dir.cwd();
-        const io = std.Io.Threaded.global_single_threaded.io();
-        try cwd.writeFile(io, .{ .sub_path = path, .data = data });
+        try cwd.writeFile(self.io, .{ .sub_path = path, .data = data });
     }
 };
 

@@ -785,7 +785,7 @@ pub fn Series(comptime T: type) type {
             const n = valid.items.len;
             if (n == 1) return valid.items[0];
             const pos = q * @as(f64, @floatFromInt(n - 1));
-            const lo: usize = @intFromFloat(@floor(pos));
+            const lo: usize = @floor(pos);
             const hi: usize = @min(lo + 1, n - 1);
             const frac = pos - @as(f64, @floatFromInt(lo));
             return valid.items[lo] + frac * (valid.items[hi] - valid.items[lo]);
@@ -1129,7 +1129,7 @@ fn castValueStrict(comptime From: type, comptime To: type, value: From, allocato
     if (comptime (From == f32 or From == f64) and @typeInfo(To) == .int) {
         if (std.math.isNan(value) or std.math.isInf(value)) return error.InvalidCast;
         if (value != @trunc(value)) return error.LossyCast;
-        return std.math.cast(To, @as(i128, @intFromFloat(value))) orelse return error.Overflow;
+        return std.math.cast(To, @as(i128, @trunc(value))) orelse return error.Overflow;
     }
 
     if (comptime @typeInfo(From) == .int and (To == f32 or To == f64)) return @floatFromInt(value);
@@ -1195,7 +1195,7 @@ fn castValueLossy(comptime From: type, comptime To: type, value: From, allocator
     // float → int: truncate (lossy by definition), null for NaN/Inf
     if (comptime (From == f32 or From == f64) and @typeInfo(To) == .int) {
         if (std.math.isNan(value) or std.math.isInf(value)) return null;
-        return std.math.cast(To, @as(i128, @intFromFloat(value)));
+        return std.math.cast(To, @as(i128, @trunc(value)));
     }
 
     if (comptime @typeInfo(From) == .int and (To == f32 or To == f64)) return @as(To, @floatFromInt(value));

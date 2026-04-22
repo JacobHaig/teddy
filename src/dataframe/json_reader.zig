@@ -228,7 +228,7 @@ fn buildDataframe(allocator: Allocator, col_names: []const []const u8, all_value
                 for (values) |v| {
                     try s.append(switch (v) {
                         .integer => |n| n,
-                        .float => |f| @as(i64, @intFromFloat(f)),
+                        .float => |f| @as(i64, @trunc(f)),
                         else => 0,
                     });
                 }
