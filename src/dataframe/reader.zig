@@ -23,12 +23,12 @@ pub const Reader = struct {
     has_header: bool,
     skip_rows: usize,
 
-    pub fn init(allocator: std.mem.Allocator) !*Self {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io) !*Self {
         const reader_ptr = try allocator.create(Reader);
         errdefer allocator.destroy(reader_ptr);
 
         reader_ptr.allocator = allocator;
-        reader_ptr.io = std.Io.Threaded.global_single_threaded.io();
+        reader_ptr.io = io;
         reader_ptr.path = null;
         reader_ptr.file_type = FileType.csv;
         reader_ptr.delimiter = ',';
@@ -36,11 +36,6 @@ pub const Reader = struct {
         reader_ptr.skip_rows = 0;
 
         return reader_ptr;
-    }
-
-    pub fn withIo(self: *Self, io: std.Io) *Self {
-        self.io = io;
-        return self;
     }
 
     pub fn deinit(self: *Self) void {

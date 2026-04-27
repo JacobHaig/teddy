@@ -13,11 +13,10 @@ pub fn main(init: std.process.Init) !void {
     // ── 1. Load addresses from Parquet ────────────────────────────
     std.debug.print("\n{s}\n  Addresses (Parquet)\n{s}\n", .{ sep, sep });
 
-    var reader = try teddy.Reader.init(allocator);
+    var reader = try teddy.Reader.init(allocator, io);
     defer reader.deinit();
 
     var addr = try reader
-        .withIo(io)
         .withFileType(.parquet)
         .withPath("data/addresses.parquet")
         .withDelimiter(',')
@@ -84,11 +83,10 @@ pub fn main(init: std.process.Init) !void {
     // ── 8. Write to JSON (rows) ────────────────────────────────────
     std.debug.print("\n{s}\n  Round-trip: Parquet → JSON\n{s}\n", .{ sep, sep });
 
-    var writer = try teddy.Writer.init(allocator);
+    var writer = try teddy.Writer.init(allocator, io);
     defer writer.deinit();
 
     const json_bytes = try writer
-        .withIo(io)
         .withFileType(.json)
         .withJsonFormat(.rows)
         .toString(addr);
@@ -99,11 +97,10 @@ pub fn main(init: std.process.Init) !void {
     // ── 9. Write addresses to CSV ─────────────────────────────────
     std.debug.print("\n{s}\n  Write addresses → CSV\n{s}\n", .{ sep, sep });
 
-    var csv_writer = try teddy.Writer.init(allocator);
+    var csv_writer = try teddy.Writer.init(allocator, io);
     defer csv_writer.deinit();
 
     try csv_writer
-        .withIo(io)
         .withFileType(.csv)
         .withPath("data/addresses_out.csv")
         .save(addr);
@@ -113,11 +110,10 @@ pub fn main(init: std.process.Init) !void {
     // ── 10. Load stock data from CSV ──────────────────────────────
     std.debug.print("\n{s}\n  Stock Data (CSV) — head 10\n{s}\n", .{ sep, sep });
 
-    var stock_reader = try teddy.Reader.init(allocator);
+    var stock_reader = try teddy.Reader.init(allocator, io);
     defer stock_reader.deinit();
 
     var stock = try stock_reader
-        .withIo(io)
         .withFileType(.csv)
         .withPath("data/stock_apple.csv")
         .load();

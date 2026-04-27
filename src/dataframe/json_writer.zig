@@ -4,7 +4,7 @@ const Dataframe = @import("dataframe.zig").Dataframe;
 const String = @import("strings.zig").String;
 const BoxedSeries = @import("boxed_series.zig").BoxedSeries;
 
-pub const JsonFormat = enum { rows, columns };
+pub const JsonFormat = enum { rows, columns, ndjson };
 
 /// Write a Dataframe to JSON format, returns an owned slice.
 /// Caller must free the returned slice with allocator.free().
@@ -15,6 +15,7 @@ pub fn writeToString(allocator: Allocator, df: *Dataframe, format: JsonFormat) !
     switch (format) {
         .rows => try writeRows(&buf, allocator, df),
         .columns => try writeColumns(&buf, allocator, df),
+        .ndjson => try writeNdjson(&buf, allocator, df),
     }
 
     return buf.toOwnedSlice(allocator);
@@ -58,6 +59,22 @@ fn writeColumns(buf: *std.ArrayList(u8), allocator: Allocator, df: *Dataframe) !
         try buf.append(allocator, ']');
     }
     try buf.append(allocator, '}');
+}
+
+fn writeNdjson(buf: *std.ArrayList(u8), allocator: Allocator, df: *Dataframe) !void {
+    const w = df.width();
+    const h = df.height();
+    for (0..h) |row| {
+        if (row > 0) try buf.append(allocator, '\n');
+        try buf.append(allocator, '{');
+        for (0..w) |col| {
+            if (col > 0) try buf.append(allocator, ',');
+            try appendJsonString(buf, allocator, df.series.items[col].name());
+            try buf.append(allocator, ':');
+            try appendJsonValue(buf, allocator, &df.series.items[col], row);
+        }
+        try buf.append(allocator, '}');
+    }
 }
 
 fn appendJsonValue(buf: *std.ArrayList(u8), allocator: Allocator, series: *BoxedSeries, row: usize) !void {

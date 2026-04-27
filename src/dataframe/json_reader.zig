@@ -8,7 +8,7 @@ const String = @import("strings.zig").String;
 // JSON Reader — parses JSON into a Dataframe
 // ============================================================
 
-pub const JsonFormat = enum { auto, rows, columns };
+pub const JsonFormat = enum { auto, rows, columns, ndjson };
 
 pub const ParseOptions = struct {
     format: JsonFormat = .auto,
@@ -27,12 +27,14 @@ pub fn parse(allocator: Allocator, content: []const u8, options: ParseOptions) !
     return switch (format) {
         .rows => parseRows(allocator, trimmed),
         .columns => parseColumns(allocator, trimmed),
+        .ndjson => parseNdjson(allocator, trimmed),
         .auto => unreachable,
     };
 }
 
 fn detectFormat(content: []const u8) JsonFormat {
     if (content[0] == '[') return .rows;
+    if (std.mem.indexOf(u8, content, "\n{") != null) return .ndjson;
     return .columns;
 }
 
@@ -40,8 +42,44 @@ fn detectFormat(content: []const u8) JsonFormat {
 // Row-oriented: [{"col": val, ...}, ...]
 // ============================================================
 
+fn parseObjectFields(
+    allocator: Allocator,
+    content: []const u8,
+    pos: *usize,
+    col_names: *std.ArrayList([]const u8),
+    all_values: *std.ArrayList(std.ArrayList(JsonValue)),
+    row_count: usize,
+) !void {
+    while (pos.* < content.len) {
+        skipWhitespace(content, pos);
+        if (pos.* >= content.len) break;
+        if (content[pos.*] == '}') { pos.* += 1; break; }
+        if (content[pos.*] == ',') { pos.* += 1; continue; }
+
+        const key = try parseString(content, pos);
+        skipWhitespace(content, pos);
+        if (pos.* >= content.len or content[pos.*] != ':') return error.InvalidJson;
+        pos.* += 1;
+
+        skipWhitespace(content, pos);
+        const val = try parseValue(allocator, content, pos);
+
+        const col_idx = findColIndex(col_names.items, key) orelse blk: {
+            const idx = col_names.items.len;
+            try col_names.append(allocator, key);
+            var new_col: std.ArrayList(JsonValue) = .empty;
+            for (0..row_count) |_| {
+                try new_col.append(allocator, .null);
+            }
+            try all_values.append(allocator, new_col);
+            break :blk idx;
+        };
+
+        try all_values.items[col_idx].append(allocator, val);
+    }
+}
+
 fn parseRows(allocator: Allocator, content: []const u8) !*Dataframe {
-    // Phase 1: Parse all objects into intermediate storage
     var col_names = std.ArrayList([]const u8).empty;
     defer col_names.deinit(allocator);
 
@@ -68,39 +106,8 @@ fn parseRows(allocator: Allocator, content: []const u8) !*Dataframe {
         if (content[pos] != '{') return error.InvalidJson;
         pos += 1;
 
-        // Parse object fields
-        while (pos < content.len) {
-            skipWhitespace(content, &pos);
-            if (pos >= content.len) break;
-            if (content[pos] == '}') { pos += 1; break; }
-            if (content[pos] == ',') { pos += 1; continue; }
+        try parseObjectFields(allocator, content, &pos, &col_names, &all_values, row_count);
 
-            // Parse key
-            const key = try parseString(content, &pos);
-            skipWhitespace(content, &pos);
-            if (pos >= content.len or content[pos] != ':') return error.InvalidJson;
-            pos += 1;
-
-            // Parse value
-            skipWhitespace(content, &pos);
-            const val = try parseValue(allocator, content, &pos);
-
-            // Find or create column
-            const col_idx = findColIndex(col_names.items, key) orelse blk: {
-                const idx = col_names.items.len;
-                try col_names.append(allocator, key);
-                var new_col: std.ArrayList(JsonValue) = .empty;
-                for (0..row_count) |_| {
-                    try new_col.append(allocator, .null);
-                }
-                try all_values.append(allocator, new_col);
-                break :blk idx;
-            };
-
-            try all_values.items[col_idx].append(allocator, val);
-        }
-
-        // Fill missing columns for this row with nulls
         for (all_values.items) |*col_vals| {
             if (col_vals.items.len <= row_count) {
                 try col_vals.append(allocator, .null);
@@ -109,7 +116,42 @@ fn parseRows(allocator: Allocator, content: []const u8) !*Dataframe {
         row_count += 1;
     }
 
-    // Phase 2: Infer types and build DataFrame
+    return buildDataframe(allocator, col_names.items, all_values.items);
+}
+
+// ============================================================
+// NDJSON / JSONL: one JSON object per line
+// ============================================================
+
+fn parseNdjson(allocator: Allocator, content: []const u8) !*Dataframe {
+    var col_names = std.ArrayList([]const u8).empty;
+    defer col_names.deinit(allocator);
+
+    var all_values = std.ArrayList(std.ArrayList(JsonValue)).empty;
+    defer {
+        for (all_values.items) |*col_vals| {
+            for (col_vals.items) |*v| v.deinit(allocator);
+            col_vals.deinit(allocator);
+        }
+        all_values.deinit(allocator);
+    }
+
+    var row_count: usize = 0;
+    var line_iter = std.mem.splitScalar(u8, content, '\n');
+    while (line_iter.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        if (line.len == 0) continue;
+        if (line[0] != '{') return error.InvalidJson;
+        var pos: usize = 1;
+        try parseObjectFields(allocator, line, &pos, &col_names, &all_values, row_count);
+        for (all_values.items) |*col_vals| {
+            if (col_vals.items.len <= row_count) {
+                try col_vals.append(allocator, .null);
+            }
+        }
+        row_count += 1;
+    }
+
     return buildDataframe(allocator, col_names.items, all_values.items);
 }
 

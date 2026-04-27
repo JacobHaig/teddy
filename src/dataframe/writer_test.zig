@@ -16,7 +16,7 @@ test "writer: CSV toString" {
     try col.append(2);
     try df.addSeries(col.toBoxedSeries());
 
-    var w = try Writer.init(allocator);
+    var w = try Writer.init(allocator, std.Io.Threaded.global_single_threaded.io());
     defer w.deinit();
     _ = w.withFileType(.csv);
 
@@ -36,7 +36,7 @@ test "writer: JSON toString rows" {
     try col.append(1);
     try df.addSeries(col.toBoxedSeries());
 
-    var w = try Writer.init(allocator);
+    var w = try Writer.init(allocator, std.Io.Threaded.global_single_threaded.io());
     defer w.deinit();
     _ = w.withFileType(.json).withJsonFormat(.rows);
 
@@ -57,7 +57,7 @@ test "writer: JSON toString columns" {
     try col.append(2);
     try df.addSeries(col.toBoxedSeries());
 
-    var w = try Writer.init(allocator);
+    var w = try Writer.init(allocator, std.Io.Threaded.global_single_threaded.io());
     defer w.deinit();
     _ = w.withFileType(.json).withJsonFormat(.columns);
 
@@ -78,7 +78,7 @@ test "writer: Parquet toString and read back" {
     try col.append(20);
     try df.addSeries(col.toBoxedSeries());
 
-    var w = try Writer.init(allocator);
+    var w = try Writer.init(allocator, std.Io.Threaded.global_single_threaded.io());
     defer w.deinit();
     _ = w.withFileType(.parquet);
 
@@ -95,7 +95,7 @@ test "writer: Parquet toString and read back" {
 
 test "writer: builder pattern chaining" {
     const allocator = std.testing.allocator;
-    var w = try Writer.init(allocator);
+    var w = try Writer.init(allocator, std.Io.Threaded.global_single_threaded.io());
     defer w.deinit();
     _ = w.withFileType(.csv).withDelimiter(';').withHeader(false);
     try std.testing.expectEqual(@as(u8, ';'), w.delimiter);

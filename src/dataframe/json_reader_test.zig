@@ -102,3 +102,84 @@ test "json_reader: negative numbers" {
     defer df.deinit();
     try std.testing.expectEqual(@as(usize, 2), df.height());
 }
+
+test "json_reader: ndjson basic integers" {
+    const allocator = std.testing.allocator;
+    var df = try json_reader.parse(allocator, "{\"x\":1,\"y\":2}\n{\"x\":3,\"y\":4}", .{ .format = .ndjson });
+    defer df.deinit();
+    try std.testing.expectEqual(@as(usize, 2), df.height());
+    try std.testing.expectEqual(@as(usize, 2), df.width());
+}
+
+test "json_reader: ndjson string values" {
+    const allocator = std.testing.allocator;
+    var df = try json_reader.parse(allocator, "{\"name\":\"alice\"}\n{\"name\":\"bob\"}", .{ .format = .ndjson });
+    defer df.deinit();
+    try std.testing.expectEqual(@as(usize, 2), df.height());
+    try std.testing.expectEqual(@as(usize, 1), df.width());
+}
+
+test "json_reader: ndjson float values" {
+    const allocator = std.testing.allocator;
+    var df = try json_reader.parse(allocator, "{\"v\":1.5}\n{\"v\":2.5}", .{ .format = .ndjson });
+    defer df.deinit();
+    try std.testing.expectEqual(@as(usize, 2), df.height());
+}
+
+test "json_reader: ndjson boolean values" {
+    const allocator = std.testing.allocator;
+    var df = try json_reader.parse(allocator, "{\"flag\":true}\n{\"flag\":false}", .{ .format = .ndjson });
+    defer df.deinit();
+    try std.testing.expectEqual(@as(usize, 2), df.height());
+}
+
+test "json_reader: ndjson null values" {
+    const allocator = std.testing.allocator;
+    var df = try json_reader.parse(allocator, "{\"x\":1}\n{\"x\":null}", .{ .format = .ndjson });
+    defer df.deinit();
+    try std.testing.expectEqual(@as(usize, 2), df.height());
+}
+
+test "json_reader: ndjson auto-detect" {
+    const allocator = std.testing.allocator;
+    var df = try json_reader.parse(allocator, "{\"a\":1}\n{\"a\":2}", .{ .format = .auto });
+    defer df.deinit();
+    try std.testing.expectEqual(@as(usize, 2), df.height());
+}
+
+test "json_reader: ndjson single line explicit" {
+    const allocator = std.testing.allocator;
+    var df = try json_reader.parse(allocator, "{\"a\":42,\"b\":99}", .{ .format = .ndjson });
+    defer df.deinit();
+    try std.testing.expectEqual(@as(usize, 1), df.height());
+    try std.testing.expectEqual(@as(usize, 2), df.width());
+}
+
+test "json_reader: ndjson trailing newline" {
+    const allocator = std.testing.allocator;
+    var df = try json_reader.parse(allocator, "{\"x\":1}\n{\"x\":2}\n", .{ .format = .ndjson });
+    defer df.deinit();
+    try std.testing.expectEqual(@as(usize, 2), df.height());
+}
+
+test "json_reader: ndjson empty content" {
+    const allocator = std.testing.allocator;
+    var df = try json_reader.parse(allocator, "", .{ .format = .ndjson });
+    defer df.deinit();
+    try std.testing.expectEqual(@as(usize, 0), df.height());
+}
+
+test "json_reader: ndjson missing columns become null" {
+    const allocator = std.testing.allocator;
+    var df = try json_reader.parse(allocator, "{\"x\":1,\"y\":2}\n{\"x\":3}", .{ .format = .ndjson });
+    defer df.deinit();
+    try std.testing.expectEqual(@as(usize, 2), df.height());
+    try std.testing.expectEqual(@as(usize, 2), df.width());
+}
+
+test "json_reader: ndjson mixed int and float promotes to float" {
+    const allocator = std.testing.allocator;
+    var df = try json_reader.parse(allocator, "{\"v\":1}\n{\"v\":2.5}", .{ .format = .ndjson });
+    defer df.deinit();
+    try std.testing.expectEqual(@as(usize, 2), df.height());
+}

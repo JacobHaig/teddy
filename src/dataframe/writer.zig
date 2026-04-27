@@ -26,11 +26,11 @@ pub const Writer = struct {
     // Parquet options
     compression: parquet.CompressionCodec,
 
-    pub fn init(allocator: Allocator) !*Self {
+    pub fn init(allocator: Allocator, io: std.Io) !*Self {
         const ptr = try allocator.create(Self);
         ptr.* = .{
             .allocator = allocator,
-            .io = std.Io.Threaded.global_single_threaded.io(),
+            .io = io,
             .file_type = .csv,
             .path = null,
             .delimiter = ',',
@@ -39,11 +39,6 @@ pub const Writer = struct {
             .compression = .uncompressed,
         };
         return ptr;
-    }
-
-    pub fn withIo(self: *Self, io: std.Io) *Self {
-        self.io = io;
-        return self;
     }
 
     pub fn deinit(self: *Self) void {
