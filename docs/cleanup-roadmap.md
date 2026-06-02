@@ -27,7 +27,7 @@ phase at a time with review + commit at each checkpoint.
 - Implement agreed set + tests.
 - Commit: `feat: replace add5a demo with general-purpose function library`
 
-### Phase 4 — Strings module audit (keep + right-size) ⬜
+### Phase 4 — Strings module audit (keep + right-size) ✅
 - Map usage of `String` and the deprecated free fns `createString`/`createStringFromSlice`.
 - Decide: keep as thin wrappers or fold callers onto `String.init`/`fromSlice`.
 - Document realistic scope for future expansion. Commit only if changed.

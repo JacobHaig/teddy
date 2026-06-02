@@ -1,3 +1,11 @@
+//! Owned, growable UTF-8 string backing the `String` column type.
+//!
+//! `String` wraps a `std.ArrayList(u8)` and owns its bytes (each value carries
+//! its allocator and must be `deinit`ed). Construct with `String.init` (empty)
+//! or `String.fromSlice` (copy of a slice); these are the canonical create API.
+//! The surface is intentionally small for now — extend it here as the dataframe
+//! grows string operations (slicing, case folding, split/join, etc.).
+
 const std = @import("std");
 
 pub const String = struct {
@@ -75,14 +83,4 @@ pub const String = struct {
         return self.list.items.len;
     }
 };
-
-/// Deprecated: use String.init
-pub fn createString(allocator: std.mem.Allocator) !String {
-    return String.init(allocator);
-}
-
-/// Deprecated: use String.fromSlice
-pub fn createStringFromSlice(allocator: std.mem.Allocator, str: []const u8) !String {
-    return String.fromSlice(allocator, str);
-}
 
