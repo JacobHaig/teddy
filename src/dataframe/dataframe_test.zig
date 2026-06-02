@@ -124,24 +124,6 @@ test "Dataframe: compareDataframe equality and inequality" {
     try std.testing.expect(!(try df1.compareDataframe(df3)));
 }
 
-test "External Function Test: add5a" {
-    const f = @import("functions.zig");
-
-    var df = try Dataframe.init(std.testing.allocator);
-    defer df.deinit();
-
-    var series = try df.createSeries(i32);
-    try series.rename("Salary");
-    try series.append(15000);
-    try series.append(75000);
-
-    df.applyInplace("Salary", i32, f.add5a);
-
-    try std.testing.expect(series.len() == 2);
-    try std.testing.expect(series.toSlice()[0] == 15005);
-    try std.testing.expect(series.toSlice()[1] == 75005);
-}
-
 test "String re-export: can create and use String from top-level API" {
     const allocator = std.testing.allocator;
     var s = try String.init(allocator);

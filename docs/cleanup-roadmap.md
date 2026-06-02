@@ -8,18 +8,18 @@ phase at a time with review + commit at each checkpoint.
 
 ## Cleanup Track
 
-### Phase 1 — Remove dead boilerplate ⬜
+### Phase 1 — Remove dead boilerplate ✅
 - Delete `src/root.zig` (Zig template `add`/`bufferedPrint`, unreferenced, not in build).
 - `zig build test` must stay green.
 - Commit: `chore: remove unused root.zig template boilerplate`
 
-### Phase 2 — Fix `.gitignore` ⬜
+### Phase 2 — Fix `.gitignore` ✅
 - Strip all PHP/Zend/Doctrine/Composer entries.
 - Rewrite for Zig: `.zig-cache/`, `zig-out/`, `.DS_Store`, editor/OS noise.
 - Resolve conflict: keep `.claude/` ignored but add `!.claude/memory/` (+ `**`) so team memory commits.
 - Commit: `chore: rewrite .gitignore for Zig project`
 
-### Phase 3 — `functions.zig`: drop demo, build real version ⬜
+### Phase 3 — `functions.zig`: drop demo, build real version ✅
 - Remove `add5a` + its demo test (`dataframe_test.zig:127-138`).
 - Brainstorm first: generic, broadly-useful functions for the average library
   user (element-wise math `abs`/`round`/`pow`/`clamp`, predicates, string
