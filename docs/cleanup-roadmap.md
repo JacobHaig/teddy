@@ -45,8 +45,11 @@ phase at a time with review + commit at each checkpoint.
 Sub-phases:
 - **6a — Research ✅** — full Parquet type system → Zig mapping documented in
   `docs/parquet-type-mapping.md` (deep-research, primary sources verified).
-- **6b — Multi-row-group concat ⬜** — finish the TODO at `parquet_reader.zig:100`
-  (self-contained, no type-system dependency; good first code).
+- **6b — Multi-row-group concat ✅** — unified the single/multi-RG paths into one
+  `readLeafConcat` that concatenates every row group's values + validity. Added a
+  pyarrow-generated 3-row-group fixture (`data/multi_rowgroup.parquet`,
+  `src_py/gen_fixtures.py`) + reader test. Also wired the previously-dead parquet
+  reader/writer inline tests into the aggregator (393→411 tests run).
 - **6c — `FIXED_LEN_BYTE_ARRAY` + `INT96` decode ⬜** (`column_reader.zig:349`).
 - **6d — Logical-type mapping ⬜** — add Date/Time/Timestamp/Decimal/Binary/
   FixedBytes/Uuid/Interval/Float16 Series variants per the design note; read

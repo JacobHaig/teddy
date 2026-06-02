@@ -49,57 +49,11 @@ pub fn readParquet(allocator: Allocator, file_data: []const u8) !types.ParquetRe
         allocator.free(columns);
     }
 
-    // Initialize columns
-    for (0..leaves.len) |i| {
-        columns[i] = types.ParquetColumn.initEmpty(allocator);
-    }
-
-    // For single row group (most common), read directly
-    // For multiple row groups, we'd need to concatenate — handle the simple case first
-    if (file_metadata.row_groups.len == 1) {
-        const rg = file_metadata.row_groups[0];
-        for (leaves, 0..) |leaf, i| {
-            if (leaf.column_index >= rg.columns.len) return error.ColumnIndexOutOfBounds;
-            columns[i] = try column_reader.readColumnChunk(
-                allocator,
-                file_data,
-                rg.columns[leaf.column_index],
-                leaf,
-                num_rows,
-            );
-            cols_initialized += 1;
-        }
-    } else {
-        // Multiple row groups: read each and accumulate
-        // For now, read just the first row group's worth for each column,
-        // then concatenate subsequent row groups
-        for (file_metadata.row_groups) |rg| {
-            const rg_rows: usize = @intCast(rg.num_rows);
-            for (leaves, 0..) |leaf, i| {
-                if (leaf.column_index >= rg.columns.len) return error.ColumnIndexOutOfBounds;
-                var chunk_col = try column_reader.readColumnChunk(
-                    allocator,
-                    file_data,
-                    rg.columns[leaf.column_index],
-                    leaf,
-                    rg_rows,
-                );
-                defer chunk_col.deinit();
-
-                if (cols_initialized <= i) {
-                    // First row group: move data
-                    const name_copy = try allocator.alloc(u8, leaf.schema_element.name.len);
-                    @memcpy(name_copy, leaf.schema_element.name);
-
-                    columns[i] = chunk_col;
-                    columns[i].name = name_copy;
-                    // Prevent deinit of chunk_col from freeing the data we just moved
-                    chunk_col = types.ParquetColumn.initEmpty(allocator);
-                    cols_initialized += 1;
-                }
-                // TODO: concatenate subsequent row groups' data onto columns[i]
-            }
-        }
+    // Read each leaf column, concatenating its chunks across every row group.
+    // A single-row-group file is just the length-1 case of this loop.
+    for (leaves, 0..) |leaf, i| {
+        columns[i] = try readLeafConcat(allocator, file_data, file_metadata.row_groups, leaf, num_rows);
+        cols_initialized += 1;
     }
 
     return .{
@@ -107,6 +61,105 @@ pub fn readParquet(allocator: Allocator, file_data: []const u8) !types.ParquetRe
         .num_rows = num_rows,
         .allocator = allocator,
     };
+}
+
+/// Read a single leaf column across all row groups, concatenating each chunk's
+/// values (and validity) into one column of `total_rows` rows. A single-row-group
+/// file is handled as the length-1 case of the loop.
+fn readLeafConcat(
+    allocator: Allocator,
+    file_data: []const u8,
+    row_groups: []const metadata.RowGroup,
+    leaf: column_reader.LeafColumn,
+    total_rows: usize,
+) !types.ParquetColumn {
+    var col = types.ParquetColumn.initEmpty(allocator);
+    errdefer col.deinit();
+
+    const name_copy = try allocator.alloc(u8, leaf.schema_element.name.len);
+    @memcpy(name_copy, leaf.schema_element.name);
+    col.name = name_copy;
+    col.physical_type = leaf.schema_element.type_ orelse .byte_array;
+    col.converted_type = leaf.schema_element.converted_type;
+    col.is_optional = leaf.max_def_level > 0;
+    col.num_rows = total_rows;
+
+    // Per-type accumulators; only the one matching `physical_type` is filled.
+    var booleans = std.ArrayList(bool).empty;
+    var int32s = std.ArrayList(i32).empty;
+    var int64s = std.ArrayList(i64).empty;
+    var floats = std.ArrayList(f32).empty;
+    var doubles = std.ArrayList(f64).empty;
+    var byte_arrays = std.ArrayList([]const u8).empty;
+    var validity = std.ArrayList(bool).empty;
+    errdefer {
+        booleans.deinit(allocator);
+        int32s.deinit(allocator);
+        int64s.deinit(allocator);
+        floats.deinit(allocator);
+        doubles.deinit(allocator);
+        for (byte_arrays.items) |b| allocator.free(b);
+        byte_arrays.deinit(allocator);
+        validity.deinit(allocator);
+    }
+
+    for (row_groups) |rg| {
+        if (leaf.column_index >= rg.columns.len) return error.ColumnIndexOutOfBounds;
+        const rg_rows: usize = @intCast(rg.num_rows);
+
+        var chunk = try column_reader.readColumnChunk(
+            allocator,
+            file_data,
+            rg.columns[leaf.column_index],
+            leaf,
+            rg_rows,
+        );
+        // The chunk owns its buffers and frees them on deinit. Numeric/bool/
+        // validity values are copied into the accumulators, so the chunk keeps
+        // ownership of those. For byte arrays we transfer the owned inner slices
+        // into `byte_arrays` and null the chunk's reference to avoid a double free.
+        var bytes_moved = false;
+        defer {
+            if (bytes_moved) chunk.byte_arrays = null;
+            chunk.deinit();
+        }
+
+        switch (col.physical_type) {
+            .boolean => if (chunk.booleans) |v| try booleans.appendSlice(allocator, v),
+            .int32 => if (chunk.int32s) |v| try int32s.appendSlice(allocator, v),
+            .int64 => if (chunk.int64s) |v| try int64s.appendSlice(allocator, v),
+            .float => if (chunk.floats) |v| try floats.appendSlice(allocator, v),
+            .double => if (chunk.doubles) |v| try doubles.appendSlice(allocator, v),
+            .byte_array, .fixed_len_byte_array => if (chunk.byte_arrays) |v| {
+                try byte_arrays.appendSlice(allocator, v); // moves the inner slices
+                bytes_moved = true;
+                allocator.free(v); // free only the outer array
+            },
+            // INT96 is decoded in Phase 6c; leave the column empty for now.
+            .int96 => {},
+        }
+
+        if (col.is_optional) {
+            if (chunk.validity) |cv| {
+                try validity.appendSlice(allocator, cv);
+            } else {
+                try validity.appendNTimes(allocator, true, rg_rows);
+            }
+        }
+    }
+
+    switch (col.physical_type) {
+        .boolean => col.booleans = try booleans.toOwnedSlice(allocator),
+        .int32 => col.int32s = try int32s.toOwnedSlice(allocator),
+        .int64 => col.int64s = try int64s.toOwnedSlice(allocator),
+        .float => col.floats = try floats.toOwnedSlice(allocator),
+        .double => col.doubles = try doubles.toOwnedSlice(allocator),
+        .byte_array, .fixed_len_byte_array => col.byte_arrays = try byte_arrays.toOwnedSlice(allocator),
+        .int96 => {},
+    }
+    if (col.is_optional) col.validity = try validity.toOwnedSlice(allocator);
+
+    return col;
 }
 
 /// Walk the schema tree to identify leaf (data) columns.
@@ -151,6 +204,57 @@ fn resolveSchema(allocator: Allocator, schema: []const metadata.SchemaElement) !
 // ============================================================
 // Tests
 // ============================================================
+
+test "readParquet: multi-row-group file concatenates all row groups" {
+    const allocator = std.testing.allocator;
+
+    // data/multi_rowgroup.parquet: 7 rows written in 3 row groups (sizes 3,3,1)
+    // via pyarrow with columns id:int64, price:double, name:string, opt:int64?(nullable).
+    const cwd = std.Io.Dir.cwd();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const file_data = try cwd.readFileAlloc(io, "data/multi_rowgroup.parquet", allocator, .unlimited);
+    defer allocator.free(file_data);
+
+    var result = try readParquet(allocator, file_data);
+    defer result.deinit();
+
+    // All 3 row groups must be concatenated into 7 rows × 4 columns.
+    try std.testing.expectEqual(@as(usize, 7), result.num_rows);
+    try std.testing.expectEqual(@as(usize, 4), result.columns.len);
+
+    try std.testing.expectEqualStrings("id", result.columns[0].name);
+    try std.testing.expectEqualStrings("price", result.columns[1].name);
+    try std.testing.expectEqualStrings("name", result.columns[2].name);
+    try std.testing.expectEqualStrings("opt", result.columns[3].name);
+
+    // int64 spanning all 3 row groups
+    const ids = result.columns[0].int64s orelse return error.MissingData;
+    try std.testing.expectEqualSlices(i64, &.{ 1, 2, 3, 4, 5, 6, 7 }, ids);
+
+    // double spanning all 3 row groups
+    const prices = result.columns[1].doubles orelse return error.MissingData;
+    try std.testing.expectEqualSlices(f64, &.{ 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5 }, prices);
+
+    // byte_array (string) — ownership of inner slices is moved across groups
+    const names = result.columns[2].byte_arrays orelse return error.MissingData;
+    try std.testing.expectEqual(@as(usize, 7), names.len);
+    try std.testing.expectEqualStrings("a", names[0]);
+    try std.testing.expectEqualStrings("ccc", names[2]); // last row of group 1
+    try std.testing.expectEqualStrings("dddd", names[3]); // first row of group 2
+    try std.testing.expectEqualStrings("ggg", names[6]); // sole row of group 3
+
+    // nullable int64 — validity must concatenate across groups too
+    const opt = result.columns[3];
+    try std.testing.expect(opt.is_optional);
+    const valid = opt.validity orelse return error.MissingValidity;
+    try std.testing.expectEqualSlices(bool, &.{ true, false, true, false, true, true, false }, valid);
+    const opt_vals = opt.int64s orelse return error.MissingData;
+    try std.testing.expectEqual(@as(usize, 7), opt_vals.len);
+    try std.testing.expectEqual(@as(i64, 10), opt_vals[0]);
+    try std.testing.expectEqual(@as(i64, 30), opt_vals[2]);
+    try std.testing.expectEqual(@as(i64, 50), opt_vals[4]);
+    try std.testing.expectEqual(@as(i64, 60), opt_vals[5]);
+}
 
 test "readParquet: addresses.parquet (uncompressed)" {
     const allocator = std.testing.allocator;
