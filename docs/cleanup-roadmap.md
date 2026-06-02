@@ -41,12 +41,21 @@ phase at a time with review + commit at each checkpoint.
 
 ## Build Track (design pass, then code)
 
-### Phase 6 — Parquet reader: read (almost) anything ⬜
-- Multi-row-group concatenation (`parquet_reader.zig:74,100`).
-- Nested/group schemas (currently flat-only, `:127`).
-- `FIXED_LEN_BYTE_ARRAY` proper handling (`column_reader.zig:350`).
-- Research: map full Parquet logical/physical type set to type-safe Zig
-  representations; define fallback to boxed/dynamic type where static isn't viable.
+### Phase 6 — Parquet reader: read (almost) anything 🟡 in progress
+Sub-phases:
+- **6a — Research ✅** — full Parquet type system → Zig mapping documented in
+  `docs/parquet-type-mapping.md` (deep-research, primary sources verified).
+- **6b — Multi-row-group concat ⬜** — finish the TODO at `parquet_reader.zig:100`
+  (self-contained, no type-system dependency; good first code).
+- **6c — `FIXED_LEN_BYTE_ARRAY` + `INT96` decode ⬜** (`column_reader.zig:349`).
+- **6d — Logical-type mapping ⬜** — add Date/Time/Timestamp/Decimal/Binary/
+  FixedBytes/Uuid/Interval/Float16 Series variants per the design note; read
+  signed/unsigned INT annotations; `Raw` fallback for unmapped types.
+- **6e — Nested schemas ⬜** — MAP/LIST/STRUCT (currently flat-only,
+  `parquet_reader.zig:127`); biggest, may split out.
+
+Open decisions before 6d (see design note §5): nested-type strategy,
+DECIMAL precision 39–76, VARIANT/GEOMETRY/GEOGRAPHY handling, INT96 decode-vs-raw.
 
 ### Phase 7 — JSON reader/serialization fixes ⬜
 - Fix `.auto => unreachable` type inference (`json_reader.zig:31`).
