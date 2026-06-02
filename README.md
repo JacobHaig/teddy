@@ -366,7 +366,7 @@ Tests live next to the source they cover (`csv_writer_test.zig` beside `csv_writ
 
 ## Roadmap
 
-See [`plan.md`](plan.md) for the prioritized feature roadmap comparing teddy to pandas and polars.
+See [`docs/feature-roadmap.md`](docs/feature-roadmap.md) for the prioritized feature roadmap comparing teddy to pandas and polars.
 
 ## License
 

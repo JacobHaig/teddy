@@ -246,11 +246,13 @@ The reader currently only processes the first row group. Large Parquet files
 written by Spark or DuckDB often have many row groups.
 
 - Complete the TODO in `parquet_reader.zig` to concatenate all row groups
+- Tracked as **Phase 6** in `docs/cleanup-roadmap.md`
 
-### 6.2 NDJSON (Newline-Delimited JSON)
+### 6.2 NDJSON (Newline-Delimited JSON) ✓ COMPLETE
 Common format from APIs and log pipelines.
 
-- `parse` variant that reads one JSON object per line
+- `parse` variant that reads one JSON object per line ✓ — implemented in
+  `json_reader.zig` / `json_writer.zig`
 
 ### 6.3 Fixed-Width / Whitespace-Delimited
 Common in scientific data.
@@ -375,7 +377,8 @@ whenever "skip bad rows" is a plausible use case.
 | Semi/anti joins | partial | ✓ | ✗ | 5 |
 | Multi-key join | ✓ | ✓ | ✗ | 5 |
 | Cross join | ✓ | ✓ | ✗ | 5 |
-| NDJSON / fixed-width | ✓ | ✓ | ✗ | 6 |
+| NDJSON | ✓ | ✓ | ✓ | 6 |
+| Fixed-width | ✓ | ✓ | ✗ | 6 |
 | Multi-row-group Parquet | ✓ | ✓ | partial | 6 |
 | Correlation / covariance | ✓ | ✓ | ✗ | 7 |
 | Lazy evaluation | ✗ | ✓ | ✗ | 8 |

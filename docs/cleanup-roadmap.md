@@ -32,7 +32,7 @@ phase at a time with review + commit at each checkpoint.
 - Decide: keep as thin wrappers or fold callers onto `String.init`/`fromSlice`.
 - Document realistic scope for future expansion. Commit only if changed.
 
-### Phase 5 — `plan.md` triage ⬜
+### Phase 5 — `plan.md` triage ✅
 - Review against current code; check off / delete completed items.
 - Salvage genuinely-not-done items into this roadmap, then move to `docs/` or delete.
 - Commit: `docs: retire completed roadmap`
