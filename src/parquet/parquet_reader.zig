@@ -130,13 +130,13 @@ fn readLeafConcat(
             .int64 => if (chunk.int64s) |v| try int64s.appendSlice(allocator, v),
             .float => if (chunk.floats) |v| try floats.appendSlice(allocator, v),
             .double => if (chunk.doubles) |v| try doubles.appendSlice(allocator, v),
-            .byte_array, .fixed_len_byte_array => if (chunk.byte_arrays) |v| {
+            // byte_array, fixed_len_byte_array, and int96 are all stored as raw
+            // owned byte slices; move ownership across row groups.
+            .byte_array, .fixed_len_byte_array, .int96 => if (chunk.byte_arrays) |v| {
                 try byte_arrays.appendSlice(allocator, v); // moves the inner slices
                 bytes_moved = true;
                 allocator.free(v); // free only the outer array
             },
-            // INT96 is decoded in Phase 6c; leave the column empty for now.
-            .int96 => {},
         }
 
         if (col.is_optional) {
@@ -154,8 +154,7 @@ fn readLeafConcat(
         .int64 => col.int64s = try int64s.toOwnedSlice(allocator),
         .float => col.floats = try floats.toOwnedSlice(allocator),
         .double => col.doubles = try doubles.toOwnedSlice(allocator),
-        .byte_array, .fixed_len_byte_array => col.byte_arrays = try byte_arrays.toOwnedSlice(allocator),
-        .int96 => {},
+        .byte_array, .fixed_len_byte_array, .int96 => col.byte_arrays = try byte_arrays.toOwnedSlice(allocator),
     }
     if (col.is_optional) col.validity = try validity.toOwnedSlice(allocator);
 
@@ -254,6 +253,51 @@ test "readParquet: multi-row-group file concatenates all row groups" {
     try std.testing.expectEqual(@as(i64, 30), opt_vals[2]);
     try std.testing.expectEqual(@as(i64, 50), opt_vals[4]);
     try std.testing.expectEqual(@as(i64, 60), opt_vals[5]);
+}
+
+test "readParquet: FIXED_LEN_BYTE_ARRAY reads raw fixed-width bytes" {
+    const allocator = std.testing.allocator;
+
+    // data/flba.parquet: one column "fb" of FIXED_LEN_BYTE_ARRAY(4): abcd/efgh/ijkl
+    const cwd = std.Io.Dir.cwd();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const file_data = try cwd.readFileAlloc(io, "data/flba.parquet", allocator, .unlimited);
+    defer allocator.free(file_data);
+
+    var result = try readParquet(allocator, file_data);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), result.num_rows);
+    try std.testing.expectEqual(@as(usize, 1), result.columns.len);
+    try std.testing.expectEqual(types.PhysicalType.fixed_len_byte_array, result.columns[0].physical_type);
+
+    const vals = result.columns[0].byte_arrays orelse return error.MissingData;
+    try std.testing.expectEqual(@as(usize, 3), vals.len);
+    try std.testing.expectEqualStrings("abcd", vals[0]);
+    try std.testing.expectEqualStrings("efgh", vals[1]);
+    try std.testing.expectEqualStrings("ijkl", vals[2]);
+}
+
+test "readParquet: INT96 column reads as raw 12-byte values" {
+    const allocator = std.testing.allocator;
+
+    // data/int96.parquet: one column "t" of deprecated INT96 timestamps (3 rows)
+    const cwd = std.Io.Dir.cwd();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const file_data = try cwd.readFileAlloc(io, "data/int96.parquet", allocator, .unlimited);
+    defer allocator.free(file_data);
+
+    var result = try readParquet(allocator, file_data);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), result.num_rows);
+    try std.testing.expectEqual(@as(usize, 1), result.columns.len);
+    try std.testing.expectEqual(types.PhysicalType.int96, result.columns[0].physical_type);
+
+    // Raw preservation: every value is exactly 12 bytes (semantic decode is Phase 6d).
+    const vals = result.columns[0].byte_arrays orelse return error.MissingData;
+    try std.testing.expectEqual(@as(usize, 3), vals.len);
+    for (vals) |v| try std.testing.expectEqual(@as(usize, 12), v.len);
 }
 
 test "readParquet: addresses.parquet (uncompressed)" {

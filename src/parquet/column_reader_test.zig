@@ -13,7 +13,7 @@ test "DictionaryStore: init and deinit with int32 values" {
     std.mem.writeInt(i32, buf[4..8], 20, .little);
     std.mem.writeInt(i32, buf[8..12], 30, .little);
 
-    var dict = try DictionaryStore.init(allocator, &buf, .int32, 3);
+    var dict = try DictionaryStore.init(allocator, &buf, .int32, 0, 3);
     defer dict.deinit();
 
     try std.testing.expectEqual(@as(usize, 3), dict.int32s.items.len);
@@ -30,7 +30,7 @@ test "DictionaryStore: init with byte_array values" {
         0x03, 0x00, 0x00, 0x00, 'b', 'y', 'e',
     };
 
-    var dict = try DictionaryStore.init(allocator, &buf, .byte_array, 2);
+    var dict = try DictionaryStore.init(allocator, &buf, .byte_array, 0, 2);
     defer dict.deinit();
 
     try std.testing.expectEqual(@as(usize, 2), dict.byte_arrays.items.len);
@@ -46,7 +46,7 @@ test "DictionaryStore: init with float values" {
     std.mem.writeInt(u32, buf[0..4], @bitCast(v1), .little);
     std.mem.writeInt(u32, buf[4..8], @bitCast(v2), .little);
 
-    var dict = try DictionaryStore.init(allocator, &buf, .float, 2);
+    var dict = try DictionaryStore.init(allocator, &buf, .float, 0, 2);
     defer dict.deinit();
 
     try std.testing.expectEqual(@as(usize, 2), dict.floats.items.len);
@@ -62,7 +62,7 @@ test "DictionaryStore: init with double values" {
     std.mem.writeInt(u64, buf[0..8], @bitCast(v1), .little);
     std.mem.writeInt(u64, buf[8..16], @bitCast(v2), .little);
 
-    var dict = try DictionaryStore.init(allocator, &buf, .double, 2);
+    var dict = try DictionaryStore.init(allocator, &buf, .double, 0, 2);
     defer dict.deinit();
 
     try std.testing.expectEqual(@as(usize, 2), dict.doubles.items.len);
@@ -76,7 +76,7 @@ test "DictionaryStore: init with int64 values" {
     std.mem.writeInt(i64, buf[0..8], 1000000, .little);
     std.mem.writeInt(i64, buf[8..16], -999, .little);
 
-    var dict = try DictionaryStore.init(allocator, &buf, .int64, 2);
+    var dict = try DictionaryStore.init(allocator, &buf, .int64, 0, 2);
     defer dict.deinit();
 
     try std.testing.expectEqual(@as(usize, 2), dict.int64s.items.len);
@@ -86,7 +86,7 @@ test "DictionaryStore: init with int64 values" {
 
 test "ValueAccumulator: decodePlain int32" {
     const allocator = std.testing.allocator;
-    var acc = ValueAccumulator.init(allocator, .int32);
+    var acc = ValueAccumulator.init(allocator, .int32, 0);
     defer acc.deinit();
 
     var buf: [8]u8 = undefined;
@@ -102,7 +102,7 @@ test "ValueAccumulator: decodePlain int32" {
 
 test "ValueAccumulator: decodePlain byte_array" {
     const allocator = std.testing.allocator;
-    var acc = ValueAccumulator.init(allocator, .byte_array);
+    var acc = ValueAccumulator.init(allocator, .byte_array, 0);
     defer acc.deinit();
 
     const buf = [_]u8{
@@ -119,7 +119,7 @@ test "ValueAccumulator: decodePlain byte_array" {
 
 test "ValueAccumulator: decodePlain boolean" {
     const allocator = std.testing.allocator;
-    var acc = ValueAccumulator.init(allocator, .boolean);
+    var acc = ValueAccumulator.init(allocator, .boolean, 0);
     defer acc.deinit();
 
     // 0b00000101 → true, false, true
@@ -135,7 +135,7 @@ test "ValueAccumulator: decodePlain boolean" {
 
 test "ValueAccumulator: decodeDictionary int32" {
     const allocator = std.testing.allocator;
-    var acc = ValueAccumulator.init(allocator, .int32);
+    var acc = ValueAccumulator.init(allocator, .int32, 0);
     defer acc.deinit();
 
     // Dictionary: [100, 200, 300]
@@ -143,7 +143,7 @@ test "ValueAccumulator: decodeDictionary int32" {
     std.mem.writeInt(i32, dict_buf[0..4], 100, .little);
     std.mem.writeInt(i32, dict_buf[4..8], 200, .little);
     std.mem.writeInt(i32, dict_buf[8..12], 300, .little);
-    var dict = try DictionaryStore.init(allocator, &dict_buf, .int32, 3);
+    var dict = try DictionaryStore.init(allocator, &dict_buf, .int32, 0, 3);
     defer dict.deinit();
 
     // RLE indices: 3 values all index 2 → value 300
@@ -160,7 +160,7 @@ test "ValueAccumulator: decodeDictionary int32" {
 
 test "ValueAccumulator: decodeDictionary byte_array" {
     const allocator = std.testing.allocator;
-    var acc = ValueAccumulator.init(allocator, .byte_array);
+    var acc = ValueAccumulator.init(allocator, .byte_array, 0);
     defer acc.deinit();
 
     // Dictionary: ["hello", "world"]
@@ -168,7 +168,7 @@ test "ValueAccumulator: decodeDictionary byte_array" {
         0x05, 0x00, 0x00, 0x00, 'h', 'e', 'l', 'l', 'o',
         0x05, 0x00, 0x00, 0x00, 'w', 'o', 'r', 'l', 'd',
     };
-    var dict = try DictionaryStore.init(allocator, &dict_buf, .byte_array, 2);
+    var dict = try DictionaryStore.init(allocator, &dict_buf, .byte_array, 0, 2);
     defer dict.deinit();
 
     // RLE indices: [1, 0, 1] → "world", "hello", "world"
@@ -187,7 +187,7 @@ test "ValueAccumulator: decodeDictionary byte_array" {
 
 test "ValueAccumulator: moveInto transfers int32 ownership" {
     const allocator = std.testing.allocator;
-    var acc = ValueAccumulator.init(allocator, .int32);
+    var acc = ValueAccumulator.init(allocator, .int32, 0);
     // Don't defer acc.deinit() — moveInto transfers ownership
 
     var buf: [4]u8 = undefined;
@@ -211,7 +211,7 @@ test "ValueAccumulator: moveInto transfers int32 ownership" {
 
 test "ValueAccumulator: expandWithNulls inserts defaults" {
     const allocator = std.testing.allocator;
-    var acc = ValueAccumulator.init(allocator, .int32);
+    var acc = ValueAccumulator.init(allocator, .int32, 0);
     defer acc.deinit();
 
     // Accumulate 2 non-null values
@@ -243,7 +243,7 @@ test "ValueAccumulator: expandWithNulls inserts defaults" {
 
 test "ValueAccumulator: expandWithNulls byte_array" {
     const allocator = std.testing.allocator;
-    var acc = ValueAccumulator.init(allocator, .byte_array);
+    var acc = ValueAccumulator.init(allocator, .byte_array, 0);
     defer acc.deinit();
 
     // 1 non-null string

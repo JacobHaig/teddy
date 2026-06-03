@@ -50,7 +50,11 @@ Sub-phases:
   pyarrow-generated 3-row-group fixture (`data/multi_rowgroup.parquet`,
   `src_py/gen_fixtures.py`) + reader test. Also wired the previously-dead parquet
   reader/writer inline tests into the aggregator (393→411 tests run).
-- **6c — `FIXED_LEN_BYTE_ARRAY` + `INT96` decode ⬜** (`column_reader.zig:349`).
+- **6c — `FIXED_LEN_BYTE_ARRAY` + `INT96` decode ✅** — both now read as raw owned
+  bytes (FLBA uses schema `type_length`; INT96 is fixed 12 bytes) across plain,
+  dictionary, moveInto/expandWithNulls, and multi-RG concat paths. Semantic
+  typing (Decimal/UUID/Timestamp) deferred to 6d. Fixtures `data/flba.parquet` +
+  `data/int96.parquet` (`gen_fixtures.py`) + reader tests.
 - **6d — Logical-type mapping ⬜** — add Date/Time/Timestamp/Decimal/Binary/
   FixedBytes/Uuid/Interval/Float16 Series variants per the design note; read
   signed/unsigned INT annotations; `Raw` fallback for unmapped types.

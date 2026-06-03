@@ -44,7 +44,7 @@ pub fn readColumnChunk(
     if (end_offset > file_data.len) return error.ColumnDataOutOfBounds;
 
     // Accumulated values across pages
-    var all_values = ValueAccumulator.init(allocator, physical_type);
+    var all_values = ValueAccumulator.init(allocator, physical_type, leaf.schema_element.type_length orelse 0);
     defer all_values.deinit();
 
     var all_def_levels = std.ArrayList(u32).empty;
@@ -77,7 +77,7 @@ pub fn readColumnChunk(
                 const decompressed = try decompressPage(allocator, page_data, col_meta.codec, uncompressed_size);
                 defer if (decompressed.ptr != page_data.ptr) allocator.free(decompressed);
 
-                dict = try DictionaryStore.init(allocator, decompressed, physical_type, @intCast(dict_header.num_values));
+                dict = try DictionaryStore.init(allocator, decompressed, physical_type, leaf.schema_element.type_length orelse 0, @intCast(dict_header.num_values));
             },
             .data_page => {
                 const dp_header = page_header.data_page_header orelse return error.MissingDataPageHeader;
@@ -279,6 +279,9 @@ fn buildColumn(
 pub const ValueAccumulator = struct {
     allocator: Allocator,
     physical_type: types.PhysicalType,
+    /// Width in bytes for FIXED_LEN_BYTE_ARRAY values (from the schema). Unused
+    /// for other physical types; INT96 is always 12 bytes.
+    type_length: i32,
     int32s: std.ArrayList(i32),
     int64s: std.ArrayList(i64),
     floats: std.ArrayList(f32),
@@ -286,10 +289,11 @@ pub const ValueAccumulator = struct {
     booleans: std.ArrayList(bool),
     byte_arrays: std.ArrayList([]const u8),
 
-    pub fn init(allocator: Allocator, physical_type: types.PhysicalType) ValueAccumulator {
+    pub fn init(allocator: Allocator, physical_type: types.PhysicalType, type_length: i32) ValueAccumulator {
         return .{
             .allocator = allocator,
             .physical_type = physical_type,
+            .type_length = type_length,
             .int32s = std.ArrayList(i32).empty,
             .int64s = std.ArrayList(i64).empty,
             .floats = std.ArrayList(f32).empty,
@@ -347,10 +351,26 @@ pub const ValueAccumulator = struct {
                 }
             },
             .fixed_len_byte_array => {
-                // Would need type_length from schema — for now treat like byte_array
-                return error.UnsupportedEncoding;
+                if (self.type_length <= 0) return error.InvalidTypeLength;
+                const n: usize = @intCast(self.type_length);
+                for (0..count) |_| {
+                    const src = try dec.readFixedByteArray(n);
+                    const copy = try allocator.alloc(u8, src.len);
+                    @memcpy(copy, src);
+                    try self.byte_arrays.append(allocator, copy);
+                }
             },
-            .int96 => return error.UnsupportedEncoding,
+            .int96 => {
+                // INT96 is a fixed 12-byte value (legacy timestamp). Preserve the
+                // raw bytes; semantic decoding to a timestamp happens in the
+                // logical-type layer (Phase 6d).
+                for (0..count) |_| {
+                    const src = try dec.readFixedByteArray(12);
+                    const copy = try allocator.alloc(u8, 12);
+                    @memcpy(copy, src);
+                    try self.byte_arrays.append(allocator, copy);
+                }
+            },
         }
     }
 
@@ -362,7 +382,7 @@ pub const ValueAccumulator = struct {
                 .int64 => try self.int64s.append(allocator, dict.int64s.items[idx]),
                 .float => try self.floats.append(allocator, dict.floats.items[idx]),
                 .double => try self.doubles.append(allocator, dict.doubles.items[idx]),
-                .byte_array => {
+                .byte_array, .fixed_len_byte_array, .int96 => {
                     const src = dict.byte_arrays.items[idx];
                     const copy = try allocator.alloc(u8, src.len);
                     @memcpy(copy, src);
@@ -395,11 +415,10 @@ pub const ValueAccumulator = struct {
                 col.booleans = self.booleans.toOwnedSlice(self.allocator) catch null;
                 self.booleans = std.ArrayList(bool).empty;
             },
-            .byte_array, .fixed_len_byte_array => {
+            .byte_array, .fixed_len_byte_array, .int96 => {
                 col.byte_arrays = self.byte_arrays.toOwnedSlice(self.allocator) catch null;
                 self.byte_arrays = std.ArrayList([]const u8).empty;
             },
-            else => {},
         }
     }
 
@@ -471,7 +490,7 @@ pub const ValueAccumulator = struct {
                 }
                 col.booleans = result;
             },
-            .byte_array, .fixed_len_byte_array => {
+            .byte_array, .fixed_len_byte_array, .int96 => {
                 const result = try allocator.alloc([]const u8, num_rows);
                 var vi: usize = 0;
                 var initialized: usize = 0;
@@ -493,7 +512,6 @@ pub const ValueAccumulator = struct {
                 self.byte_arrays.clearRetainingCapacity();
                 col.byte_arrays = result;
             },
-            else => {},
         }
     }
 };
@@ -510,7 +528,7 @@ pub const DictionaryStore = struct {
     doubles: std.ArrayList(f64),
     byte_arrays: std.ArrayList([]const u8),
 
-    pub fn init(allocator: Allocator, data: []const u8, physical_type: types.PhysicalType, num_values: usize) !DictionaryStore {
+    pub fn init(allocator: Allocator, data: []const u8, physical_type: types.PhysicalType, type_length: i32, num_values: usize) !DictionaryStore {
         var store = DictionaryStore{
             .allocator = allocator,
             .int32s = std.ArrayList(i32).empty,
@@ -547,6 +565,24 @@ pub const DictionaryStore = struct {
                 for (0..num_values) |_| {
                     const src = try dec.readByteArray();
                     const copy = try allocator.alloc(u8, src.len);
+                    @memcpy(copy, src);
+                    try store.byte_arrays.append(allocator, copy);
+                }
+            },
+            .fixed_len_byte_array => {
+                if (type_length <= 0) return error.InvalidTypeLength;
+                const n: usize = @intCast(type_length);
+                for (0..num_values) |_| {
+                    const src = try dec.readFixedByteArray(n);
+                    const copy = try allocator.alloc(u8, src.len);
+                    @memcpy(copy, src);
+                    try store.byte_arrays.append(allocator, copy);
+                }
+            },
+            .int96 => {
+                for (0..num_values) |_| {
+                    const src = try dec.readFixedByteArray(12);
+                    const copy = try allocator.alloc(u8, 12);
                     @memcpy(copy, src);
                     try store.byte_arrays.append(allocator, copy);
                 }
