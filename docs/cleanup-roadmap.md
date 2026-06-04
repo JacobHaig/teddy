@@ -58,12 +58,16 @@ Sub-phases:
 - **6d-1 — Unsigned INT mapping ✅** — bridge now maps `uint_32`→`u32` and
   `uint_64`→`u64` via full-range bitcast (was silently read as signed). Fixture
   `data/unsigned.parquet` + bridge test.
-- **6d-2 — New scalar Series types ⬜ (design-first)** — add Date/Time/Timestamp/
-  Decimal/Binary/FixedBytes/Uuid/Interval/Float16 per the design note; parse the
-  modern `LogicalType` union (SchemaElement field 10, currently skipped); `Raw`
-  fallback for unmapped types. Large core change — needs a representation design
-  (distinct union variants vs. underlying-int + logical tag) and the 4 decisions
-  in `parquet-type-mapping.md` §5 before coding.
+- **6d-2a — New scalar Series types 🟡 designed** — add Date/Time/Timestamp/
+  Decimal/Binary/FixedBytes/Uuid/Interval/Float16 as distinct types + variants;
+  parse the modern `LogicalType` union (SchemaElement field 10); full lossless
+  round-trip; rich per-type ops; `Raw` fallback for deferred types. Design approved,
+  spec at `docs/superpowers/specs/2026-06-04-parquet-scalar-logical-types-design.md`.
+  Implement as per-type vertical slices (6d-2a.0 infra → .1 Date → .2 Timestamp/Time
+  → .3 Decimal → .4 Binary/FixedBytes → .5 Uuid/Interval/Float16).
+- **6d-2b — Nested types ⬜ (separate spec)** — LIST/MAP/STRUCT (+ VARIANT/GEO):
+  repetition-level record assembly + a nested column model. Its own design effort;
+  reads as `Raw` until built.
 - **6e — Nested schemas ⬜** — MAP/LIST/STRUCT (currently flat-only,
   `parquet_reader.zig:127`); biggest, may split out.
 
