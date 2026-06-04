@@ -43,6 +43,9 @@ fn addColumn(allocator: Allocator, df: *dataframe.Dataframe, col: *const parquet
                     .int_16 => return addNarrowIntColumn(i16, allocator, df, col),
                     .uint_8 => return addNarrowIntColumn(u8, allocator, df, col),
                     .uint_16 => return addNarrowIntColumn(u16, allocator, df, col),
+                    // uint_32 spans the full u32 range, so the i32 bit pattern
+                    // must be reinterpreted (bitcast), not range-cast.
+                    .uint_32 => return addUintColumn(u32, i32, df, col, col.int32s),
                     else => {},
                 }
             }
@@ -55,6 +58,10 @@ fn addColumn(allocator: Allocator, df: *dataframe.Dataframe, col: *const parquet
             }
         },
         .int64 => {
+            // uint_64 spans the full u64 range, so reinterpret the i64 bits.
+            if (col.converted_type) |ct| {
+                if (ct == .uint_64) return addUintColumn(u64, i64, df, col, col.int64s);
+            }
             var s = try df.createSeries(i64);
             try s.rename(col.name);
             const vals = col.int64s orelse return;
@@ -236,6 +243,21 @@ fn addNarrowIntColumn(comptime T: type, allocator: Allocator, df: *dataframe.Dat
     for (0..col.num_rows) |i| {
         const valid = if (col.validity) |v| v[i] else true;
         const val: T = if (valid and i < vals.len) @intCast(vals[i]) else 0;
+        try s.append(val);
+    }
+}
+
+/// Build an unsigned column from a same-width signed physical column by
+/// reinterpreting the bit pattern (UINT_32 over INT32, UINT_64 over INT64).
+/// `@bitCast` is required because the unsigned value range overflows the signed
+/// physical type — a plain cast would trap on "negative" stored values.
+fn addUintColumn(comptime U: type, comptime I: type, df: *dataframe.Dataframe, col: *const parquet.ParquetColumn, source: ?[]const I) !void {
+    var s = try df.createSeries(U);
+    try s.rename(col.name);
+    const vals = source orelse return;
+    for (0..col.num_rows) |i| {
+        const valid = if (col.validity) |v| v[i] else true;
+        const val: U = if (valid and i < vals.len) @bitCast(vals[i]) else 0;
         try s.append(val);
     }
 }

@@ -3,6 +3,7 @@ const Dataframe = @import("dataframe.zig").Dataframe;
 const String = @import("strings.zig").String;
 const Series = @import("series.zig").Series;
 const BoxedSeries = @import("boxed_series.zig").BoxedSeries;
+const Reader = @import("reader.zig").Reader;
 
 test "basic manipulations" {
     var df = try Dataframe.init(std.testing.allocator);
@@ -122,6 +123,37 @@ test "Dataframe: compareDataframe equality and inequality" {
     defer df3.deinit();
     try df3.addSeries(s3.toBoxedSeries());
     try std.testing.expect(!(try df1.compareDataframe(df3)));
+}
+
+test "Parquet bridge: UINT_32/UINT_64 map to u32/u64 with full-range bitcast" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var reader = try Reader.init(allocator, io);
+    defer reader.deinit();
+    var df = try reader.withFileType(.parquet).withPath("data/unsigned.parquet").load();
+    defer df.deinit();
+
+    // u32 column: 4_000_000_000 exceeds i32 max, so a signed read would be wrong.
+    const u32_col = df.getSeries("u32") orelse return error.MissingColumn;
+    switch (u32_col.*) {
+        .uint32 => |s| {
+            try std.testing.expectEqual(@as(u32, 1), s.toSlice()[0]);
+            try std.testing.expectEqual(@as(u32, 2), s.toSlice()[1]);
+            try std.testing.expectEqual(@as(u32, 4000000000), s.toSlice()[2]);
+        },
+        else => return error.WrongColumnType,
+    }
+
+    // u64 column: 18_000_000_000_000_000_000 exceeds i64 max.
+    const u64_col = df.getSeries("u64") orelse return error.MissingColumn;
+    switch (u64_col.*) {
+        .uint64 => |s| {
+            try std.testing.expectEqual(@as(u64, 1), s.toSlice()[0]);
+            try std.testing.expectEqual(@as(u64, 18000000000000000000), s.toSlice()[2]);
+        },
+        else => return error.WrongColumnType,
+    }
 }
 
 test "String re-export: can create and use String from top-level API" {

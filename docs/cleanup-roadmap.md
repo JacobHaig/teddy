@@ -55,9 +55,15 @@ Sub-phases:
   dictionary, moveInto/expandWithNulls, and multi-RG concat paths. Semantic
   typing (Decimal/UUID/Timestamp) deferred to 6d. Fixtures `data/flba.parquet` +
   `data/int96.parquet` (`gen_fixtures.py`) + reader tests.
-- **6d — Logical-type mapping ⬜** — add Date/Time/Timestamp/Decimal/Binary/
-  FixedBytes/Uuid/Interval/Float16 Series variants per the design note; read
-  signed/unsigned INT annotations; `Raw` fallback for unmapped types.
+- **6d-1 — Unsigned INT mapping ✅** — bridge now maps `uint_32`→`u32` and
+  `uint_64`→`u64` via full-range bitcast (was silently read as signed). Fixture
+  `data/unsigned.parquet` + bridge test.
+- **6d-2 — New scalar Series types ⬜ (design-first)** — add Date/Time/Timestamp/
+  Decimal/Binary/FixedBytes/Uuid/Interval/Float16 per the design note; parse the
+  modern `LogicalType` union (SchemaElement field 10, currently skipped); `Raw`
+  fallback for unmapped types. Large core change — needs a representation design
+  (distinct union variants vs. underlying-int + logical tag) and the 4 decisions
+  in `parquet-type-mapping.md` §5 before coding.
 - **6e — Nested schemas ⬜** — MAP/LIST/STRUCT (currently flat-only,
   `parquet_reader.zig:127`); biggest, may split out.
 

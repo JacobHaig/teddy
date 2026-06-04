@@ -49,7 +49,19 @@ def int96_timestamps():
     print("data/int96.parquet: INT96, 3 rows")
 
 
+def unsigned_ints():
+    # Unsigned ints whose values exceed the signed range of their physical type
+    # (UINT_32 over INT32, UINT_64 over INT64) — exercises bit-reinterpretation.
+    tbl = pa.table({
+        "u32": pa.array([1, 2, 4000000000], type=pa.uint32()),
+        "u64": pa.array([1, 2, 18000000000000000000], type=pa.uint64()),
+    })
+    pq.write_table(tbl, "data/unsigned.parquet", compression=None)
+    print("data/unsigned.parquet: UINT_32 + UINT_64, 3 rows")
+
+
 if __name__ == "__main__":
     multi_rowgroup()
     fixed_len_byte_array()
     int96_timestamps()
+    unsigned_ints()
