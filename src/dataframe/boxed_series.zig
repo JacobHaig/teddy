@@ -1,6 +1,8 @@
 const std = @import("std");
 const Series = @import("series.zig").Series;
+const hasMethod = @import("series.zig").hasMethod;
 const String = @import("strings.zig").String;
+const Raw = @import("raw.zig").Raw;
 const GroupBy = @import("group.zig").GroupBy;
 const BoxedGroupBy = @import("boxed_groupby.zig").BoxedGroupBy;
 const Dataframe = @import("dataframe.zig").Dataframe;
@@ -26,6 +28,7 @@ pub const BoxedSeries = union(enum) {
     float32: *Series(f32),
     float64: *Series(f64),
     string: *Series(String),
+    raw: *Series(Raw),
 
     /// Deallocates the contained Series. After this call, the BoxedSeries is invalid.
     pub fn deinit(self: *Self) void {
@@ -164,19 +167,23 @@ pub const BoxedSeries = union(enum) {
         }
     }
 
-    /// Returns the mean of non-null values as f64. Returns null if not numeric.
+    /// Returns the mean of non-null values as f64. Returns null if not a numeric type.
     pub fn mean(self: *Self) ?f64 {
         switch (self.*) {
-            .string, .bool => return null,
-            inline else => |s| return s.*.mean(),
+            inline else => |s| {
+                if (comptime @TypeOf(s.*).is_numeric) return s.mean();
+                return null;
+            },
         }
     }
 
     /// Returns the population stddev of non-null values as f64. Returns null if not numeric.
     pub fn stdDev(self: *Self) ?f64 {
         switch (self.*) {
-            .string, .bool => return null,
-            inline else => |s| return s.*.stdDev(),
+            inline else => |s| {
+                if (comptime @TypeOf(s.*).is_numeric) return s.stdDev();
+                return null;
+            },
         }
     }
 
@@ -195,8 +202,11 @@ pub const BoxedSeries = union(enum) {
     pub fn groupBy(self: *Self, allocator: std.mem.Allocator, dataframe: *Dataframe) !BoxedGroupBy {
         switch (self.*) {
             inline else => |s| {
-                const gb = try s.*.groupBy(allocator, dataframe);
-                return gb.toBoxedGroupBy();
+                if (comptime @TypeOf(s.*).is_groupable) {
+                    const gb = try s.*.groupBy(allocator, dataframe);
+                    return gb.toBoxedGroupBy();
+                }
+                return error.TypeNotGroupable;
             },
         }
     }
@@ -214,21 +224,30 @@ pub const BoxedSeries = union(enum) {
     /// Comptime-verified lossless cast. Compile error if the conversion could lose data.
     pub fn castSafe(self: *Self, comptime Target: type) !BoxedSeries {
         switch (self.*) {
-            inline else => |s| return (try s.castSafe(Target)).toBoxedSeries(),
+            inline else => |s| {
+                if (comptime @TypeOf(s.*).is_castable) return (try s.castSafe(Target)).toBoxedSeries();
+                return error.TypeNotCastable;
+            },
         }
     }
 
     /// Strict cast. Returns error on overflow, non-integer float→int, or String parse failure.
     pub fn cast(self: *Self, comptime Target: type) !BoxedSeries {
         switch (self.*) {
-            inline else => |s| return (try s.cast(Target)).toBoxedSeries(),
+            inline else => |s| {
+                if (comptime @TypeOf(s.*).is_castable) return (try s.cast(Target)).toBoxedSeries();
+                return error.TypeNotCastable;
+            },
         }
     }
 
     /// Permissive cast. Conversion failures become null; float→int truncates.
     pub fn castLossy(self: *Self, comptime Target: type) !BoxedSeries {
         switch (self.*) {
-            inline else => |s| return (try s.castLossy(Target)).toBoxedSeries(),
+            inline else => |s| {
+                if (comptime @TypeOf(s.*).is_castable) return (try s.castLossy(Target)).toBoxedSeries();
+                return error.TypeNotCastable;
+            },
         }
     }
 
@@ -278,18 +297,22 @@ pub const BoxedSeries = union(enum) {
 
     /// Median of non-null values as f64. Returns null for non-numeric or all-null.
     pub fn median(self: *Self, allocator: std.mem.Allocator) !?f64 {
-        return switch (self.*) {
-            .string, .bool => null,
-            inline else => |s| s.median(allocator),
-        };
+        switch (self.*) {
+            inline else => |s| {
+                if (comptime @TypeOf(s.*).is_numeric) return s.median(allocator);
+                return null;
+            },
+        }
     }
 
     /// Quantile of non-null values. q must be in [0,1]. Returns null for non-numeric.
     pub fn quantile(self: *Self, allocator: std.mem.Allocator, q: f64) !?f64 {
-        return switch (self.*) {
-            .string, .bool => null,
-            inline else => |s| s.quantile(allocator, q),
-        };
+        switch (self.*) {
+            inline else => |s| {
+                if (comptime @TypeOf(s.*).is_numeric) return s.quantile(allocator, q);
+                return null;
+            },
+        }
     }
 
     /// Count of distinct non-null values.
@@ -301,34 +324,42 @@ pub const BoxedSeries = union(enum) {
 
     /// Running cumulative sum. Nulls propagate. Numeric columns only.
     pub fn cumSum(self: *Self) !BoxedSeries {
-        return switch (self.*) {
-            .string, .bool => error.TypeNotNumeric,
-            inline else => |s| (try s.cumSum()).toBoxedSeries(),
-        };
+        switch (self.*) {
+            inline else => |s| {
+                if (comptime @TypeOf(s.*).is_numeric) return (try s.cumSum()).toBoxedSeries();
+                return error.TypeNotNumeric;
+            },
+        }
     }
 
     /// Running cumulative minimum.
     pub fn cumMin(self: *Self) !BoxedSeries {
-        return switch (self.*) {
-            .string, .bool => error.TypeNotNumeric,
-            inline else => |s| (try s.cumMin()).toBoxedSeries(),
-        };
+        switch (self.*) {
+            inline else => |s| {
+                if (comptime @TypeOf(s.*).is_numeric) return (try s.cumMin()).toBoxedSeries();
+                return error.TypeNotNumeric;
+            },
+        }
     }
 
     /// Running cumulative maximum.
     pub fn cumMax(self: *Self) !BoxedSeries {
-        return switch (self.*) {
-            .string, .bool => error.TypeNotNumeric,
-            inline else => |s| (try s.cumMax()).toBoxedSeries(),
-        };
+        switch (self.*) {
+            inline else => |s| {
+                if (comptime @TypeOf(s.*).is_numeric) return (try s.cumMax()).toBoxedSeries();
+                return error.TypeNotNumeric;
+            },
+        }
     }
 
     /// Running cumulative product.
     pub fn cumProd(self: *Self) !BoxedSeries {
-        return switch (self.*) {
-            .string, .bool => error.TypeNotNumeric,
-            inline else => |s| (try s.cumProd()).toBoxedSeries(),
-        };
+        switch (self.*) {
+            inline else => |s| {
+                if (comptime @TypeOf(s.*).is_numeric) return (try s.cumProd()).toBoxedSeries();
+                return error.TypeNotNumeric;
+            },
+        }
     }
 
     /// Shift values by n positions. Works on all column types.
@@ -340,18 +371,22 @@ pub const BoxedSeries = union(enum) {
 
     /// Strict element-wise difference. Numeric only.
     pub fn diff(self: *Self, n: usize) !BoxedSeries {
-        return switch (self.*) {
-            .string, .bool => error.TypeNotNumeric,
-            inline else => |s| (try s.diff(n)).toBoxedSeries(),
-        };
+        switch (self.*) {
+            inline else => |s| {
+                if (comptime @TypeOf(s.*).is_numeric) return (try s.diff(n)).toBoxedSeries();
+                return error.TypeNotNumeric;
+            },
+        }
     }
 
     /// Permissive element-wise difference. Underflow/overflow → null.
     pub fn diffLossy(self: *Self, n: usize) !BoxedSeries {
-        return switch (self.*) {
-            .string, .bool => error.TypeNotNumeric,
-            inline else => |s| (try s.diffLossy(n)).toBoxedSeries(),
-        };
+        switch (self.*) {
+            inline else => |s| {
+                if (comptime @TypeOf(s.*).is_numeric) return (try s.diffLossy(n)).toBoxedSeries();
+                return error.TypeNotNumeric;
+            },
+        }
     }
 
     /// Clamp values to [lower, upper]. Type must match the column.
@@ -402,7 +437,7 @@ pub const BoxedSeries = union(enum) {
                 for (0..o.values.items.len) |i| {
                     if (o.isNull(i)) {
                         try s.appendNull();
-                    } else if (comptime @TypeOf(o.values.items[i]) == String) {
+                    } else if (comptime hasMethod(@TypeOf(o.values.items[i]), "clone")) {
                         var cloned = try o.values.items[i].clone();
                         errdefer cloned.deinit();
                         try s.append(cloned);
@@ -481,6 +516,7 @@ pub const BoxedSeries = union(enum) {
             .float32 => "f32",
             .float64 => "f64",
             .string => "String",
+            .raw => "Raw",
         };
     }
 
@@ -504,6 +540,7 @@ pub const BoxedSeries = union(enum) {
             .float32 => return f32,
             .float64 => return f64,
             .string => return String,
+            .raw => return Raw,
         }
     }
 };

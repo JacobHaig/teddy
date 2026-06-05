@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 const dataframe = @import("dataframe.zig");
 const series_mod = @import("series.zig");
 const String = @import("strings.zig").String;
+const Raw = @import("raw.zig").Raw;
 const BoxedSeries = @import("boxed_series.zig").BoxedSeries;
 const parquet = @import("parquet");
 
@@ -24,8 +25,76 @@ pub fn toDataframe(allocator: Allocator, result: *parquet.ParquetResult) !*dataf
     return df;
 }
 
+/// Dataframe-side type a parquet column resolves to.
+pub const ResolvedKind = enum {
+    boolean,
+    int8_,
+    int16_,
+    int32_,
+    int64_,
+    uint8_,
+    uint16_,
+    uint32_,
+    uint64_,
+    float32_,
+    float64_,
+    string,
+    raw,
+};
+
+/// Resolution precedence: modern logical_type (field 10) → legacy
+/// converted_type (field 6) → bare physical type. Logical annotations not yet
+/// surfaced as dataframe types (date/time/timestamp/decimal/uuid/float16/...)
+/// fall through to the physical default; slices 6d-2a.1–.5 flip them one at a
+/// time. Deferred types (VARIANT/GEOMETRY/GEOGRAPHY) and INT96 resolve to Raw.
+pub fn resolveKind(col: *const parquet.ParquetColumn) ResolvedKind {
+    if (col.logical_type) |lt| switch (lt) {
+        .integer => |it| {
+            if (it.is_signed) {
+                switch (it.bit_width) {
+                    8 => return .int8_,
+                    16 => return .int16_,
+                    32 => return .int32_,
+                    64 => return .int64_,
+                    else => {},
+                }
+            } else {
+                switch (it.bit_width) {
+                    8 => return .uint8_,
+                    16 => return .uint16_,
+                    32 => return .uint32_,
+                    64 => return .uint64_,
+                    else => {},
+                }
+            }
+        },
+        .string, .@"enum", .json => return .string,
+        .variant, .geometry, .geography => return .raw,
+        else => {},
+    };
+    if (col.converted_type) |ct| switch (ct) {
+        .int_8 => return .int8_,
+        .int_16 => return .int16_,
+        .uint_8 => return .uint8_,
+        .uint_16 => return .uint16_,
+        .uint_32 => return .uint32_,
+        .uint_64 => return .uint64_,
+        .utf8 => return .string,
+        else => {},
+    };
+    return switch (col.physical_type) {
+        .boolean => .boolean,
+        .int32 => .int32_,
+        .int64 => .int64_,
+        .float => .float32_,
+        .double => .float64_,
+        .byte_array, .fixed_len_byte_array => .string,
+        .int96 => .raw,
+    };
+}
+
 fn addColumn(allocator: Allocator, df: *dataframe.Dataframe, col: *const parquet.ParquetColumn) !void {
-    switch (col.physical_type) {
+    switch (resolveKind(col)) {
         .boolean => {
             var s = try df.createSeries(bool);
             try s.rename(col.name);
@@ -35,20 +104,15 @@ fn addColumn(allocator: Allocator, df: *dataframe.Dataframe, col: *const parquet
                 try s.append(if (valid and i < vals.len) vals[i] else false);
             }
         },
-        .int32 => {
-            // Check converted type for narrower integer types
-            if (col.converted_type) |ct| {
-                switch (ct) {
-                    .int_8 => return addNarrowIntColumn(i8, allocator, df, col),
-                    .int_16 => return addNarrowIntColumn(i16, allocator, df, col),
-                    .uint_8 => return addNarrowIntColumn(u8, allocator, df, col),
-                    .uint_16 => return addNarrowIntColumn(u16, allocator, df, col),
-                    // uint_32 spans the full u32 range, so the i32 bit pattern
-                    // must be reinterpreted (bitcast), not range-cast.
-                    .uint_32 => return addUintColumn(u32, i32, df, col, col.int32s),
-                    else => {},
-                }
-            }
+        .int8_ => return addNarrowIntColumn(i8, allocator, df, col),
+        .int16_ => return addNarrowIntColumn(i16, allocator, df, col),
+        .uint8_ => return addNarrowIntColumn(u8, allocator, df, col),
+        .uint16_ => return addNarrowIntColumn(u16, allocator, df, col),
+        // uint_32/uint_64 span the full unsigned range, so the signed bit
+        // pattern must be reinterpreted (bitcast), not range-cast.
+        .uint32_ => return addUintColumn(u32, i32, df, col, col.int32s),
+        .uint64_ => return addUintColumn(u64, i64, df, col, col.int64s),
+        .int32_ => {
             var s = try df.createSeries(i32);
             try s.rename(col.name);
             const vals = col.int32s orelse return;
@@ -57,11 +121,7 @@ fn addColumn(allocator: Allocator, df: *dataframe.Dataframe, col: *const parquet
                 try s.append(if (valid and i < vals.len) vals[i] else 0);
             }
         },
-        .int64 => {
-            // uint_64 spans the full u64 range, so reinterpret the i64 bits.
-            if (col.converted_type) |ct| {
-                if (ct == .uint_64) return addUintColumn(u64, i64, df, col, col.int64s);
-            }
+        .int64_ => {
             var s = try df.createSeries(i64);
             try s.rename(col.name);
             const vals = col.int64s orelse return;
@@ -70,7 +130,7 @@ fn addColumn(allocator: Allocator, df: *dataframe.Dataframe, col: *const parquet
                 try s.append(if (valid and i < vals.len) vals[i] else 0);
             }
         },
-        .float => {
+        .float32_ => {
             var s = try df.createSeries(f32);
             try s.rename(col.name);
             const vals = col.floats orelse return;
@@ -79,7 +139,7 @@ fn addColumn(allocator: Allocator, df: *dataframe.Dataframe, col: *const parquet
                 try s.append(if (valid and i < vals.len) vals[i] else 0);
             }
         },
-        .double => {
+        .float64_ => {
             var s = try df.createSeries(f64);
             try s.rename(col.name);
             const vals = col.doubles orelse return;
@@ -88,10 +148,13 @@ fn addColumn(allocator: Allocator, df: *dataframe.Dataframe, col: *const parquet
                 try s.append(if (valid and i < vals.len) vals[i] else 0);
             }
         },
-        .byte_array, .fixed_len_byte_array => {
+        .string => {
             var s = try df.createSeries(String);
             try s.rename(col.name);
-            const vals = col.byte_arrays orelse return;
+            // .string requires a byte-array-backed physical; a string/json/enum
+            // annotation over another physical is malformed — error rather than
+            // silently producing a 0-row column (width/height desync).
+            const vals = col.byte_arrays orelse return error.UnexpectedPhysicalType;
             for (0..col.num_rows) |i| {
                 const valid = if (col.validity) |v| v[i] else true;
                 if (valid and i < vals.len) {
@@ -101,7 +164,32 @@ fn addColumn(allocator: Allocator, df: *dataframe.Dataframe, col: *const parquet
                 }
             }
         },
-        else => return error.UnsupportedParquetType,
+        .raw => return addRawColumn(allocator, df, col),
+    }
+}
+
+/// Fallback: preserve undecoded bytes + column metadata so the column can be
+/// re-emitted bit-faithfully. Mirrors the String arm's null handling (invalid
+/// rows become empty values — the adapter does not carry validity yet).
+fn addRawColumn(allocator: Allocator, df: *dataframe.Dataframe, col: *const parquet.ParquetColumn) !void {
+    var s = try df.createSeries(Raw);
+    try s.rename(col.name);
+    s.meta = .{
+        .physical_type = col.physical_type,
+        .converted_type = col.converted_type,
+        .logical_type = col.logical_type,
+        .type_length = col.type_length,
+    };
+    // Raw columns are byte-array-backed (INT96/FLBA/BYTE_ARRAY); anything else
+    // reaching here is malformed — error rather than a silent 0-row column.
+    const vals = col.byte_arrays orelse return error.UnexpectedPhysicalType;
+    for (0..col.num_rows) |i| {
+        const valid = if (col.validity) |v| v[i] else true;
+        if (valid and i < vals.len) {
+            try s.append(try Raw.fromSlice(allocator, vals[i]));
+        } else {
+            try s.append(try Raw.fromSlice(allocator, ""));
+        }
     }
 }
 
@@ -188,6 +276,23 @@ fn boxedToColumnData(allocator: Allocator, boxed: *BoxedSeries, string_bufs: *st
                 .name = s.name.toSlice(),
                 .physical_type = .byte_array,
                 .converted_type = .utf8,
+                .byte_arrays = slices,
+                .num_values = s.values.items.len,
+            };
+        },
+        .raw => |s| blk: {
+            // Re-emit the preserved physical type + annotations bit-faithfully.
+            const slices = try allocator.alloc([]const u8, s.values.items.len);
+            for (s.values.items, 0..) |*r, j| {
+                slices[j] = r.toSlice();
+            }
+            try string_bufs.append(allocator, slices);
+            break :blk .{
+                .name = s.name.toSlice(),
+                .physical_type = s.meta.physical_type,
+                .converted_type = s.meta.converted_type,
+                .logical_type = s.meta.logical_type,
+                .type_length = s.meta.type_length,
                 .byte_arrays = slices,
                 .num_values = s.values.items.len,
             };

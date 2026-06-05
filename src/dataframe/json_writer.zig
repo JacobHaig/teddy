@@ -93,6 +93,7 @@ fn isStringSeries(series: *BoxedSeries) bool {
     return switch (series.*) {
         .string => true,
         .bool => true,
+        .raw => true,
         else => false,
     };
 }

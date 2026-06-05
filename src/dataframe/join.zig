@@ -6,6 +6,7 @@ const BoxedSeries = @import("boxed_series.zig").BoxedSeries;
 const Series = @import("series.zig").Series;
 const String = @import("strings.zig").String;
 const GroupByContext = @import("group.zig").GroupByContext;
+const hasMethod = @import("series.zig").hasMethod;
 
 pub const JoinType = enum { inner, left, right, outer };
 
@@ -137,7 +138,7 @@ fn addJoinedColumn(
             for (pairs.items) |pair| {
                 const idx = if (is_left) pair.left else pair.right;
                 if (idx) |i| {
-                    if (comptime ValType == String) {
+                    if (comptime hasMethod(ValType, "clone")) {
                         var cloned = try s.values.items[i].clone();
                         errdefer cloned.deinit();
                         try new_series.values.append(allocator, cloned);
@@ -145,9 +146,11 @@ fn addJoinedColumn(
                         try new_series.values.append(allocator, s.values.items[i]);
                     }
                 } else {
-                    // Null/unmatched row: use default value
-                    if (comptime ValType == String) {
-                        var empty = try String.init(allocator);
+                    // Null/unmatched row: synthesizes a placeholder (empty value
+                    // for owning types, 0/false for scalars) instead of a real
+                    // null — known null-fidelity gap, tracked as roadmap Phase 10.
+                    if (comptime hasMethod(ValType, "init")) {
+                        var empty = try ValType.init(allocator);
                         errdefer empty.deinit();
                         try new_series.values.append(allocator, empty);
                     } else {

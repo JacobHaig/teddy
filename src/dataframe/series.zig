@@ -1,5 +1,6 @@
 const std = @import("std");
 const strings = @import("strings.zig");
+const Raw = @import("raw.zig").Raw;
 
 const BoxedSeries = @import("boxed_series.zig").BoxedSeries;
 const GroupBy = @import("group.zig").GroupBy;
@@ -12,6 +13,25 @@ fn canBeSlice(comptime T: type) bool {
         @typeInfo(@typeInfo(T).pointer.child) == .array and
         @typeInfo(@typeInfo(T).pointer.child).array.child == u8 and
         @typeInfo(@typeInfo(T).pointer.child).array.sentinel_ptr != null;
+}
+
+/// True if T declares `name`. @hasDecl is only legal on container types, so
+/// primitives (i32, f64, bool, ...) safely report false. This drives the value-
+/// type capability convention: deinit/clone/eql/toSlice/format/init/type_name/
+/// ColumnMeta — String, Blob (tests), and Raw opt in by declaring them.
+pub fn hasMethod(comptime T: type, comptime name: []const u8) bool {
+    return switch (@typeInfo(T)) {
+        .@"struct", .@"union", .@"enum", .@"opaque" => @hasDecl(T, name),
+        else => false,
+    };
+}
+
+/// Column-level metadata type for Series(T): value types may declare
+/// `pub const ColumnMeta = struct { ... }` (all fields defaulted). Every other
+/// element type gets a zero-size placeholder.
+pub fn ColumnMetaFor(comptime T: type) type {
+    if (hasMethod(T, "ColumnMeta")) return T.ColumnMeta;
+    return struct {};
 }
 
 // Series struct for holding a single column of data of type T
@@ -28,6 +48,12 @@ pub fn Series(comptime T: type) type {
         /// Optional validity bitmap. null means all values are valid.
         /// When present, validity[i] == false means the value at index i is null/missing.
         validity: ?std.ArrayList(bool) = null,
+        /// Column-level metadata (e.g. Raw's preserved parquet types).
+        /// Zero-size unless T declares ColumnMeta. Propagated by deepCopy/
+        /// filterByIndices/fillNull/shift. clip/replace/replaceSlice/
+        /// fillNullForward/fillNullBackward/dropNulls inherit propagation
+        /// transitively via deepCopy/filterByIndices.
+        meta: ColumnMetaFor(T) = .{},
 
         /// Allocates a new Series on the heap. Caller owns the returned pointer and must call deinit.
         pub fn init(allocator: std.mem.Allocator) !*Self {
@@ -38,6 +64,7 @@ pub fn Series(comptime T: type) type {
             ptr.name = try strings.String.init(allocator);
             ptr.values = try std.ArrayList(T).initCapacity(allocator, 0);
             ptr.validity = null;
+            ptr.meta = .{};
             return ptr;
         }
 
@@ -49,6 +76,7 @@ pub fn Series(comptime T: type) type {
             series_ptr.name = try strings.String.init(allocator);
             series_ptr.values = try std.ArrayList(T).initCapacity(allocator, cap);
             series_ptr.validity = null;
+            series_ptr.meta = .{};
             return series_ptr;
         }
 
@@ -68,7 +96,7 @@ pub fn Series(comptime T: type) type {
 
         /// Deallocates all memory owned by this Series, including all values and the name. After this call, the pointer is invalid.
         pub fn deinit(self: *Self) void {
-            if (comptime T == strings.String) {
+            if (comptime hasMethod(T, "deinit")) {
                 for (self.values.items) |*item| {
                     item.deinit();
                 }
@@ -80,40 +108,46 @@ pub fn Series(comptime T: type) type {
         }
 
         pub fn print(self: *Self) void {
-            switch (comptime T) {
-                strings.String => {
-                    std.debug.print("{s}\n{s}\n--------\n", .{ self.name.toSlice(), "String" });
-                    for (self.values.items) |value| {
-                        std.debug.print("{s}\n", .{value.toSlice()});
-                    }
-                    std.debug.print("\n", .{});
-                },
-
-                f32, f64 => {
-                    std.debug.print("{s}\n{s}\n--------\n", .{ self.name.toSlice(), "Float" });
-                    for (self.values.items) |value| {
-                        std.debug.print("{d}\n", .{value});
-                    }
-                    std.debug.print("\n", .{});
-                },
-                else => {
-                    std.debug.print("{s}\n{s}\n--------\n", .{ self.name.toSlice(), @typeName(T) });
-                    for (self.values.items) |value| {
-                        std.debug.print("{}\n", .{value});
-                    }
-                    std.debug.print("\n", .{});
-                },
+            if (comptime T == strings.String) {
+                std.debug.print("{s}\n{s}\n--------\n", .{ self.name.toSlice(), "String" });
+                for (self.values.items) |value| {
+                    std.debug.print("{s}\n", .{value.toSlice()});
+                }
+                std.debug.print("\n", .{});
+            } else if (comptime hasMethod(T, "format")) {
+                std.debug.print("{s}\n{s}\n--------\n", .{ self.name.toSlice(), type_label });
+                for (self.values.items) |value| {
+                    std.debug.print("{f}\n", .{value});
+                }
+                std.debug.print("\n", .{});
+            } else if (comptime T == f32 or T == f64) {
+                std.debug.print("{s}\n{s}\n--------\n", .{ self.name.toSlice(), "Float" });
+                for (self.values.items) |value| {
+                    std.debug.print("{d}\n", .{value});
+                }
+                std.debug.print("\n", .{});
+            } else {
+                std.debug.print("{s}\n{s}\n--------\n", .{ self.name.toSlice(), @typeName(T) });
+                for (self.values.items) |value| {
+                    std.debug.print("{}\n", .{value});
+                }
+                std.debug.print("\n", .{});
             }
         }
 
         pub fn printAt(self: *Self, n: usize) void {
             // TODO: Check if n is < len
 
-            switch (comptime T) {
-                strings.String => std.debug.print("{s}", .{self.values.items[n].toSlice()}),
-                []const u8 => std.debug.print("{s}", .{self.values.items[n]}),
-                f32, f64 => std.debug.print("{d}", .{self.values.items[n]}),
-                else => std.debug.print("{}", .{self.values.items[n]}),
+            if (comptime T == strings.String) {
+                std.debug.print("{s}", .{self.values.items[n].toSlice()});
+            } else if (comptime hasMethod(T, "format")) {
+                std.debug.print("{f}", .{self.values.items[n]});
+            } else if (comptime T == []const u8) {
+                std.debug.print("{s}", .{self.values.items[n]});
+            } else if (comptime T == f32 or T == f64) {
+                std.debug.print("{d}", .{self.values.items[n]});
+            } else {
+                std.debug.print("{}", .{self.values.items[n]});
             }
         }
 
@@ -126,13 +160,23 @@ pub fn Series(comptime T: type) type {
                 try string.appendSlice("null");
                 return string;
             }
+            // format-capable types (e.g. Raw's hex) have unbounded output —
+            // allocate instead of going through the fixed buffer below.
+            if (comptime hasMethod(T, "format")) {
+                const owned = try std.fmt.allocPrint(self.allocator, "{f}", .{self.values.items[n]});
+                defer self.allocator.free(owned);
+                try string.appendSlice(owned);
+                return string;
+            }
             var buf: [128]u8 = undefined;
-            const slice = switch (comptime T) {
-                strings.String => try std.fmt.bufPrint(&buf, "{s}", .{self.values.items[n].toSlice()}),
-                []const u8 => try std.fmt.bufPrint(&buf, "{s}", .{self.values.items[n]}),
-                f32, f64 => try std.fmt.bufPrint(&buf, "{d}", .{self.values.items[n]}),
-                else => try std.fmt.bufPrint(&buf, "{}", .{self.values.items[n]}),
-            };
+            const slice = if (comptime T == strings.String)
+                try std.fmt.bufPrint(&buf, "{s}", .{self.values.items[n].toSlice()})
+            else if (comptime T == []const u8)
+                try std.fmt.bufPrint(&buf, "{s}", .{self.values.items[n]})
+            else if (comptime T == f32 or T == f64)
+                try std.fmt.bufPrint(&buf, "{d}", .{self.values.items[n]})
+            else
+                try std.fmt.bufPrint(&buf, "{}", .{self.values.items[n]});
             try string.appendSlice(slice);
             return string;
         }
@@ -158,7 +202,7 @@ pub fn Series(comptime T: type) type {
         pub fn getTypeAsString(self: *Self) !strings.String {
             var string = try strings.String.init(self.allocator);
 
-            const value = switch (T) {
+            const value = if (comptime hasMethod(T, "type_name")) T.type_name else switch (T) {
                 strings.String => "String",
                 f32 => "Float32",
                 f64 => "Float64",
@@ -246,14 +290,12 @@ pub fn Series(comptime T: type) type {
                 }
             }
             // Append default value as placeholder (value is irrelevant — validity marks it null).
-            if (comptime T == strings.String) {
-                var empty = try strings.String.init(self.allocator);
+            if (comptime hasMethod(T, "init")) {
+                var empty = try T.init(self.allocator);
                 errdefer empty.deinit();
                 try self.values.append(self.allocator, empty);
-            } else if (comptime T == bool) {
-                try self.values.append(self.allocator, false);
             } else {
-                try self.values.append(self.allocator, @as(T, 0));
+                try self.values.append(self.allocator, std.mem.zeroes(T));
             }
             try self.validity.?.append(self.allocator, false);
         }
@@ -284,12 +326,11 @@ pub fn Series(comptime T: type) type {
         }
 
         pub fn dropRow(self: *Self, index: usize) void {
-            switch (T) {
-                strings.String => {
-                    var a = self.values.orderedRemove(index);
-                    a.deinit();
-                },
-                inline else => _ = self.values.orderedRemove(index),
+            if (comptime hasMethod(T, "deinit")) {
+                var removed = self.values.orderedRemove(index);
+                removed.deinit();
+            } else {
+                _ = self.values.orderedRemove(index);
             }
             if (self.validity) |*v| {
                 _ = v.orderedRemove(index);
@@ -308,6 +349,7 @@ pub fn Series(comptime T: type) type {
             errdefer new_series.deinit();
 
             try new_series.rename(self.name.toSlice());
+            new_series.meta = self.meta;
             try new_series.values.ensureTotalCapacity(self.allocator, self.values.items.len);
             // Copy validity bitmap if present
             if (self.validity) |v| {
@@ -317,16 +359,12 @@ pub fn Series(comptime T: type) type {
                 }
             }
             for (self.values.items) |*value| {
-                switch (comptime T) {
-                    strings.String => {
-                        var new_value = try strings.String.init(self.allocator);
-                        errdefer new_value.deinit();
-                        try new_value.appendSlice(value.toSlice());
-                        try new_series.values.append(self.allocator, new_value);
-                    },
-                    inline else => {
-                        try new_series.values.append(self.allocator, value.*);
-                    },
+                if (comptime hasMethod(T, "clone")) {
+                    var new_value = try value.clone();
+                    errdefer new_value.deinit();
+                    try new_series.values.append(self.allocator, new_value);
+                } else {
+                    try new_series.values.append(self.allocator, value.*);
                 }
             }
 
@@ -336,13 +374,10 @@ pub fn Series(comptime T: type) type {
         pub fn limit(self: *Self, n_limit: usize) void {
             if (n_limit >= self.values.items.len) return;
 
-            switch (comptime T) {
-                strings.String => {
-                    for (n_limit..self.values.items.len) |i| {
-                        self.values.items[i].deinit();
-                    }
-                },
-                else => {},
+            if (comptime hasMethod(T, "deinit")) {
+                for (n_limit..self.values.items.len) |i| {
+                    self.values.items[i].deinit();
+                }
             }
 
             self.values.shrinkAndFree(self.allocator, n_limit);
@@ -359,8 +394,8 @@ pub fn Series(comptime T: type) type {
                 const other_null = other.isNull(index);
                 if (self_null != other_null) return false; // one null, one not
                 if (self_null) continue; // both null — equal, check next
-                if (comptime T == strings.String) {
-                    if (!std.mem.eql(u8, value.toSlice(), other.values.items[index].toSlice())) return false;
+                if (comptime hasMethod(T, "eql")) {
+                    if (!value.eql(&other.values.items[index])) return false;
                 } else {
                     if (value != other.values.items[index]) return false;
                 }
@@ -387,6 +422,7 @@ pub fn Series(comptime T: type) type {
                 f32 => BoxedSeries{ .float32 = self },
                 f64 => BoxedSeries{ .float64 = self },
                 strings.String => BoxedSeries{ .string = self },
+                Raw => BoxedSeries{ .raw = self },
                 // Add other types as needed
                 else => @compileError("Unsupported type " ++ @typeName(T) ++ " for SeriesType conversion"),
             };
@@ -398,12 +434,13 @@ pub fn Series(comptime T: type) type {
             const new_series = try Self.initWithCapacity(self.allocator, indices.len);
             errdefer new_series.deinit();
             try new_series.rename(self.name.toSlice());
+            new_series.meta = self.meta;
             // Copy validity bitmap if present
             if (self.validity != null) {
                 new_series.validity = try std.ArrayList(bool).initCapacity(self.allocator, indices.len);
             }
             for (indices) |idx| {
-                if (comptime T == strings.String) {
+                if (comptime hasMethod(T, "clone")) {
                     var cloned = try self.values.items[idx].clone();
                     errdefer cloned.deinit();
                     try new_series.values.append(self.allocator, cloned);
@@ -432,7 +469,7 @@ pub fn Series(comptime T: type) type {
                 pub fn lessThan(ctx: @This(), a_idx: usize, b_idx: usize) bool {
                     const a = ctx.items_ptr[a_idx];
                     const b = ctx.items_ptr[b_idx];
-                    if (comptime T == strings.String) {
+                    if (comptime hasMethod(T, "toSlice")) {
                         const order = std.mem.order(u8, a.toSlice(), b.toSlice());
                         return if (ctx.asc) order == .lt else order == .gt;
                     } else if (comptime T == bool) {
@@ -465,8 +502,26 @@ pub fn Series(comptime T: type) type {
             return indices;
         }
 
-        const is_numeric = !(T == strings.String or T == bool);
-        const is_float = (T == f32 or T == f64);
+        /// Native int/float element types (incl. f16) opt into numeric ops
+        /// automatically via typeInfo — no capability decl needed.
+        /// NOTE: numeric same-T ops that build via Self.init (cumSum/cumMin/
+        /// cumMax/cumProd/diff/diffLossy) do not propagate `meta`; this is safe
+        /// because meta-bearing types (ColumnMeta) are non-numeric by design —
+        /// revisit if a numeric type ever declares ColumnMeta.
+        pub const is_numeric = switch (@typeInfo(T)) {
+            .int, .float => true,
+            else => false,
+        };
+        const is_float = switch (@typeInfo(T)) {
+            .float => true,
+            else => false,
+        };
+        /// cast/castSafe/castLossy participate only for these.
+        pub const is_castable = is_numeric or T == bool or T == strings.String;
+        /// groupBy keys: hashable + equatable today.
+        pub const is_groupable = is_numeric or T == bool or T == strings.String;
+        /// Display label for print/getTypeAsString.
+        const type_label: []const u8 = if (hasMethod(T, "type_name")) T.type_name else @typeName(T);
 
         /// Returns the sum of all non-null values. Only available for numeric types.
         pub fn sum(self: *Self) T {
@@ -539,9 +594,10 @@ pub fn Series(comptime T: type) type {
             const result = try Self.init(self.allocator);
             errdefer result.deinit();
             try result.rename(self.name.toSlice());
+            result.meta = self.meta;
             for (self.values.items, 0..) |v, i| {
                 if (self.isNull(i)) {
-                    if (comptime T == strings.String) {
+                    if (comptime hasMethod(T, "clone")) {
                         var cloned = try value.clone();
                         errdefer cloned.deinit();
                         try result.values.append(self.allocator, cloned);
@@ -549,7 +605,7 @@ pub fn Series(comptime T: type) type {
                         try result.values.append(self.allocator, value);
                     }
                 } else {
-                    if (comptime T == strings.String) {
+                    if (comptime hasMethod(T, "clone")) {
                         var cloned = try v.clone();
                         errdefer cloned.deinit();
                         try result.values.append(self.allocator, cloned);
@@ -572,7 +628,7 @@ pub fn Series(comptime T: type) type {
                 if (!result.isNull(i)) {
                     last_valid = v.*;
                 } else if (last_valid) |lv| {
-                    if (comptime T == strings.String) {
+                    if (comptime hasMethod(T, "clone")) {
                         v.deinit();
                         v.* = try lv.clone();
                     } else {
@@ -596,7 +652,7 @@ pub fn Series(comptime T: type) type {
                 if (!result.isNull(i)) {
                     next_valid = result.values.items[i];
                 } else if (next_valid) |nv| {
-                    if (comptime T == strings.String) {
+                    if (comptime hasMethod(T, "clone")) {
                         result.values.items[i].deinit();
                         result.values.items[i] = try nv.clone();
                     } else {
@@ -878,13 +934,14 @@ pub fn Series(comptime T: type) type {
             const result = try Self.init(self.allocator);
             errdefer result.deinit();
             try result.rename(self.name.toSlice());
+            result.meta = self.meta;
             const slen = self.values.items.len;
             if (n >= 0) {
                 const sn: usize = @min(@as(usize, @intCast(n)), slen);
                 for (0..sn) |_| try result.appendNull();
                 for (0..slen - sn) |i| {
                     if (self.isNull(i)) try result.appendNull() else {
-                        if (comptime T == strings.String) {
+                        if (comptime hasMethod(T, "clone")) {
                             var cloned = try self.values.items[i].clone();
                             errdefer cloned.deinit();
                             try result.values.append(self.allocator, cloned);
@@ -898,7 +955,7 @@ pub fn Series(comptime T: type) type {
                 const sn: usize = @min(@as(usize, @intCast(-n)), slen);
                 for (sn..slen) |i| {
                     if (self.isNull(i)) try result.appendNull() else {
-                        if (comptime T == strings.String) {
+                        if (comptime hasMethod(T, "clone")) {
                             var cloned = try self.values.items[i].clone();
                             errdefer cloned.deinit();
                             try result.values.append(self.allocator, cloned);
@@ -972,12 +1029,12 @@ pub fn Series(comptime T: type) type {
             errdefer result.deinit();
             for (result.values.items, 0..) |*v, i| {
                 if (result.isNull(i)) continue;
-                const matches = if (comptime T == strings.String)
-                    std.mem.eql(u8, v.toSlice(), old_value.toSlice())
+                const matches = if (comptime hasMethod(T, "eql"))
+                    v.eql(&old_value)
                 else
                     v.* == old_value;
                 if (matches) {
-                    if (comptime T == strings.String) {
+                    if (comptime hasMethod(T, "clone")) {
                         v.deinit();
                         v.* = try new_value.clone();
                     } else {
@@ -995,12 +1052,12 @@ pub fn Series(comptime T: type) type {
             for (result.values.items, 0..) |*v, i| {
                 if (result.isNull(i)) continue;
                 for (pairs) |pair| {
-                    const matches = if (comptime T == strings.String)
-                        std.mem.eql(u8, v.toSlice(), pair[0].toSlice())
+                    const matches = if (comptime hasMethod(T, "eql"))
+                        v.eql(&pair[0])
                     else
                         v.* == pair[0];
                     if (matches) {
-                        if (comptime T == strings.String) {
+                        if (comptime hasMethod(T, "clone")) {
                             v.deinit();
                             v.* = try pair[1].clone();
                         } else {
@@ -1086,7 +1143,7 @@ pub fn isSafeCast(comptime From: type, comptime To: type) bool {
 /// String parsing errors propagate directly.
 fn castValueStrict(comptime From: type, comptime To: type, value: From, allocator: std.mem.Allocator) !To {
     if (comptime From == To) {
-        if (comptime From == strings.String) return value.clone();
+        if (comptime hasMethod(From, "clone")) return value.clone();
         return value;
     }
 
@@ -1148,7 +1205,7 @@ fn castValueStrict(comptime From: type, comptime To: type, value: From, allocato
 /// Only allocation errors propagate.
 fn castValueLossy(comptime From: type, comptime To: type, value: From, allocator: std.mem.Allocator) !?To {
     if (comptime From == To) {
-        if (comptime From == strings.String) return try value.clone();
+        if (comptime hasMethod(From, "clone")) return try value.clone();
         return value;
     }
 

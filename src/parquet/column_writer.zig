@@ -26,6 +26,8 @@ pub const ColumnData = struct {
     name: []const u8,
     physical_type: types.PhysicalType,
     converted_type: ?types.ConvertedType = null,
+    logical_type: ?types.LogicalType = null,
+    type_length: ?i32 = null,
     int32s: ?[]const i32 = null,
     int64s: ?[]const i64 = null,
     floats: ?[]const f32 = null,
@@ -72,7 +74,27 @@ pub fn writeColumn(allocator: Allocator, col: ColumnData, codec: types.Compressi
                 try encoder.writeBooleans(vals);
             }
         },
-        else => return error.UnsupportedType,
+        .fixed_len_byte_array => {
+            // MissingTypeLength = caller forgot the width entirely;
+            // InvalidTypeLength = width present but non-positive (matches reader).
+            const tl = col.type_length orelse return error.MissingTypeLength;
+            if (tl <= 0) return error.InvalidTypeLength;
+            const width: usize = @intCast(tl);
+            if (col.byte_arrays) |vals| {
+                for (vals) |v| {
+                    if (v.len != width) return error.FixedLengthMismatch;
+                    try encoder.writeFixedByteArray(v);
+                }
+            }
+        },
+        .int96 => {
+            if (col.byte_arrays) |vals| {
+                for (vals) |v| {
+                    if (v.len != 12) return error.FixedLengthMismatch;
+                    try encoder.writeFixedByteArray(v);
+                }
+            }
+        },
     }
 
     const uncompressed_data = encoder.written();

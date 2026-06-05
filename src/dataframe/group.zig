@@ -6,6 +6,7 @@ const Series = @import("series.zig").Series;
 const Dataframe = @import("dataframe.zig").Dataframe;
 const BoxedGroupBy = @import("boxed_groupby.zig").BoxedGroupBy;
 const String = @import("strings.zig").String;
+const hasMethod = @import("series.zig").hasMethod;
 
 /// Custom hash map context that supports f32, f64, and String keys
 /// in addition to the types supported by AutoHashMap.
@@ -14,7 +15,7 @@ pub fn GroupByContext(comptime T: type) type {
         const Self = @This();
 
         pub fn hash(_: Self, key: T) u64 {
-            if (comptime T == String) {
+            if (comptime hasMethod(T, "toSlice")) {
                 return std.hash.Wyhash.hash(0, key.toSlice());
             } else if (comptime T == f32) {
                 const bits: u32 = @bitCast(key);
@@ -28,8 +29,8 @@ pub fn GroupByContext(comptime T: type) type {
         }
 
         pub fn eql(_: Self, a: T, b: T) bool {
-            if (comptime T == String) {
-                return std.mem.eql(u8, a.toSlice(), b.toSlice());
+            if (comptime hasMethod(T, "eql")) {
+                return a.eql(&b);
             } else if (comptime T == f32 or T == f64) {
                 const a_bits: if (T == f32) u32 else u64 = @bitCast(a);
                 const b_bits: if (T == f32) u32 else u64 = @bitCast(b);

@@ -12,7 +12,15 @@ reviewed each time) then Build (feature work).
 
 Phases: 1) delete dead `src/root.zig`, 2) Zig-ify `.gitignore`, 3) functions.zig,
 4) strings audit, 5) plan.md triage, 6) parquet reader, 7) JSON fixes,
-8) native Zig serialization format, 9) Python↔Zig regression framework.
+8) native Zig serialization format, 9) Python↔Zig regression framework, plus a
+Hardening Track from the 2026-06-04 full-project review
+(docs/reviews/2026-06-04-full-project-review.md): 10) null correctness,
+11) parquet untrusted-input hardening, 12) bug-fix batch.
+
+Status: 1–5 ✅; 6a–6d-1 ✅; 6d-2a.0 (logical-type infra: thrift LogicalType,
+Series capability convention [[parquet-type-mapping]], Raw fallback) ✅
+2026-06-05. Next: 6d-2a.1 (Date) → .5 per-type slices, then 6d-2b nested
+(separate spec).
 
 **Why:** owner wants the codebase "up to snuff" — remove template cruft, finish
 half-implemented IO, add validation.

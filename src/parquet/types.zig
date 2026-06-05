@@ -41,6 +41,42 @@ pub const ConvertedType = enum(u8) {
     interval = 21,
 };
 
+// ============================================================
+// Modern Logical Types (parquet.thrift LogicalType union, field 10
+// of SchemaElement). ConvertedType above is the legacy 1:1 enum.
+// ============================================================
+
+pub const TimeUnit = enum { millis, micros, nanos };
+
+pub const DecimalParams = struct { scale: i32, precision: i32 };
+pub const TimeParams = struct { is_adjusted_to_utc: bool, unit: TimeUnit };
+pub const TimestampParams = struct { is_adjusted_to_utc: bool, unit: TimeUnit };
+pub const IntParams = struct { bit_width: i8, is_signed: bool };
+
+/// One variant per parquet.thrift LogicalType union field. Parameterless
+/// variants are empty thrift structs on the wire. VARIANT/GEOMETRY/GEOGRAPHY
+/// carry optional fields we don't model yet — they decode by skipping the
+/// payload and re-encode as empty structs (all their fields are optional).
+pub const LogicalType = union(enum) {
+    string, // 1
+    map, // 2
+    list, // 3
+    @"enum", // 4
+    decimal: DecimalParams, // 5
+    date, // 6
+    time: TimeParams, // 7
+    timestamp: TimestampParams, // 8
+    integer: IntParams, // 10
+    unknown, // 11 (NullType)
+    json, // 12
+    bson, // 13
+    uuid, // 14
+    float16, // 15
+    variant, // 16
+    geometry, // 17
+    geography, // 18
+};
+
 pub const FieldRepetitionType = enum(u8) {
     required = 0,
     optional = 1,
@@ -95,6 +131,8 @@ pub const ParquetColumn = struct {
     name: []const u8, // allocator-owned
     physical_type: PhysicalType,
     converted_type: ?ConvertedType,
+    logical_type: ?LogicalType,
+    type_length: ?i32, // non-null only for FIXED_LEN_BYTE_ARRAY
     is_optional: bool,
 
     booleans: ?[]bool,
@@ -130,6 +168,8 @@ pub const ParquetColumn = struct {
             .name = &.{},
             .physical_type = .boolean,
             .converted_type = null,
+            .logical_type = null,
+            .type_length = null,
             .is_optional = false,
             .booleans = null,
             .int32s = null,

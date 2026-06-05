@@ -109,3 +109,44 @@ test "join: missing column returns error" {
 
     try std.testing.expectError(error.ColumnNotFound, join(allocator, left, right, "nope", .inner));
 }
+
+test "join: Raw value column is deep-copied (no double-free)" {
+    // Regression: addJoinedColumn's matched-row arm must clone owning value
+    // types via the capability convention. A shallow copy of Raw.bytes would
+    // double-free on deinit — the testing allocator turns that into a failure.
+    const Raw = @import("raw.zig").Raw;
+    const allocator = std.testing.allocator;
+
+    var left = try Dataframe.init(allocator);
+    defer left.deinit();
+    var k = try left.createSeries(i32);
+    try k.rename("k");
+    try k.append(1);
+    try k.append(2);
+    var payload = try left.createSeries(Raw);
+    try payload.rename("payload");
+    try payload.append(try Raw.fromSlice(allocator, "ab"));
+    try payload.append(try Raw.fromSlice(allocator, "cd"));
+
+    var right = try Dataframe.init(allocator);
+    defer right.deinit();
+    var rk = try right.createSeries(i32);
+    try rk.rename("k");
+    try rk.append(1);
+    try rk.append(2);
+    var v = try right.createSeries(i64);
+    try v.rename("v");
+    try v.append(10);
+    try v.append(20);
+
+    var result = try join(allocator, left, right, "k", .inner);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), result.height());
+    const joined = result.getSeries("payload") orelse return error.TestUnexpectedResult;
+    const joined_raw = joined.raw;
+    try std.testing.expectEqualStrings("ab", joined_raw.values.items[0].toSlice());
+    try std.testing.expectEqualStrings("cd", joined_raw.values.items[1].toSlice());
+    // Deep copy: joined values must not alias the source buffers.
+    try std.testing.expect(joined_raw.values.items[0].bytes.ptr != payload.values.items[0].bytes.ptr);
+}

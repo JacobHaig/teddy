@@ -60,6 +60,13 @@ pub const PlainEncoder = struct {
         try self.buf.appendSlice(self.allocator, data);
     }
 
+    /// Write a FIXED_LEN_BYTE_ARRAY / INT96 value: raw bytes, no length prefix.
+    /// The caller is responsible for validating the value width.
+    /// Contrast with writeByteArray, which prefixes a 4-byte length.
+    pub fn writeFixedByteArray(self: *PlainEncoder, data: []const u8) !void {
+        try self.buf.appendSlice(self.allocator, data);
+    }
+
     /// Write PLAIN-encoded booleans: bit-packed, LSB first.
     pub fn writeBooleans(self: *PlainEncoder, bools: []const bool) !void {
         const num_bytes = (bools.len + 7) / 8;

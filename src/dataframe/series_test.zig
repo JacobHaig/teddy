@@ -1022,3 +1022,184 @@ test "Series.replaceSlice: applies multiple replacements" {
     try std.testing.expectEqual(@as(i32, 2), r.values.items[1]);
     try std.testing.expectEqual(@as(i32, 30), r.values.items[2]);
 }
+
+// --- Capability convention tests (Phase 6d-2a.0, plan Task 7) ---
+
+// Minimal owning value type exercising the capability convention
+// (deinit/clone/eql/toSlice/format/init/type_name/ColumnMeta) without
+// depending on the parquet module.
+const Blob = struct {
+    allocator: std.mem.Allocator,
+    bytes: []u8,
+
+    pub const type_name = "Blob";
+
+    pub const ColumnMeta = struct {
+        tag: u32 = 0,
+    };
+
+    pub fn init(allocator: std.mem.Allocator) !Blob {
+        return .{ .allocator = allocator, .bytes = try allocator.alloc(u8, 0) };
+    }
+
+    pub fn fromSlice(allocator: std.mem.Allocator, data: []const u8) !Blob {
+        return .{ .allocator = allocator, .bytes = try allocator.dupe(u8, data) };
+    }
+
+    pub fn deinit(self: *Blob) void {
+        self.allocator.free(self.bytes);
+    }
+
+    pub fn clone(self: *const Blob) !Blob {
+        return fromSlice(self.allocator, self.bytes);
+    }
+
+    pub fn eql(self: *const Blob, other: *const Blob) bool {
+        return std.mem.eql(u8, self.bytes, other.bytes);
+    }
+
+    pub fn toSlice(self: *const Blob) []const u8 {
+        return self.bytes;
+    }
+
+    pub fn format(self: Blob, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        for (self.bytes) |b| try writer.print("{x:0>2}", .{b});
+    }
+};
+
+test "capability: Series(Blob) owns memory through deinit/dropRow/limit" {
+    const allocator = std.testing.allocator;
+    var s = try Series(Blob).init(allocator);
+    defer s.deinit(); // leak check via testing.allocator
+    try s.rename("blobs");
+    try s.append(try Blob.fromSlice(allocator, "aa"));
+    try s.append(try Blob.fromSlice(allocator, "bb"));
+    try s.append(try Blob.fromSlice(allocator, "cc"));
+    s.dropRow(1); // frees "bb"
+    try std.testing.expectEqual(@as(usize, 2), s.len());
+    s.limit(1); // frees "cc"
+    try std.testing.expectEqual(@as(usize, 1), s.len());
+}
+
+test "capability: deepCopy clones Blob values independently" {
+    const allocator = std.testing.allocator;
+    var s = try Series(Blob).init(allocator);
+    defer s.deinit();
+    try s.append(try Blob.fromSlice(allocator, "abc"));
+    const copy = try s.deepCopy();
+    defer copy.deinit();
+    try std.testing.expect(copy.values.items[0].eql(&s.values.items[0]));
+    try std.testing.expect(copy.values.items[0].bytes.ptr != s.values.items[0].bytes.ptr);
+}
+
+test "capability: compareSeries uses eql; appendNull uses init placeholder" {
+    const allocator = std.testing.allocator;
+    var a = try Series(Blob).init(allocator);
+    defer a.deinit();
+    var b = try Series(Blob).init(allocator);
+    defer b.deinit();
+    try a.append(try Blob.fromSlice(allocator, "xy"));
+    try b.append(try Blob.fromSlice(allocator, "xy"));
+    try a.appendNull();
+    try b.appendNull();
+    try std.testing.expect(a.compareSeries(b));
+    try std.testing.expect(a.isNull(1));
+}
+
+test "capability: filterByIndices, fillNull, shift clone Blob values" {
+    const allocator = std.testing.allocator;
+    var s = try Series(Blob).init(allocator);
+    defer s.deinit();
+    try s.append(try Blob.fromSlice(allocator, "a"));
+    try s.appendNull();
+    try s.append(try Blob.fromSlice(allocator, "c"));
+
+    const filtered = try s.filterByIndices(&.{ 0, 2 });
+    defer filtered.deinit();
+    try std.testing.expectEqual(@as(usize, 2), filtered.len());
+
+    var fill_value = try Blob.fromSlice(allocator, "z");
+    defer fill_value.deinit();
+    const filled = try s.fillNull(fill_value);
+    defer filled.deinit();
+    try std.testing.expect(filled.values.items[1].eql(&fill_value));
+
+    const shifted = try s.shift(1);
+    defer shifted.deinit();
+    try std.testing.expect(shifted.isNull(0));
+    try std.testing.expectEqualStrings("a", shifted.values.items[1].toSlice());
+}
+
+test "capability: asStringAt uses format; getTypeAsString uses type_name" {
+    const allocator = std.testing.allocator;
+    var s = try Series(Blob).init(allocator);
+    defer s.deinit();
+    try s.append(try Blob.fromSlice(allocator, &.{ 0xDE, 0xAD }));
+    var str = try s.asStringAt(0);
+    defer str.deinit();
+    try std.testing.expectEqualStrings("dead", str.toSlice());
+    var tn = try s.getTypeAsString();
+    defer tn.deinit();
+    try std.testing.expectEqualStrings("Blob", tn.toSlice());
+}
+
+test "capability: argSort and uniqueIndices work on Blob via toSlice/eql" {
+    const allocator = std.testing.allocator;
+    var s = try Series(Blob).init(allocator);
+    defer s.deinit();
+    // Distinct values for argSort: sortUnstable gives no order guarantee
+    // between equal keys.
+    try s.append(try Blob.fromSlice(allocator, "c"));
+    try s.append(try Blob.fromSlice(allocator, "a"));
+    try s.append(try Blob.fromSlice(allocator, "b"));
+
+    var order = try s.argSort(allocator, true);
+    defer order.deinit(allocator);
+    try std.testing.expectEqualSlices(usize, &.{ 1, 2, 0 }, order.items);
+
+    // Duplicates are fine for uniqueIndices (first occurrence wins).
+    try s.append(try Blob.fromSlice(allocator, "a"));
+    var uniq = try s.uniqueIndices(allocator);
+    defer uniq.deinit(allocator);
+    try std.testing.expectEqualSlices(usize, &.{ 0, 1, 2 }, uniq.items);
+}
+
+test "capability: ColumnMeta is stored on the series and propagated" {
+    const allocator = std.testing.allocator;
+    var s = try Series(Blob).init(allocator);
+    defer s.deinit();
+    s.meta = .{ .tag = 42 };
+    try s.append(try Blob.fromSlice(allocator, "a"));
+
+    const copy = try s.deepCopy();
+    defer copy.deinit();
+    try std.testing.expectEqual(@as(u32, 42), copy.meta.tag);
+
+    const filtered = try s.filterByIndices(&.{0});
+    defer filtered.deinit();
+    try std.testing.expectEqual(@as(u32, 42), filtered.meta.tag);
+
+    const shifted = try s.shift(0);
+    defer shifted.deinit();
+    try std.testing.expectEqual(@as(u32, 42), shifted.meta.tag);
+}
+
+test "capability: replace on owning type deinits old and clones new" {
+    const allocator = std.testing.allocator;
+    var s = try Series(Blob).init(allocator);
+    defer s.deinit();
+    try s.append(try Blob.fromSlice(allocator, "old"));
+    try s.append(try Blob.fromSlice(allocator, "keep"));
+
+    var old_v = try Blob.fromSlice(allocator, "old");
+    defer old_v.deinit();
+    var new_v = try Blob.fromSlice(allocator, "new");
+    defer new_v.deinit();
+
+    const replaced = try s.replace(old_v, new_v);
+    defer replaced.deinit();
+    try std.testing.expectEqualStrings("new", replaced.values.items[0].toSlice());
+    try std.testing.expectEqualStrings("keep", replaced.values.items[1].toSlice());
+    // independence: replacing didn't alias new_v's buffer
+    try std.testing.expect(replaced.values.items[0].bytes.ptr != new_v.bytes.ptr);
+}

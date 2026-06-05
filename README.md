@@ -297,6 +297,7 @@ src/
     dataframe.zig       — DataFrame: columns, filter, sort, join, groupby, I/O
     series.zig          — Series(T): typed column with null support and casting
     boxed_series.zig    — Type-erased union over all Series(T) variants
+    raw.zig             — Raw fallback column (undecoded parquet payloads)
     boxed_groupby.zig   — Type-erased GroupBy dispatch
     group.zig           — GroupBy(T) aggregation engine
     join.zig            — Inner / left / right / outer join

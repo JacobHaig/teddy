@@ -42,6 +42,240 @@ pub const Statistics = struct {
     }
 };
 
+// ============================================================
+// LogicalType (SchemaElement field 10) — thrift union decode/encode
+// ============================================================
+
+fn decodeTimeUnit(reader: *ThriftReader) !types.TimeUnit {
+    var result: ?types.TimeUnit = null;
+    reader.pushStruct();
+    while (true) {
+        const fh = try reader.readFieldHeader();
+        if (fh.field_type == .stop) break;
+        switch (fh.field_id) {
+            1 => {
+                try reader.skip(fh.field_type);
+                result = .millis;
+            },
+            2 => {
+                try reader.skip(fh.field_type);
+                result = .micros;
+            },
+            3 => {
+                try reader.skip(fh.field_type);
+                result = .nanos;
+            },
+            else => try reader.skip(fh.field_type),
+        }
+    }
+    reader.popStruct();
+    return result orelse error.InvalidLogicalType;
+}
+
+fn decodeDecimalType(reader: *ThriftReader) !types.DecimalParams {
+    var result = types.DecimalParams{ .scale = 0, .precision = 0 };
+    reader.pushStruct();
+    while (true) {
+        const fh = try reader.readFieldHeader();
+        if (fh.field_type == .stop) break;
+        switch (fh.field_id) {
+            1 => result.scale = try reader.readZigZagI32(),
+            2 => result.precision = try reader.readZigZagI32(),
+            else => try reader.skip(fh.field_type),
+        }
+    }
+    reader.popStruct();
+    return result;
+}
+
+fn decodeTimeType(reader: *ThriftReader) !types.TimeParams {
+    var result = types.TimeParams{ .is_adjusted_to_utc = false, .unit = .millis };
+    reader.pushStruct();
+    while (true) {
+        const fh = try reader.readFieldHeader();
+        if (fh.field_type == .stop) break;
+        switch (fh.field_id) {
+            1 => result.is_adjusted_to_utc = fh.field_type == .boolean_true,
+            2 => result.unit = try decodeTimeUnit(reader),
+            else => try reader.skip(fh.field_type),
+        }
+    }
+    reader.popStruct();
+    return result;
+}
+
+fn decodeTimestampType(reader: *ThriftReader) !types.TimestampParams {
+    const t = try decodeTimeType(reader); // identical wire layout
+    return .{ .is_adjusted_to_utc = t.is_adjusted_to_utc, .unit = t.unit };
+}
+
+fn decodeIntType(reader: *ThriftReader) !types.IntParams {
+    var result = types.IntParams{ .bit_width = 0, .is_signed = false };
+    reader.pushStruct();
+    while (true) {
+        const fh = try reader.readFieldHeader();
+        if (fh.field_type == .stop) break;
+        switch (fh.field_id) {
+            1 => result.bit_width = @bitCast(try reader.readByte()),
+            2 => result.is_signed = fh.field_type == .boolean_true,
+            else => try reader.skip(fh.field_type),
+        }
+    }
+    reader.popStruct();
+    return result;
+}
+
+/// Decode the LogicalType thrift union: a struct with one field set (if a
+/// malformed file sets several, the last recognized one wins).
+/// Returns null for union fields we don't recognize (future spec additions),
+/// so callers fall back to converted_type / physical type.
+pub fn decodeLogicalType(reader: *ThriftReader) !?types.LogicalType {
+    var result: ?types.LogicalType = null;
+    reader.pushStruct();
+    while (true) {
+        const fh = try reader.readFieldHeader();
+        if (fh.field_type == .stop) break;
+        switch (fh.field_id) {
+            1 => {
+                try reader.skip(fh.field_type);
+                result = .string;
+            },
+            2 => {
+                try reader.skip(fh.field_type);
+                result = .map;
+            },
+            3 => {
+                try reader.skip(fh.field_type);
+                result = .list;
+            },
+            4 => {
+                try reader.skip(fh.field_type);
+                result = .@"enum";
+            },
+            5 => result = .{ .decimal = try decodeDecimalType(reader) },
+            6 => {
+                try reader.skip(fh.field_type);
+                result = .date;
+            },
+            7 => result = .{ .time = try decodeTimeType(reader) },
+            8 => result = .{ .timestamp = try decodeTimestampType(reader) },
+            10 => result = .{ .integer = try decodeIntType(reader) },
+            11 => {
+                try reader.skip(fh.field_type);
+                result = .unknown;
+            },
+            12 => {
+                try reader.skip(fh.field_type);
+                result = .json;
+            },
+            13 => {
+                try reader.skip(fh.field_type);
+                result = .bson;
+            },
+            14 => {
+                try reader.skip(fh.field_type);
+                result = .uuid;
+            },
+            15 => {
+                try reader.skip(fh.field_type);
+                result = .float16;
+            },
+            16 => {
+                try reader.skip(fh.field_type);
+                result = .variant;
+            },
+            17 => {
+                try reader.skip(fh.field_type);
+                result = .geometry;
+            },
+            18 => {
+                try reader.skip(fh.field_type);
+                result = .geography;
+            },
+            else => try reader.skip(fh.field_type),
+        }
+    }
+    reader.popStruct();
+    return result;
+}
+
+fn encodeEmptyVariant(w: *ThriftWriter, field_id: i16) !void {
+    try w.writeFieldHeader(field_id, .@"struct");
+    w.pushStruct();
+    try w.writeFieldStop();
+    w.popStruct();
+}
+
+fn encodeTimeUnit(w: *ThriftWriter, unit: types.TimeUnit) !void {
+    w.pushStruct();
+    const field_id: i16 = switch (unit) {
+        .millis => 1,
+        .micros => 2,
+        .nanos => 3,
+    };
+    try encodeEmptyVariant(w, field_id);
+    try w.writeFieldStop();
+    w.popStruct();
+}
+
+fn encodeTimeFields(w: *ThriftWriter, is_utc: bool, unit: types.TimeUnit) !void {
+    w.pushStruct();
+    try w.writeBoolField(1, is_utc);
+    try w.writeFieldHeader(2, .@"struct");
+    try encodeTimeUnit(w, unit);
+    try w.writeFieldStop();
+    w.popStruct();
+}
+
+/// Encode the LogicalType thrift union (one field set, then stop).
+pub fn encodeLogicalType(w: *ThriftWriter, lt: types.LogicalType) !void {
+    w.pushStruct();
+    switch (lt) {
+        .string => try encodeEmptyVariant(w, 1),
+        .map => try encodeEmptyVariant(w, 2),
+        .list => try encodeEmptyVariant(w, 3),
+        .@"enum" => try encodeEmptyVariant(w, 4),
+        .decimal => |d| {
+            try w.writeFieldHeader(5, .@"struct");
+            w.pushStruct();
+            try w.writeFieldHeader(1, .i32);
+            try w.writeZigZagI32(d.scale);
+            try w.writeFieldHeader(2, .i32);
+            try w.writeZigZagI32(d.precision);
+            try w.writeFieldStop();
+            w.popStruct();
+        },
+        .date => try encodeEmptyVariant(w, 6),
+        .time => |t| {
+            try w.writeFieldHeader(7, .@"struct");
+            try encodeTimeFields(w, t.is_adjusted_to_utc, t.unit);
+        },
+        .timestamp => |t| {
+            try w.writeFieldHeader(8, .@"struct");
+            try encodeTimeFields(w, t.is_adjusted_to_utc, t.unit);
+        },
+        .integer => |i| {
+            try w.writeFieldHeader(10, .@"struct");
+            w.pushStruct();
+            try w.writeFieldHeader(1, .i8);
+            try w.writeByte(@bitCast(i.bit_width));
+            try w.writeBoolField(2, i.is_signed);
+            try w.writeFieldStop();
+            w.popStruct();
+        },
+        .unknown => try encodeEmptyVariant(w, 11),
+        .json => try encodeEmptyVariant(w, 12),
+        .bson => try encodeEmptyVariant(w, 13),
+        .uuid => try encodeEmptyVariant(w, 14),
+        .float16 => try encodeEmptyVariant(w, 15),
+        .variant => try encodeEmptyVariant(w, 16),
+        .geometry => try encodeEmptyVariant(w, 17),
+        .geography => try encodeEmptyVariant(w, 18),
+    }
+    try w.writeFieldStop();
+    w.popStruct();
+}
+
 pub const SchemaElement = struct {
     type_: ?types.PhysicalType = null,
     type_length: ?i32 = null,
@@ -52,6 +286,7 @@ pub const SchemaElement = struct {
     scale: ?i32 = null,
     precision: ?i32 = null,
     field_id: ?i32 = null,
+    logical_type: ?types.LogicalType = null,
 
     pub fn decode(reader: *ThriftReader) !SchemaElement {
         var result = SchemaElement{};
@@ -69,7 +304,7 @@ pub const SchemaElement = struct {
                 7 => result.scale = try reader.readZigZagI32(),
                 8 => result.precision = try reader.readZigZagI32(),
                 9 => result.field_id = try reader.readZigZagI32(),
-                10 => try reader.skip(fh.field_type),
+                10 => result.logical_type = try decodeLogicalType(reader),
                 else => try reader.skip(fh.field_type),
             }
         }
@@ -82,6 +317,10 @@ pub const SchemaElement = struct {
         if (self.type_) |t| {
             try w.writeFieldHeader(1, .i32);
             try w.writeZigZagI32(@intCast(@intFromEnum(t)));
+        }
+        if (self.type_length) |tl| {
+            try w.writeFieldHeader(2, .i32);
+            try w.writeZigZagI32(tl);
         }
         if (self.repetition_type) |r| {
             try w.writeFieldHeader(3, .i32);
@@ -96,6 +335,10 @@ pub const SchemaElement = struct {
         if (self.converted_type) |ct| {
             try w.writeFieldHeader(6, .i32);
             try w.writeZigZagI32(@intCast(@intFromEnum(ct)));
+        }
+        if (self.logical_type) |lt| {
+            try w.writeFieldHeader(10, .@"struct");
+            try encodeLogicalType(w, lt);
         }
         try w.writeFieldStop();
         w.popStruct();
@@ -838,6 +1081,121 @@ test "FileMetaData decode: with created_by" {
     var fmd = try FileMetaData.decode(&reader, allocator);
     defer fmd.deinit(allocator);
     try std.testing.expectEqualStrings("test", fmd.created_by.?);
+}
+
+test "SchemaElement decode: field 10 logical_type (DATE)" {
+    const data = [_]u8{
+        0x15, 0x02, // field 1: type = INT32 (zigzag(1)=2)
+        0x25, 0x00, // field 3: repetition = required
+        0x18, 0x01, 'd', // field 4: name = "d"
+        0x6C, // field 10 header (delta 6 from field 4, struct)
+        0x6C, 0x00, 0x00, // LogicalType union: DATE variant + stop
+        0x00, // SchemaElement stop
+    };
+    var reader = ThriftReader.init(&data);
+    const elem = try SchemaElement.decode(&reader);
+    try std.testing.expectEqualStrings("d", elem.name);
+    try std.testing.expect(elem.logical_type.? == .date);
+}
+
+test "SchemaElement encode/decode round-trip: logical_type + type_length" {
+    const allocator = std.testing.allocator;
+    const orig = SchemaElement{
+        .type_ = .fixed_len_byte_array,
+        .type_length = 16,
+        .repetition_type = .required,
+        .name = "u",
+        .logical_type = .uuid,
+    };
+    var w = ThriftWriter.init(allocator);
+    defer w.deinit();
+    try orig.encode(&w);
+    var r = ThriftReader.init(w.written());
+    const decoded = try SchemaElement.decode(&r);
+    try std.testing.expectEqual(@as(i32, 16), decoded.type_length.?);
+    try std.testing.expect(decoded.logical_type.? == .uuid);
+    try std.testing.expectEqual(orig.type_.?, decoded.type_.?);
+}
+
+test "LogicalType encode/decode round-trip: every variant" {
+    const allocator = std.testing.allocator;
+    const cases = [_]types.LogicalType{
+        .string,                                                              .map,
+        .list,                                                                .@"enum",
+        .{ .decimal = .{ .scale = 2, .precision = 38 } },                     .date,
+        .{ .time = .{ .is_adjusted_to_utc = false, .unit = .millis } },
+        .{ .timestamp = .{ .is_adjusted_to_utc = true, .unit = .nanos } },
+        .{ .integer = .{ .bit_width = 64, .is_signed = false } },             .unknown,
+        .json,                                                                .bson,
+        .uuid,                                                                .float16,
+        .variant,                                                             .geometry,
+        .geography,
+    };
+    for (cases) |orig| {
+        var w = ThriftWriter.init(allocator);
+        defer w.deinit();
+        try encodeLogicalType(&w, orig);
+        var r = ThriftReader.init(w.written());
+        const decoded = (try decodeLogicalType(&r)) orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqualDeep(orig, decoded);
+    }
+}
+
+test "decodeLogicalType: DATE (empty variant)" {
+    // union field 6 (DateType, empty struct), then union stop
+    const data = [_]u8{ 0x6C, 0x00, 0x00 };
+    var reader = ThriftReader.init(&data);
+    const lt = (try decodeLogicalType(&reader)).?;
+    try std.testing.expect(lt == .date);
+}
+
+test "decodeLogicalType: unknown union field returns null" {
+    // field 99 (unknown, empty struct), then union stop
+    const data = [_]u8{ 0x0C, 0xC6, 0x01, 0x00, 0x00 };
+    var reader = ThriftReader.init(&data);
+    try std.testing.expectEqual(@as(?types.LogicalType, null), try decodeLogicalType(&reader));
+}
+
+test "decodeLogicalType: TIME with missing unit returns error" {
+    // field 7 (TimeType): field 1 bool_true, field 2 empty TimeUnit struct (no variant)
+    const data = [_]u8{ 0x7C, 0x11, 0x1C, 0x00, 0x00, 0x00 };
+    var reader = ThriftReader.init(&data);
+    try std.testing.expectError(error.InvalidLogicalType, decodeLogicalType(&reader));
+}
+
+test "decodeLogicalType: truncated input returns error" {
+    // DECIMAL header then EOF mid-struct
+    const data = [_]u8{ 0x5C, 0x15 };
+    var reader = ThriftReader.init(&data);
+    try std.testing.expectError(error.UnexpectedEof, decodeLogicalType(&reader));
+}
+
+test "decodeLogicalType: TIMESTAMP(utc=true, micros)" {
+    // field 8 struct; inner: field 1 bool_true, field 2 TimeUnit union
+    //   TimeUnit: field 2 (MICROS) empty struct
+    const data = [_]u8{ 0x8C, 0x11, 0x1C, 0x2C, 0x00, 0x00, 0x00, 0x00 };
+    var reader = ThriftReader.init(&data);
+    const lt = (try decodeLogicalType(&reader)).?;
+    try std.testing.expectEqual(true, lt.timestamp.is_adjusted_to_utc);
+    try std.testing.expectEqual(types.TimeUnit.micros, lt.timestamp.unit);
+}
+
+test "decodeLogicalType: DECIMAL(scale=2, precision=10)" {
+    // field 5 struct; inner: field 1 scale zigzag(2)=4, field 2 precision zigzag(10)=20
+    const data = [_]u8{ 0x5C, 0x15, 0x04, 0x15, 0x14, 0x00, 0x00 };
+    var reader = ThriftReader.init(&data);
+    const lt = (try decodeLogicalType(&reader)).?;
+    try std.testing.expectEqual(@as(i32, 2), lt.decimal.scale);
+    try std.testing.expectEqual(@as(i32, 10), lt.decimal.precision);
+}
+
+test "decodeLogicalType: INTEGER(bit_width=16, signed)" {
+    // field 10 struct; inner: field 1 i8 (raw byte 16), field 2 bool_true
+    const data = [_]u8{ 0xAC, 0x13, 0x10, 0x11, 0x00, 0x00 };
+    var reader = ThriftReader.init(&data);
+    const lt = (try decodeLogicalType(&reader)).?;
+    try std.testing.expectEqual(@as(i8, 16), lt.integer.bit_width);
+    try std.testing.expectEqual(true, lt.integer.is_signed);
 }
 
 test "FileMetaData encode/decode round-trip" {

@@ -29,12 +29,14 @@ pub fn writeParquet(allocator: Allocator, columns: []const ColumnData, options: 
 
     // Write each column chunk
     var col_results = try allocator.alloc(column_writer.ColumnWriteResult, columns.len);
+    var col_results_written: usize = 0;
     defer {
-        for (col_results) |*cr| cr.deinit();
+        for (col_results[0..col_results_written]) |*cr| cr.deinit();
         allocator.free(col_results);
     }
     for (columns, 0..) |col, i| {
         col_results[i] = try column_writer.writeColumn(allocator, col, options.compression);
+        col_results_written = i + 1;
     }
 
     // Build schema elements: root + one per column
@@ -44,9 +46,11 @@ pub fn writeParquet(allocator: Allocator, columns: []const ColumnData, options: 
     for (columns, 0..) |col, i| {
         schema[i + 1] = .{
             .type_ = col.physical_type,
+            .type_length = col.type_length,
             .repetition_type = .required,
             .name = col.name,
             .converted_type = col.converted_type,
+            .logical_type = col.logical_type,
         };
     }
 
@@ -232,4 +236,87 @@ test "writeParquet: empty file" {
 
     try std.testing.expectEqualStrings("PAR1", output[0..4]);
     try std.testing.expectEqualStrings("PAR1", output[output.len - 4 ..]);
+}
+
+test "writeParquet: FIXED_LEN_BYTE_ARRAY round-trip with type_length" {
+    const allocator = std.testing.allocator;
+    const vals = [_][]const u8{ "abcd", "efgh" };
+    const cols = [_]ColumnData{.{
+        .name = "fb",
+        .physical_type = .fixed_len_byte_array,
+        .type_length = 4,
+        .byte_arrays = &vals,
+        .num_values = 2,
+    }};
+    const output = try writeParquet(allocator, &cols, .{});
+    defer allocator.free(output);
+
+    var result = try reader_mod.readParquet(allocator, output);
+    defer result.deinit();
+    try std.testing.expectEqual(types.PhysicalType.fixed_len_byte_array, result.columns[0].physical_type);
+    try std.testing.expectEqual(@as(i32, 4), result.columns[0].type_length.?);
+    try std.testing.expectEqualStrings("abcd", result.columns[0].byte_arrays.?[0]);
+    try std.testing.expectEqualStrings("efgh", result.columns[0].byte_arrays.?[1]);
+}
+
+test "writeParquet: INT96 round-trip preserves raw 12-byte values" {
+    const allocator = std.testing.allocator;
+    const v1 = [_]u8{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 };
+    const v2 = [_]u8{ 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1 };
+    const vals = [_][]const u8{ &v1, &v2 };
+    const cols = [_]ColumnData{.{
+        .name = "t",
+        .physical_type = .int96,
+        .byte_arrays = &vals,
+        .num_values = 2,
+    }};
+    const output = try writeParquet(allocator, &cols, .{});
+    defer allocator.free(output);
+
+    var result = try reader_mod.readParquet(allocator, output);
+    defer result.deinit();
+    try std.testing.expectEqual(types.PhysicalType.int96, result.columns[0].physical_type);
+    try std.testing.expectEqualSlices(u8, &v1, result.columns[0].byte_arrays.?[0]);
+    try std.testing.expectEqualSlices(u8, &v2, result.columns[0].byte_arrays.?[1]);
+}
+
+test "writeParquet: FLBA value width mismatch errors" {
+    const allocator = std.testing.allocator;
+    const vals = [_][]const u8{"abc"}; // 3 bytes, width says 4
+    const cols = [_]ColumnData{.{
+        .name = "fb",
+        .physical_type = .fixed_len_byte_array,
+        .type_length = 4,
+        .byte_arrays = &vals,
+        .num_values = 1,
+    }};
+    try std.testing.expectError(error.FixedLengthMismatch, writeParquet(allocator, &cols, .{}));
+}
+
+test "writeParquet: INT96 value width mismatch errors" {
+    const allocator = std.testing.allocator;
+    const v = [_]u8{ 1, 2, 3 }; // 3 bytes, not 12
+    const vals = [_][]const u8{&v};
+    const cols = [_]ColumnData{.{ .name = "t", .physical_type = .int96, .byte_arrays = &vals, .num_values = 1 }};
+    try std.testing.expectError(error.FixedLengthMismatch, writeParquet(allocator, &cols, .{}));
+}
+
+test "writeParquet: logical_type lands in the schema and reads back" {
+    const allocator = std.testing.allocator;
+    const vals = [_]i32{ 18262, 18263 };
+    const cols = [_]ColumnData{.{
+        .name = "d",
+        .physical_type = .int32,
+        .converted_type = .date,
+        .logical_type = .date,
+        .int32s = &vals,
+        .num_values = 2,
+    }};
+    const output = try writeParquet(allocator, &cols, .{});
+    defer allocator.free(output);
+
+    var result = try reader_mod.readParquet(allocator, output);
+    defer result.deinit();
+    try std.testing.expect(result.columns[0].logical_type.? == .date);
+    try std.testing.expectEqual(types.ConvertedType.date, result.columns[0].converted_type.?);
 }

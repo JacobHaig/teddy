@@ -81,6 +81,8 @@ fn readLeafConcat(
     col.name = name_copy;
     col.physical_type = leaf.schema_element.type_ orelse .byte_array;
     col.converted_type = leaf.schema_element.converted_type;
+    col.logical_type = leaf.schema_element.logical_type;
+    col.type_length = leaf.schema_element.type_length;
     col.is_optional = leaf.max_def_level > 0;
     col.num_rows = total_rows;
 
@@ -203,6 +205,29 @@ fn resolveSchema(allocator: Allocator, schema: []const metadata.SchemaElement) !
 // ============================================================
 // Tests
 // ============================================================
+
+test "readParquet: logical_type and type_length surface on ParquetColumn" {
+    const allocator = std.testing.allocator;
+    const cwd = std.Io.Dir.cwd();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const file_data = try cwd.readFileAlloc(io, "data/logical_annotations.parquet", allocator, .unlimited);
+    defer allocator.free(file_data);
+
+    var result = try readParquet(allocator, file_data);
+    defer result.deinit();
+
+    try std.testing.expect(result.columns[0].logical_type.? == .date);
+    try std.testing.expect(result.columns[3].logical_type.? == .decimal);
+    try std.testing.expect(result.columns[1].logical_type.? == .time);
+    try std.testing.expect(result.columns[2].logical_type.? == .timestamp);
+
+    // flba.parquet: FIXED_LEN_BYTE_ARRAY(4) → type_length must surface too
+    const flba_data = try cwd.readFileAlloc(io, "data/flba.parquet", allocator, .unlimited);
+    defer allocator.free(flba_data);
+    var flba = try readParquet(allocator, flba_data);
+    defer flba.deinit();
+    try std.testing.expectEqual(@as(i32, 4), flba.columns[0].type_length.?);
+}
 
 test "readParquet: multi-row-group file concatenates all row groups" {
     const allocator = std.testing.allocator;
@@ -440,6 +465,38 @@ test "resolveSchema: single column" {
 
     try std.testing.expectEqual(@as(usize, 1), leaves.len);
     try std.testing.expectEqualStrings("only_col", leaves[0].schema_element.name);
+}
+
+test "FileMetaData: logical_annotations.parquet parses LogicalType (field 10)" {
+    const allocator = std.testing.allocator;
+    const cwd = std.Io.Dir.cwd();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const file_data = try cwd.readFileAlloc(io, "data/logical_annotations.parquet", allocator, .unlimited);
+    defer allocator.free(file_data);
+
+    // Footer: [...data...][footer][4-byte LE len]["PAR1"]
+    const footer_len: usize = @intCast(std.mem.readInt(u32, file_data[file_data.len - 8 ..][0..4], .little));
+    if (footer_len + 8 > file_data.len) return error.TestUnexpectedResult;
+    const footer_start = file_data.len - 8 - footer_len;
+    var thrift_reader = ThriftReader.init(file_data[footer_start .. footer_start + footer_len]);
+    var fmd = try metadata.FileMetaData.decode(&thrift_reader, allocator);
+    defer fmd.deinit(allocator);
+
+    // schema[0] is the root; leaves follow in column order d, t, ts, dec.
+    try std.testing.expectEqual(@as(usize, 5), fmd.schema.len);
+    try std.testing.expect(fmd.schema[1].logical_type.? == .date);
+    try std.testing.expectEqualDeep(
+        types.TimeParams{ .is_adjusted_to_utc = false, .unit = .micros },
+        fmd.schema[2].logical_type.?.time,
+    );
+    try std.testing.expectEqualDeep(
+        types.TimestampParams{ .is_adjusted_to_utc = true, .unit = .micros },
+        fmd.schema[3].logical_type.?.timestamp,
+    );
+    try std.testing.expectEqualDeep(
+        types.DecimalParams{ .scale = 2, .precision = 10 },
+        fmd.schema[4].logical_type.?.decimal,
+    );
 }
 
 test "readParquet: invalid magic returns error" {

@@ -10,6 +10,7 @@ sourced (parquet-cpp-arrow) and have NO generator here — do not delete them.
 """
 
 import datetime as dt
+from decimal import Decimal as PyDecimal
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -62,8 +63,25 @@ def unsigned_ints():
     print("data/unsigned.parquet: UINT_32 + UINT_64, 3 rows")
 
 
+def logical_annotations():
+    # Modern LogicalType annotations (SchemaElement field 10) on scalar columns.
+    # 6d-2a.0 only asserts the footer parses these; value-level decode lands in
+    # slices 6d-2a.1-.5. pyarrow also writes the legacy converted_type alongside.
+    tbl = pa.table({
+        "d":   pa.array([dt.date(2020, 1, 1), dt.date(2021, 6, 15)], type=pa.date32()),
+        # time without tz -> is_adjusted_to_utc=false
+        "t":   pa.array([dt.time(1, 2, 3), dt.time(4, 5, 6)], type=pa.time64("us")),
+        "ts":  pa.array([dt.datetime(2020, 1, 1, 12, 0, 0),
+                         dt.datetime(2021, 6, 15, 8, 30, 0)], type=pa.timestamp("us", tz="UTC")),
+        "dec": pa.array([PyDecimal("12345678.90"), PyDecimal("-0.01")], type=pa.decimal128(10, 2)),
+    })
+    pq.write_table(tbl, "data/logical_annotations.parquet", compression=None)
+    print("data/logical_annotations.parquet: DATE/TIME/TIMESTAMP/DECIMAL logical types, 2 rows")
+
+
 if __name__ == "__main__":
     multi_rowgroup()
     fixed_len_byte_array()
     int96_timestamps()
     unsigned_ints()
+    logical_annotations()

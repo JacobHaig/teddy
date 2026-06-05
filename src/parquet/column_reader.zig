@@ -244,6 +244,8 @@ fn buildColumn(
 
     col.physical_type = leaf.schema_element.type_ orelse .byte_array;
     col.converted_type = leaf.schema_element.converted_type;
+    col.logical_type = leaf.schema_element.logical_type;
+    col.type_length = leaf.schema_element.type_length;
     col.is_optional = leaf.max_def_level > 0;
     col.num_rows = num_rows;
 

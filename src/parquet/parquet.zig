@@ -20,6 +20,8 @@ pub const ParquetResult = types.ParquetResult;
 pub const PhysicalType = types.PhysicalType;
 pub const ConvertedType = types.ConvertedType;
 pub const CompressionCodec = types.CompressionCodec;
+pub const LogicalType = types.LogicalType;
+pub const TimeUnit = types.TimeUnit;
 
 // Pull in tests from all submodules
 test {

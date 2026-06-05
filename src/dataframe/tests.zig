@@ -11,4 +11,6 @@ comptime {
     _ = @import("json_reader_test.zig");
     _ = @import("join_test.zig");
     _ = @import("writer_test.zig");
+    _ = @import("raw.zig");
+    _ = @import("parquet_test.zig");
 }
