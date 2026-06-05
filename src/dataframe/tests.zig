@@ -18,5 +18,7 @@ comptime {
     _ = @import("decimal.zig");
     _ = @import("binary.zig");
     _ = @import("fixed_bytes.zig");
+    _ = @import("uuid.zig");
+    _ = @import("interval.zig");
     _ = @import("parquet_test.zig");
 }

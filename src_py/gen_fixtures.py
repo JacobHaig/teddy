@@ -131,6 +131,23 @@ def binary_kinds():
     print(f"  parquet schema: {pq_schema}")
 
 
+def uuid_f16():
+    # FLBA(16)+UUID logical annotation and FLBA(2)+FLOAT16 logical annotation.
+    # pyarrow 24+ supports pa.uuid() (FLBA(16)+UUID) and pa.float16() (FLBA(2)+FLOAT16).
+    import uuid as _uuid
+    u1 = _uuid.UUID("01234567-89ab-cdef-0123-456789abcdef")
+    u2 = _uuid.UUID("ffffffff-0000-1111-2222-333333333333")
+    tbl = pa.table({
+        "u": pa.array([u1.bytes, u2.bytes], type=pa.uuid()),
+        "h": pa.array([1.5, -0.25], type=pa.float16()),
+    })
+    pq.write_table(tbl, "data/uuid_f16.parquet", compression=None)
+    pf = pq.ParquetFile("data/uuid_f16.parquet")
+    pq_schema = pf.schema
+    print("data/uuid_f16.parquet: UUID + FLOAT16, 2 rows")
+    print(f"  parquet schema: {pq_schema}")
+
+
 if __name__ == "__main__":
     multi_rowgroup()
     fixed_len_byte_array()
@@ -140,3 +157,4 @@ if __name__ == "__main__":
     time_units()
     decimals()
     binary_kinds()
+    uuid_f16()

@@ -2,6 +2,8 @@ const std = @import("std");
 const Series = @import("series.zig").Series;
 const strings = @import("strings.zig");
 const String = strings.String;
+const Dataframe = @import("dataframe.zig").Dataframe;
+const json_writer = @import("json_writer.zig");
 
 // --- filterByIndices Tests ---
 
@@ -1281,4 +1283,129 @@ test "Date: indicesWhere .eq via BoxedSeries" {
     try std.testing.expectEqual(@as(usize, 2), indices.items.len);
     try std.testing.expectEqual(@as(usize, 0), indices.items[0]);
     try std.testing.expectEqual(@as(usize, 2), indices.items[1]);
+}
+
+// --- Float16 (f16) Tests ---
+
+test "Series(f16): sum/mean/min/max through BoxedSeries" {
+    const allocator = std.testing.allocator;
+    var s = try Series(f16).init(allocator);
+    defer s.deinit();
+    try s.rename("vals");
+    try s.append(1.5);
+    try s.append(2.5);
+    try s.append(3.0);
+
+    var bs = s.toBoxedSeries();
+    try std.testing.expectEqual(@as(f64, 7.0), bs.sum().?);
+    try std.testing.expectEqual(@as(f64, 7.0 / 3.0), bs.mean().?);
+    try std.testing.expectEqual(@as(f64, 1.5), bs.min().?);
+    try std.testing.expectEqual(@as(f64, 3.0), bs.max().?);
+}
+
+test "BoxedSeries: cumSum works on f16" {
+    const allocator = std.testing.allocator;
+    var s = try Series(f16).init(allocator);
+    defer s.deinit();
+    try s.rename("vals");
+    try s.append(1.5);
+    try s.append(2.5);
+    try s.append(3.0);
+
+    var bs = s.toBoxedSeries();
+    var cum = try bs.cumSum();
+    defer cum.deinit();
+
+    const out = cum.float16;
+    try std.testing.expectEqual(@as(f16, 1.5), out.values.items[0]);
+    try std.testing.expectEqual(@as(f16, 4.0), out.values.items[1]);
+    try std.testing.expectEqual(@as(f16, 7.0), out.values.items[2]);
+}
+
+test "Series(f16): argSort" {
+    const allocator = std.testing.allocator;
+    var s = try Series(f16).init(allocator);
+    defer s.deinit();
+    try s.rename("vals");
+    try s.append(3.0);
+    try s.append(1.5);
+    try s.append(2.5);
+
+    var indices = try s.argSort(allocator, true);
+    defer indices.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), indices.items[0]);
+    try std.testing.expectEqual(@as(usize, 2), indices.items[1]);
+    try std.testing.expectEqual(@as(usize, 0), indices.items[2]);
+}
+
+test "Series(f16): getTypeAsString is Float16" {
+    const allocator = std.testing.allocator;
+    var s = try Series(f16).init(allocator);
+    defer s.deinit();
+    var ts = try s.getTypeAsString();
+    defer ts.deinit();
+    try std.testing.expectEqualStrings("Float16", ts.toSlice());
+}
+
+test "Series(f16): asStringAt renders decimal" {
+    const allocator = std.testing.allocator;
+    var s = try Series(f16).init(allocator);
+    defer s.deinit();
+    try s.append(1.5);
+    var v = try s.asStringAt(0);
+    defer v.deinit();
+    try std.testing.expectEqualStrings("1.5", v.toSlice());
+}
+
+test "GroupBy: f16 key column count" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var key = try df.createSeries(f16);
+    try key.rename("k");
+    try key.append(1.5);
+    try key.append(2.5);
+    try key.append(1.5);
+    try key.append(2.5);
+    try key.append(1.5);
+
+    var vals = try df.createSeries(i64);
+    try vals.rename("v");
+    try vals.append(10);
+    try vals.append(20);
+    try vals.append(30);
+    try vals.append(40);
+    try vals.append(50);
+
+    var gb = try df.groupBy("k");
+    defer gb.deinit();
+
+    var counts = try gb.count();
+    defer counts.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), counts.height());
+    const count_series = counts.getSeries("count") orelse return error.DoesNotExist;
+    const a = count_series.usize.values.items[0];
+    const b = count_series.usize.values.items[1];
+    try std.testing.expect((a == 3 and b == 2) or (a == 2 and b == 3));
+}
+
+test "json_writer: f16 column writes unquoted numbers" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var col = try df.createSeries(f16);
+    try col.rename("x");
+    try col.append(1.5);
+    try col.append(2.0);
+
+    const output = try json_writer.writeToString(allocator, df, .rows);
+    defer allocator.free(output);
+
+    // numeric, not string: contains :1.5 not :"1.5"
+    try std.testing.expect(std.mem.indexOf(u8, output, ":1.5") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"1.5\"") == null);
 }

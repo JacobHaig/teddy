@@ -58,14 +58,16 @@ Sub-phases:
 - **6d-1 — Unsigned INT mapping ✅** — bridge now maps `uint_32`→`u32` and
   `uint_64`→`u64` via full-range bitcast (was silently read as signed). Fixture
   `data/unsigned.parquet` + bridge test.
-- **6d-2a — New scalar Series types 🟡 designed** — add Date/Time/Timestamp/
+- **6d-2a — New scalar Series types ✅ COMPLETE (2026-06-05)** — add Date/Time/Timestamp/
   Decimal/Binary/FixedBytes/Uuid/Interval/Float16 as distinct types + variants;
   parse the modern `LogicalType` union (SchemaElement field 10); full lossless
   round-trip; rich per-type ops; `Raw` fallback for deferred types. Design approved,
   spec at `docs/superpowers/specs/2026-06-04-parquet-scalar-logical-types-design.md`.
-  Implement as per-type vertical slices (6d-2a.0 infra ✅ → .1 Date ✅ →
-  .2 Timestamp/Time ✅ → .3 Decimal ✅ → .4 Binary/FixedBytes ✅ → .5 Uuid/
-  Interval/Float16). Unannotated BYTE_ARRAY/FLBA now read as Binary/FixedBytes
+  Implemented as per-type vertical slices, ALL DONE (6d-2a.0 infra ✅ →
+  .1 Date ✅ → .2 Timestamp/Time ✅ → .3 Decimal ✅ → .4 Binary/FixedBytes ✅ →
+  .5 Uuid/Interval/Float16 ✅). Every scalar row of the spec's type table is
+  implemented; FLOAT16 is native Series(f16) and participates in numeric
+  aggregations + GroupBy. Unannotated BYTE_ARRAY/FLBA now read as Binary/FixedBytes
   (String requires a UTF8/ENUM/JSON annotation — deliberate behavior change in
   .4). Decimal is i256-backed (precision ≤ 76) across all three
   physicals (INT32/INT64/FLBA) with scale-aware strict arithmetic. INT96 now

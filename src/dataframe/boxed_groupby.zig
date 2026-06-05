@@ -23,6 +23,7 @@ pub const BoxedGroupBy = union(enum) {
     isize: *GroupBy(isize),
     float32: *GroupBy(f32),
     float64: *GroupBy(f64),
+    float16: *GroupBy(f16),
     string: *GroupBy(String),
 
     pub fn deinit(self: *Self) void {

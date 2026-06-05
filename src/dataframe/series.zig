@@ -7,6 +7,8 @@ const Timestamp = @import("timestamp.zig").Timestamp;
 const Decimal = @import("decimal.zig").Decimal;
 const Binary = @import("binary.zig").Binary;
 const FixedBytes = @import("fixed_bytes.zig").FixedBytes;
+const Uuid = @import("uuid.zig").Uuid;
+const Interval = @import("interval.zig").Interval;
 
 const BoxedSeries = @import("boxed_series.zig").BoxedSeries;
 const GroupBy = @import("group.zig").GroupBy;
@@ -128,7 +130,7 @@ pub fn Series(comptime T: type) type {
                     std.debug.print("{f}\n", .{value});
                 }
                 std.debug.print("\n", .{});
-            } else if (comptime T == f32 or T == f64) {
+            } else if (comptime T == f16 or T == f32 or T == f64) {
                 std.debug.print("{s}\n{s}\n--------\n", .{ self.name.toSlice(), "Float" });
                 for (self.values.items) |value| {
                     std.debug.print("{d}\n", .{value});
@@ -152,7 +154,7 @@ pub fn Series(comptime T: type) type {
                 std.debug.print("{f}", .{self.values.items[n]});
             } else if (comptime T == []const u8) {
                 std.debug.print("{s}", .{self.values.items[n]});
-            } else if (comptime T == f32 or T == f64) {
+            } else if (comptime T == f16 or T == f32 or T == f64) {
                 std.debug.print("{d}", .{self.values.items[n]});
             } else {
                 std.debug.print("{}", .{self.values.items[n]});
@@ -181,7 +183,7 @@ pub fn Series(comptime T: type) type {
                 try std.fmt.bufPrint(&buf, "{s}", .{self.values.items[n].toSlice()})
             else if (comptime T == []const u8)
                 try std.fmt.bufPrint(&buf, "{s}", .{self.values.items[n]})
-            else if (comptime T == f32 or T == f64)
+            else if (comptime T == f16 or T == f32 or T == f64)
                 try std.fmt.bufPrint(&buf, "{d}", .{self.values.items[n]})
             else
                 try std.fmt.bufPrint(&buf, "{}", .{self.values.items[n]});
@@ -214,6 +216,7 @@ pub fn Series(comptime T: type) type {
                 strings.String => "String",
                 f32 => "Float32",
                 f64 => "Float64",
+                f16 => "Float16",
                 bool => "Bool",
                 u8 => "UInt8",
                 u16 => "UInt16",
@@ -429,6 +432,7 @@ pub fn Series(comptime T: type) type {
                 isize => BoxedSeries{ .isize = self },
                 f32 => BoxedSeries{ .float32 = self },
                 f64 => BoxedSeries{ .float64 = self },
+                f16 => BoxedSeries{ .float16 = self },
                 strings.String => BoxedSeries{ .string = self },
                 Raw => BoxedSeries{ .raw = self },
                 Date => BoxedSeries{ .date = self },
@@ -437,6 +441,8 @@ pub fn Series(comptime T: type) type {
                 Decimal => BoxedSeries{ .decimal = self },
                 Binary => BoxedSeries{ .binary = self },
                 FixedBytes => BoxedSeries{ .fixed_bytes = self },
+                Uuid => BoxedSeries{ .uuid = self },
+                Interval => BoxedSeries{ .interval = self },
                 // Add other types as needed
                 else => @compileError("Unsupported type " ++ @typeName(T) ++ " for SeriesType conversion"),
             };
@@ -1122,18 +1128,17 @@ pub fn isSafeCast(comptime From: type, comptime To: type) bool {
     const to_info = @typeInfo(To);
 
     // float → int: always lossy (truncation or range issues)
-    if (comptime (From == f32 or From == f64) and to_info == .int) return false;
+    if (comptime from_info == .float and to_info == .int) return false;
 
-    // float widening
-    if (From == f32 and To == f64) return true;
-    if (From == f64 and To == f32) return false;
-    if (From == f32 and To == f32) return true;
-    if (From == f64 and To == f64) return true;
+    // float → float: widening (more mantissa+exponent bits) is safe.
+    if (comptime from_info == .float and to_info == .float) {
+        return to_info.float.bits >= from_info.float.bits;
+    }
 
     // int → float: safe only when the mantissa can represent all values exactly.
-    // f32 has 23 explicit mantissa bits; f64 has 52.
-    if (from_info == .int and (To == f32 or To == f64)) {
-        const mantissa: usize = if (To == f32) 23 else 52;
+    // f16 has 10 explicit mantissa bits; f32 has 23; f64 has 52.
+    if (from_info == .int and to_info == .float) {
+        const mantissa: usize = if (To == f16) 10 else if (To == f32) 23 else 52;
         const value_bits: usize = if (from_info.int.signedness == .signed)
             from_info.int.bits - 1
         else
@@ -1166,7 +1171,7 @@ fn castValueStrict(comptime From: type, comptime To: type, value: From, allocato
     if (comptime From == strings.String) {
         const slice = value.toSlice();
         if (comptime To == bool) return std.mem.eql(u8, slice, "true") or std.mem.eql(u8, slice, "1");
-        if (comptime To == f32 or To == f64) return @floatCast(try std.fmt.parseFloat(f64, slice));
+        if (comptime @typeInfo(To) == .float) return @floatCast(try std.fmt.parseFloat(f64, slice));
         const info = @typeInfo(To);
         if (comptime info == .int and info.int.signedness == .signed) {
             return @intCast(try std.fmt.parseInt(i128, slice, 10));
@@ -1180,7 +1185,7 @@ fn castValueStrict(comptime From: type, comptime To: type, value: From, allocato
         errdefer s.deinit();
         var buf: [128]u8 = undefined;
         const slice = switch (comptime From) {
-            f32, f64 => try std.fmt.bufPrint(&buf, "{d}", .{value}),
+            f16, f32, f64 => try std.fmt.bufPrint(&buf, "{d}", .{value}),
             bool => if (value) "true"[0..] else "false"[0..],
             else => try std.fmt.bufPrint(&buf, "{}", .{value}),
         };
@@ -1190,23 +1195,23 @@ fn castValueStrict(comptime From: type, comptime To: type, value: From, allocato
 
     if (comptime From == bool) {
         const i: u1 = @intFromBool(value);
-        if (comptime To == f32 or To == f64) return @floatFromInt(i);
+        if (comptime @typeInfo(To) == .float) return @floatFromInt(i);
         return @intCast(i);
     }
     if (comptime To == bool) {
-        if (comptime From == f32 or From == f64) return value != 0.0;
+        if (comptime @typeInfo(From) == .float) return value != 0.0;
         return value != 0;
     }
 
     // float → int: require exact integer value
-    if (comptime (From == f32 or From == f64) and @typeInfo(To) == .int) {
+    if (comptime @typeInfo(From) == .float and @typeInfo(To) == .int) {
         if (std.math.isNan(value) or std.math.isInf(value)) return error.InvalidCast;
         if (value != @trunc(value)) return error.LossyCast;
         return std.math.cast(To, @as(i128, @trunc(value))) orelse return error.Overflow;
     }
 
-    if (comptime @typeInfo(From) == .int and (To == f32 or To == f64)) return @floatFromInt(value);
-    if (comptime (From == f32 or From == f64) and (To == f32 or To == f64)) return @floatCast(value);
+    if (comptime @typeInfo(From) == .int and @typeInfo(To) == .float) return @floatFromInt(value);
+    if (comptime @typeInfo(From) == .float and @typeInfo(To) == .float) return @floatCast(value);
 
     // int → int: overflow is an error
     if (comptime @typeInfo(From) == .int and @typeInfo(To) == .int) {
@@ -1228,7 +1233,7 @@ fn castValueLossy(comptime From: type, comptime To: type, value: From, allocator
     if (comptime From == strings.String) {
         const slice = value.toSlice();
         if (comptime To == bool) return std.mem.eql(u8, slice, "true") or std.mem.eql(u8, slice, "1");
-        if (comptime To == f32 or To == f64) {
+        if (comptime @typeInfo(To) == .float) {
             const parsed = std.fmt.parseFloat(f64, slice) catch return null;
             return @as(To, @floatCast(parsed));
         }
@@ -1247,7 +1252,7 @@ fn castValueLossy(comptime From: type, comptime To: type, value: From, allocator
         errdefer s.deinit();
         var buf: [128]u8 = undefined;
         const slice = switch (comptime From) {
-            f32, f64 => try std.fmt.bufPrint(&buf, "{d}", .{value}),
+            f16, f32, f64 => try std.fmt.bufPrint(&buf, "{d}", .{value}),
             bool => if (value) "true"[0..] else "false"[0..],
             else => try std.fmt.bufPrint(&buf, "{}", .{value}),
         };
@@ -1257,22 +1262,22 @@ fn castValueLossy(comptime From: type, comptime To: type, value: From, allocator
 
     if (comptime From == bool) {
         const i: u1 = @intFromBool(value);
-        if (comptime To == f32 or To == f64) return @as(To, @floatFromInt(i));
+        if (comptime @typeInfo(To) == .float) return @as(To, @floatFromInt(i));
         return @as(To, @intCast(i));
     }
     if (comptime To == bool) {
-        if (comptime From == f32 or From == f64) return value != 0.0;
+        if (comptime @typeInfo(From) == .float) return value != 0.0;
         return value != 0;
     }
 
     // float → int: truncate (lossy by definition), null for NaN/Inf
-    if (comptime (From == f32 or From == f64) and @typeInfo(To) == .int) {
+    if (comptime @typeInfo(From) == .float and @typeInfo(To) == .int) {
         if (std.math.isNan(value) or std.math.isInf(value)) return null;
         return std.math.cast(To, @as(i128, @trunc(value)));
     }
 
-    if (comptime @typeInfo(From) == .int and (To == f32 or To == f64)) return @as(To, @floatFromInt(value));
-    if (comptime (From == f32 or From == f64) and (To == f32 or To == f64)) return @as(To, @floatCast(value));
+    if (comptime @typeInfo(From) == .int and @typeInfo(To) == .float) return @as(To, @floatFromInt(value));
+    if (comptime @typeInfo(From) == .float and @typeInfo(To) == .float) return @as(To, @floatCast(value));
 
     // int → int: overflow → null
     if (comptime @typeInfo(From) == .int and @typeInfo(To) == .int) {

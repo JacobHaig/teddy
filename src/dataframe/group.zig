@@ -17,6 +17,9 @@ pub fn GroupByContext(comptime T: type) type {
         pub fn hash(_: Self, key: T) u64 {
             if (comptime hasMethod(T, "toSlice")) {
                 return std.hash.Wyhash.hash(0, key.toSlice());
+            } else if (comptime T == f16) {
+                const bits: u16 = @bitCast(key);
+                return std.hash.Wyhash.hash(0, std.mem.asBytes(&bits));
             } else if (comptime T == f32) {
                 const bits: u32 = @bitCast(key);
                 return std.hash.Wyhash.hash(0, std.mem.asBytes(&bits));
@@ -31,9 +34,10 @@ pub fn GroupByContext(comptime T: type) type {
         pub fn eql(_: Self, a: T, b: T) bool {
             if (comptime hasMethod(T, "eql")) {
                 return a.eql(&b);
-            } else if (comptime T == f32 or T == f64) {
-                const a_bits: if (T == f32) u32 else u64 = @bitCast(a);
-                const b_bits: if (T == f32) u32 else u64 = @bitCast(b);
+            } else if (comptime T == f16 or T == f32 or T == f64) {
+                const Bits = if (T == f16) u16 else if (T == f32) u32 else u64;
+                const a_bits: Bits = @bitCast(a);
+                const b_bits: Bits = @bitCast(b);
                 return a_bits == b_bits;
             } else {
                 return a == b;
@@ -122,6 +126,7 @@ pub fn GroupBy(comptime T: type) type {
                 isize => BoxedGroupBy{ .isize = self },
                 f32 => BoxedGroupBy{ .float32 = self },
                 f64 => BoxedGroupBy{ .float64 = self },
+                f16 => BoxedGroupBy{ .float16 = self },
                 String => BoxedGroupBy{ .string = self },
                 else => @compileError("Unsupported type for GroupBy: " ++ @typeName(T)),
             };
@@ -177,6 +182,7 @@ pub fn GroupBy(comptime T: type) type {
                 .uint32 => |s| try self.sumTypedDf(u32, s, result_df, key_series),
                 .uint64 => |s| try self.sumTypedDf(u64, s, result_df, key_series),
                 .float32 => |s| try self.sumTypedDf(f32, s, result_df, key_series),
+                .float16 => |s| try self.sumTypedDf(f16, s, result_df, key_series),
                 .float64 => |s| try self.sumTypedDf(f64, s, result_df, key_series),
                 else => return error.TypeNotSummable,
             }
@@ -219,6 +225,7 @@ pub fn GroupBy(comptime T: type) type {
                 .uint32 => |s| try self.meanTypedDf(u32, s, result_df, key_series),
                 .uint64 => |s| try self.meanTypedDf(u64, s, result_df, key_series),
                 .float32 => |s| try self.meanTypedDf(f32, s, result_df, key_series),
+                .float16 => |s| try self.meanTypedDf(f16, s, result_df, key_series),
                 .float64 => |s| try self.meanTypedDf(f64, s, result_df, key_series),
                 else => return error.TypeNotAverageable,
             }
@@ -236,7 +243,7 @@ pub fn GroupBy(comptime T: type) type {
                 var sum_val: f64 = 0.0;
                 for (entry.value_ptr.items) |idx| {
                     const val = series.values.items[idx];
-                    sum_val += @as(f64, if (ValType == f32 or ValType == f64)
+                    sum_val += @as(f64, if (ValType == f16 or ValType == f32 or ValType == f64)
                         val
                     else
                         @floatFromInt(val));
@@ -265,6 +272,7 @@ pub fn GroupBy(comptime T: type) type {
                 .uint32 => |s| try self.minMaxTypedDf(u32, s, result_df, key_series, true),
                 .uint64 => |s| try self.minMaxTypedDf(u64, s, result_df, key_series, true),
                 .float32 => |s| try self.minMaxTypedDf(f32, s, result_df, key_series, true),
+                .float16 => |s| try self.minMaxTypedDf(f16, s, result_df, key_series, true),
                 .float64 => |s| try self.minMaxTypedDf(f64, s, result_df, key_series, true),
                 else => return error.TypeNotComparable,
             }
@@ -292,6 +300,7 @@ pub fn GroupBy(comptime T: type) type {
                 .uint32 => |s| try self.minMaxTypedDf(u32, s, result_df, key_series, false),
                 .uint64 => |s| try self.minMaxTypedDf(u64, s, result_df, key_series, false),
                 .float32 => |s| try self.minMaxTypedDf(f32, s, result_df, key_series, false),
+                .float16 => |s| try self.minMaxTypedDf(f16, s, result_df, key_series, false),
                 .float64 => |s| try self.minMaxTypedDf(f64, s, result_df, key_series, false),
                 else => return error.TypeNotComparable,
             }
@@ -339,6 +348,7 @@ pub fn GroupBy(comptime T: type) type {
                 .uint32 => |s| try self.stdDevTypedDf(u32, s, result_df, key_series),
                 .uint64 => |s| try self.stdDevTypedDf(u64, s, result_df, key_series),
                 .float32 => |s| try self.stdDevTypedDf(f32, s, result_df, key_series),
+                .float16 => |s| try self.stdDevTypedDf(f16, s, result_df, key_series),
                 .float64 => |s| try self.stdDevTypedDf(f64, s, result_df, key_series),
                 else => return error.TypeNotAverageable,
             }
@@ -357,13 +367,13 @@ pub fn GroupBy(comptime T: type) type {
                 var sum_val: f64 = 0.0;
                 for (entry.value_ptr.items) |idx| {
                     const val = series.values.items[idx];
-                    sum_val += @as(f64, if (ValType == f32 or ValType == f64) val else @floatFromInt(val));
+                    sum_val += @as(f64, if (ValType == f16 or ValType == f32 or ValType == f64) val else @floatFromInt(val));
                 }
                 const mean_val = sum_val / n;
                 var sq_sum: f64 = 0.0;
                 for (entry.value_ptr.items) |idx| {
                     const val = series.values.items[idx];
-                    const fval: f64 = @as(f64, if (ValType == f32 or ValType == f64) val else @floatFromInt(val));
+                    const fval: f64 = @as(f64, if (ValType == f16 or ValType == f32 or ValType == f64) val else @floatFromInt(val));
                     const diff = fval - mean_val;
                     sq_sum += diff * diff;
                 }
@@ -388,6 +398,7 @@ pub fn GroupBy(comptime T: type) type {
                 .uint32 => |s| try self.prodTypedDf(u32, s, result_df, key_series),
                 .uint64 => |s| try self.prodTypedDf(u64, s, result_df, key_series),
                 .float32 => |s| try self.prodTypedDf(f32, s, result_df, key_series),
+                .float16 => |s| try self.prodTypedDf(f16, s, result_df, key_series),
                 .float64 => |s| try self.prodTypedDf(f64, s, result_df, key_series),
                 else => return error.TypeNotNumeric,
             }
@@ -425,6 +436,7 @@ pub fn GroupBy(comptime T: type) type {
                 .uint32 => |s| try self.firstLastTypedDf(u32, s, result_df, key_series, true),
                 .uint64 => |s| try self.firstLastTypedDf(u64, s, result_df, key_series, true),
                 .float32 => |s| try self.firstLastTypedDf(f32, s, result_df, key_series, true),
+                .float16 => |s| try self.firstLastTypedDf(f16, s, result_df, key_series, true),
                 .float64 => |s| try self.firstLastTypedDf(f64, s, result_df, key_series, true),
                 else => return error.TypeNotNumeric,
             }
@@ -448,6 +460,7 @@ pub fn GroupBy(comptime T: type) type {
                 .uint32 => |s| try self.firstLastTypedDf(u32, s, result_df, key_series, false),
                 .uint64 => |s| try self.firstLastTypedDf(u64, s, result_df, key_series, false),
                 .float32 => |s| try self.firstLastTypedDf(f32, s, result_df, key_series, false),
+                .float16 => |s| try self.firstLastTypedDf(f16, s, result_df, key_series, false),
                 .float64 => |s| try self.firstLastTypedDf(f64, s, result_df, key_series, false),
                 else => return error.TypeNotNumeric,
             }
@@ -500,6 +513,7 @@ pub fn GroupBy(comptime T: type) type {
                 .uint32 => |s| try self.medianTypedDf(u32, s, result_df, key_series),
                 .uint64 => |s| try self.medianTypedDf(u64, s, result_df, key_series),
                 .float32 => |s| try self.medianTypedDf(f32, s, result_df, key_series),
+                .float16 => |s| try self.medianTypedDf(f16, s, result_df, key_series),
                 .float64 => |s| try self.medianTypedDf(f64, s, result_df, key_series),
                 else => return error.TypeNotNumeric,
             }
@@ -507,7 +521,7 @@ pub fn GroupBy(comptime T: type) type {
         }
 
         fn medianTypedDf(self: *Self, comptime ValType: type, series: *Series(ValType), result_df: *Dataframe, key_series: *Series(T)) !void {
-            const is_float_type = ValType == f32 or ValType == f64;
+            const is_float_type = ValType == f16 or ValType == f32 or ValType == f64;
             var val_series = try result_df.createSeries(f64);
             try val_series.rename(series.name.toSlice());
             var it = self.groups.iterator();
@@ -554,6 +568,7 @@ pub fn GroupBy(comptime T: type) type {
                     .uint32 => |s| try self.nuniqueTypedDf(u32, s, entry.value_ptr.items, count_series),
                     .uint64 => |s| try self.nuniqueTypedDf(u64, s, entry.value_ptr.items, count_series),
                     .float32 => |s| try self.nuniqueTypedDf(f32, s, entry.value_ptr.items, count_series),
+                    .float16 => |s| try self.nuniqueTypedDf(f16, s, entry.value_ptr.items, count_series),
                     .float64 => |s| try self.nuniqueTypedDf(f64, s, entry.value_ptr.items, count_series),
                     else => return error.TypeNotNumeric,
                 }

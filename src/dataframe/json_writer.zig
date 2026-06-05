@@ -103,6 +103,10 @@ fn isStringSeries(series: *BoxedSeries) bool {
         // Binary/FixedBytes render as hex strings — must be quoted.
         .binary => true,
         .fixed_bytes => true,
+        // Uuid renders as canonical hyphenated hex — must be quoted.
+        .uuid => true,
+        // Interval renders as human-readable text — must be quoted.
+        .interval => true,
         else => false,
     };
 }

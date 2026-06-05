@@ -17,10 +17,13 @@ Hardening Track from the 2026-06-04 full-project review
 (docs/reviews/2026-06-04-full-project-review.md): 10) null correctness,
 11) parquet untrusted-input hardening, 12) bug-fix batch.
 
-Status: 1–5 ✅; 6a–6d-1 ✅; 6d-2a.0 (logical-type infra: thrift LogicalType,
-Series capability convention [[parquet-type-mapping]], Raw fallback) ✅
-2026-06-05. Next: 6d-2a.1 (Date) → .5 per-type slices, then 6d-2b nested
-(separate spec).
+Status: 1–5 ✅; 6a–6d-1 ✅; **6d-2a COMPLETE 2026-06-05** (all six slices:
+infra + Date + Time/Timestamp + Decimal(i256) + Binary/FixedBytes +
+Uuid/Interval/Float16 — every scalar logical type is a dedicated BoxedSeries
+variant; Raw remains only for VARIANT/GEO/nested/unknown
+[[parquet-type-mapping]]). Next: 6d-2b nested types (needs its own
+brainstorm/spec — repetition-level record assembly), or hardening phases
+10–12 from the review.
 
 **Why:** owner wants the codebase "up to snuff" — remove template cruft, finish
 half-implemented IO, add validation.

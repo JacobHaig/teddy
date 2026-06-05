@@ -10,6 +10,8 @@ const Timestamp = @import("timestamp.zig").Timestamp;
 const Decimal = @import("decimal.zig").Decimal;
 const Binary = @import("binary.zig").Binary;
 const FixedBytes = @import("fixed_bytes.zig").FixedBytes;
+const Uuid = @import("uuid.zig").Uuid;
+const Interval = @import("interval.zig").Interval;
 const BoxedSeries = @import("boxed_series.zig").BoxedSeries;
 const parquet = @import("parquet");
 
@@ -54,18 +56,28 @@ pub const ResolvedKind = enum {
     binary_,
     /// Unannotated FIXED_LEN_BYTE_ARRAY (6d-2a.4).
     fixedbytes_,
+    /// FIXED_LEN_BYTE_ARRAY(16) + UUID logical type (6d-2a.5).
+    uuid_,
+    /// FIXED_LEN_BYTE_ARRAY(12) + INTERVAL converted type (6d-2a.5).
+    interval_,
+    /// FIXED_LEN_BYTE_ARRAY(2) + FLOAT16 logical type (6d-2a.5).
+    float16_,
 };
 
 /// Resolution precedence: modern logical_type (field 10) → legacy
-/// converted_type (field 6) → bare physical type. Logical annotations not yet
-/// surfaced as dataframe types (uuid/float16/...)
-/// fall through to the physical default; slices 6d-2a.2–.5 flip them one at a
-/// time. Deferred types (VARIANT/GEOMETRY/GEOGRAPHY) resolve to Raw.
-/// INT96 physical resolves to timestamp_ (legacy format decoded via fromInt96Bytes).
-/// DECIMAL with precision 1..76 resolves to decimal_; precision > 76 → raw.
-/// As of 6d-2a.4: unannotated BYTE_ARRAY → binary_; unannotated
-/// FIXED_LEN_BYTE_ARRAY → fixedbytes_. String requires a UTF8/ENUM/JSON
-/// annotation (logical or converted).
+/// converted_type (field 6) → bare physical type.
+/// Logical type arms (6d-2a.1–.5): integer/date/time/timestamp/decimal/
+///   string/enum/json/bson/uuid/float16 → typed kinds; variant/geometry/
+///   geography → raw; map/list/unknown fall through to physical default.
+/// Converted type arms: int_8/int_16/uint_8/uint_16/uint_32/uint_64 →
+///   typed int; utf8/enum/json → string; bson → binary_; date/time/timestamp
+///   variants → date_/time_/timestamp_; interval → interval_; decimal →
+///   decimal_ (needs col.precision field 8) or raw.
+/// Physical default: boolean/int32/int64/float/double → scalars;
+///   byte_array → binary_; fixed_len_byte_array → fixedbytes_; int96 →
+///   timestamp_.
+/// As of 6d-2a.5: all scalar logical types handled — nothing falls through
+/// except map/list/unknown (→ physical default) and VARIANT/GEO (→ raw).
 pub fn resolveKind(col: *const parquet.ParquetColumn) ResolvedKind {
     if (col.logical_type) |lt| switch (lt) {
         .integer => |it| {
@@ -97,6 +109,8 @@ pub fn resolveKind(col: *const parquet.ParquetColumn) ResolvedKind {
         .string, .@"enum", .json => return .string,
         .bson => return .binary_,
         .variant, .geometry, .geography => return .raw,
+        .uuid => return .uuid_,
+        .float16 => return .float16_,
         else => {},
     };
     if (col.converted_type) |ct| switch (ct) {
@@ -116,6 +130,7 @@ pub fn resolveKind(col: *const parquet.ParquetColumn) ResolvedKind {
         .date => return .date_,
         .time_millis, .time_micros => return .time_,
         .timestamp_millis, .timestamp_micros => return .timestamp_,
+        .interval => return .interval_,
         .decimal => {
             // precision must come from legacy field 8; if absent or out of range → raw.
             if (col.precision) |p| {
@@ -351,6 +366,51 @@ fn addColumn(allocator: Allocator, df: *dataframe.Dataframe, col: *const parquet
                 }
             }
         },
+        .uuid_ => {
+            var s = try df.createSeries(Uuid);
+            try s.rename(col.name);
+            const vals = col.byte_arrays orelse return error.UnexpectedPhysicalType;
+            for (0..col.num_rows) |i| {
+                const valid = if (col.validity) |v| v[i] else true;
+                if (valid and i < vals.len) {
+                    if (vals[i].len != 16) return error.InvalidUuid;
+                    const bytes_ptr: *const [16]u8 = vals[i][0..16];
+                    try s.append(Uuid.fromBytes(bytes_ptr.*));
+                } else {
+                    try s.append(Uuid.fromBytes(.{0} ** 16));
+                }
+            }
+        },
+        .interval_ => {
+            var s = try df.createSeries(Interval);
+            try s.rename(col.name);
+            const vals = col.byte_arrays orelse return error.UnexpectedPhysicalType;
+            for (0..col.num_rows) |i| {
+                const valid = if (col.validity) |v| v[i] else true;
+                if (valid and i < vals.len) {
+                    if (vals[i].len != 12) return error.InvalidInterval;
+                    const bytes_ptr: *const [12]u8 = vals[i][0..12];
+                    try s.append(Interval.fromLeBytes(bytes_ptr));
+                } else {
+                    try s.append(.{ .months = 0, .days = 0, .millis = 0 });
+                }
+            }
+        },
+        .float16_ => {
+            var s = try df.createSeries(f16);
+            try s.rename(col.name);
+            const vals = col.byte_arrays orelse return error.UnexpectedPhysicalType;
+            for (0..col.num_rows) |i| {
+                const valid = if (col.validity) |v| v[i] else true;
+                if (valid and i < vals.len) {
+                    if (vals[i].len != 2) return error.InvalidFloat16;
+                    const bytes_ptr: *const [2]u8 = vals[i][0..2];
+                    try s.append(@bitCast(std.mem.readInt(u16, bytes_ptr, .little)));
+                } else {
+                    try s.append(0);
+                }
+            }
+        },
         .raw => return addRawColumn(allocator, df, col),
     }
 }
@@ -446,6 +506,23 @@ fn boxedToColumnData(scratch: Allocator, boxed: *BoxedSeries, opts: AdapterWrite
             .physical_type = .double,
             .doubles = s.values.items,
             .num_values = s.values.items.len,
+        },
+        .float16 => |s| blk: {
+            const n = s.values.items.len;
+            const slices = try scratch.alloc([]const u8, n);
+            for (s.values.items, 0..) |v, j| {
+                const bytes = try scratch.alloc(u8, 2);
+                std.mem.writeInt(u16, bytes[0..2], @bitCast(v), .little);
+                slices[j] = bytes;
+            }
+            break :blk .{
+                .name = s.name.toSlice(),
+                .physical_type = .fixed_len_byte_array,
+                .type_length = 2,
+                .logical_type = .float16,
+                .byte_arrays = slices,
+                .num_values = n,
+            };
         },
         .bool => |s| .{
             .name = s.name.toSlice(),
@@ -729,6 +806,41 @@ fn boxedToColumnData(scratch: Allocator, boxed: *BoxedSeries, opts: AdapterWrite
                 .logical_type = lt,
                 .scale = @as(i32, scale),
                 .precision = @as(i32, precision),
+                .byte_arrays = slices,
+                .num_values = n,
+            };
+        },
+        .uuid => |s| blk: {
+            const n = s.values.items.len;
+            const slices = try scratch.alloc([]const u8, n);
+            for (s.values.items, 0..) |u, j| {
+                const bytes = try scratch.alloc(u8, 16);
+                @memcpy(bytes, &u.bytes);
+                slices[j] = bytes;
+            }
+            break :blk .{
+                .name = s.name.toSlice(),
+                .physical_type = .fixed_len_byte_array,
+                .type_length = 16,
+                .logical_type = .uuid,
+                .byte_arrays = slices,
+                .num_values = n,
+            };
+        },
+        .interval => |s| blk: {
+            const n = s.values.items.len;
+            const slices = try scratch.alloc([]const u8, n);
+            for (s.values.items, 0..) |iv, j| {
+                const bytes = try scratch.alloc(u8, 12);
+                const encoded = iv.toLeBytes();
+                @memcpy(bytes, &encoded);
+                slices[j] = bytes;
+            }
+            break :blk .{
+                .name = s.name.toSlice(),
+                .physical_type = .fixed_len_byte_array,
+                .type_length = 12,
+                .converted_type = .interval,
                 .byte_arrays = slices,
                 .num_values = n,
             };

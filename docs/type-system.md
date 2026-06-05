@@ -146,6 +146,9 @@ classDiagram
 │  Decimal     │  .decimal     │  I32/64/FLBA  │  Decimal       │
 │  Binary      │  .binary      │  BYTE_ARRAY***│  Binary        │
 │  FixedBytes  │  .fixed_bytes │  FLBA(n)***   │  FixedBytes    │
+│  Uuid        │  .uuid        │  FLBA(16)+UUID│  Uuid          │
+│  Interval    │  .interval    │  FLBA(12)+INTV│  Interval      │
+│  f16         │  .float16     │  FLBA(2)+F16  │  Float16       │
 │  Raw         │  .raw         │  (preserved)* │  Raw           │
 └──────────────┴───────────────┴───────────────┴────────────────┘
 

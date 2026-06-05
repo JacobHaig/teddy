@@ -7,6 +7,8 @@ const FixedBytes = @import("fixed_bytes.zig").FixedBytes;
 const Time = @import("time.zig").Time;
 const Timestamp = @import("timestamp.zig").Timestamp;
 const Decimal = @import("decimal.zig").Decimal;
+const Uuid = @import("uuid.zig").Uuid;
+const Interval = @import("interval.zig").Interval;
 
 test "resolveKind: precedence logical -> converted -> physical" {
     // NOTE: `col` is mutated across cases and fields CARRY OVER — when adding
@@ -133,6 +135,30 @@ test "resolveKind: precedence logical -> converted -> physical" {
     col.converted_type = .decimal;
     col.precision = null;
     try std.testing.expectEqual(adapter.ResolvedKind.raw, adapter.resolveKind(&col));
+
+    // logical .uuid on FLBA -> uuid_ (6d-2a.5)
+    col.converted_type = null;
+    col.physical_type = .fixed_len_byte_array;
+    col.logical_type = .uuid;
+    try std.testing.expectEqual(adapter.ResolvedKind.uuid_, adapter.resolveKind(&col));
+
+    // bare FLBA(16) WITHOUT uuid annotation stays fixedbytes_ (regression pin)
+    col.logical_type = null;
+    col.converted_type = null;
+    col.physical_type = .fixed_len_byte_array;
+    try std.testing.expectEqual(adapter.ResolvedKind.fixedbytes_, adapter.resolveKind(&col));
+
+    // logical .float16 on FLBA -> float16_ (6d-2a.5)
+    col.converted_type = null;
+    col.physical_type = .fixed_len_byte_array;
+    col.logical_type = .float16;
+    try std.testing.expectEqual(adapter.ResolvedKind.float16_, adapter.resolveKind(&col));
+
+    // converted .interval -> interval_ (6d-2a.5)
+    col.logical_type = null;
+    col.physical_type = .fixed_len_byte_array;
+    col.converted_type = .interval;
+    try std.testing.expectEqual(adapter.ResolvedKind.interval_, adapter.resolveKind(&col));
 }
 
 test "adapter: INT96 column decodes to Timestamp" {
@@ -818,4 +844,186 @@ test "adapter: hand-built Binary(bson) round-trips annotations" {
     const s2 = df2.series.items[0].binary;
     try std.testing.expectEqual(parquet.ConvertedType.bson, s2.meta.converted_type.?);
     try std.testing.expect(s2.meta.logical_type.? == .bson);
+}
+
+test "adapter: uuid_f16.parquet reads typed columns" {
+    // uuid_f16.parquet: col 0 "u" = FLBA(16)+UUID -> Uuid series;
+    //                   col 1 "h" = FLBA(2)+FLOAT16 -> f16 series.
+    const allocator = std.testing.allocator;
+    const cwd = std.Io.Dir.cwd();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const file_data = try cwd.readFileAlloc(io, "data/uuid_f16.parquet", allocator, .unlimited);
+    defer allocator.free(file_data);
+
+    var result = try parquet.readParquet(allocator, file_data);
+    defer result.deinit();
+    var df = try adapter.toDataframe(allocator, &result);
+    defer df.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), df.width());
+
+    // Column 0: Uuid
+    const u_boxed = &df.series.items[0];
+    try std.testing.expectEqualStrings("Uuid", u_boxed.typeName());
+    const u_series = u_boxed.uuid;
+    try std.testing.expectEqual(@as(usize, 2), u_series.len());
+
+    // Row 0: "01234567-89ab-cdef-0123-456789abcdef"
+    var buf: [40]u8 = undefined;
+    const row0_str = try std.fmt.bufPrint(&buf, "{f}", .{u_series.values.items[0]});
+    try std.testing.expectEqualStrings("01234567-89ab-cdef-0123-456789abcdef", row0_str);
+
+    // Column 1: f16
+    const h_boxed = &df.series.items[1];
+    try std.testing.expectEqualStrings("f16", h_boxed.typeName());
+    const h_series = h_boxed.float16;
+    try std.testing.expectEqual(@as(usize, 2), h_series.len());
+
+    // Values: 1.5 and -0.25 are exactly representable in f16.
+    try std.testing.expectEqual(@as(f16, 1.5), h_series.values.items[0]);
+    try std.testing.expectEqual(@as(f16, -0.25), h_series.values.items[1]);
+}
+
+test "adapter: uuid_f16 round-trip lossless (bytes + annotation)" {
+    // uuid_f16.parquet -> df -> write -> read:
+    // col 0: FLBA(16) + logical uuid preserved; bytes identical; re-resolves Uuid.
+    // col 1: FLBA(2) + logical float16 preserved; values bit-exact; re-resolves f16.
+    const allocator = std.testing.allocator;
+    const cwd = std.Io.Dir.cwd();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const file_data = try cwd.readFileAlloc(io, "data/uuid_f16.parquet", allocator, .unlimited);
+    defer allocator.free(file_data);
+
+    var result = try parquet.readParquet(allocator, file_data);
+    defer result.deinit();
+
+    // Capture original uuid bytes for comparison
+    const orig_uuid_arrays = result.columns[0].byte_arrays orelse return error.NoByteArrays;
+    const orig_h_arrays = result.columns[1].byte_arrays orelse return error.NoByteArrays;
+
+    var df = try adapter.toDataframe(allocator, &result);
+    defer df.deinit();
+
+    var cols = try adapter.fromDataframe(allocator, df, .{});
+    defer cols.deinit();
+    const output = try parquet.writeParquet(allocator, cols.columns, .{});
+    defer allocator.free(output);
+
+    var result2 = try parquet.readParquet(allocator, output);
+    defer result2.deinit();
+
+    // --- UUID column (col 0) ---
+    const uc = &result2.columns[0];
+    try std.testing.expectEqual(parquet.PhysicalType.fixed_len_byte_array, uc.physical_type);
+    try std.testing.expectEqual(@as(?i32, 16), uc.type_length);
+    try std.testing.expect(uc.logical_type != null);
+    try std.testing.expect(uc.logical_type.? == .uuid);
+    // Bytes identical
+    const u_arrays2 = uc.byte_arrays orelse return error.NoByteArrays;
+    for (0..2) |i| {
+        try std.testing.expectEqualSlices(u8, orig_uuid_arrays[i], u_arrays2[i]);
+    }
+    // Re-resolves to uuid_
+    try std.testing.expectEqual(adapter.ResolvedKind.uuid_, adapter.resolveKind(uc));
+
+    // --- float16 column (col 1) ---
+    const hc = &result2.columns[1];
+    try std.testing.expectEqual(parquet.PhysicalType.fixed_len_byte_array, hc.physical_type);
+    try std.testing.expectEqual(@as(?i32, 2), hc.type_length);
+    try std.testing.expect(hc.logical_type != null);
+    try std.testing.expect(hc.logical_type.? == .float16);
+    // Bytes bit-exact
+    const h_arrays2 = hc.byte_arrays orelse return error.NoByteArrays;
+    for (0..2) |i| {
+        try std.testing.expectEqualSlices(u8, orig_h_arrays[i], h_arrays2[i]);
+    }
+    // Re-resolves to float16_
+    try std.testing.expectEqual(adapter.ResolvedKind.float16_, adapter.resolveKind(hc));
+
+    // Re-read df has typed columns
+    var df2 = try adapter.toDataframe(allocator, &result2);
+    defer df2.deinit();
+    try std.testing.expectEqualStrings("Uuid", df2.series.items[0].typeName());
+    try std.testing.expectEqualStrings("f16", df2.series.items[1].typeName());
+
+    // f16 values identical
+    try std.testing.expectEqual(@as(f16, 1.5), df2.series.items[1].float16.values.items[0]);
+    try std.testing.expectEqual(@as(f16, -0.25), df2.series.items[1].float16.values.items[1]);
+}
+
+test "adapter: f16 NaN payload round-trips bit-exactly" {
+    // The f16 wire codec is a pure bitcast, so even non-canonical NaN payloads
+    // must survive write -> read unchanged (pins against any future
+    // canonicalization sneaking into the path).
+    const allocator = std.testing.allocator;
+    const dataframe_mod = @import("dataframe.zig");
+    const nan_payload: u16 = 0x7E01; // qNaN with a non-zero payload bit
+
+    var df = try dataframe_mod.Dataframe.init(allocator);
+    defer df.deinit();
+    var s = try df.createSeries(f16);
+    try s.rename("h");
+    try s.append(@bitCast(nan_payload));
+    try s.append(1.5);
+
+    var cols = try adapter.fromDataframe(allocator, df, .{});
+    defer cols.deinit();
+    const output = try parquet.writeParquet(allocator, cols.columns, .{});
+    defer allocator.free(output);
+
+    var result = try parquet.readParquet(allocator, output);
+    defer result.deinit();
+    var df2 = try adapter.toDataframe(allocator, &result);
+    defer df2.deinit();
+
+    const v0: u16 = @bitCast(df2.series.items[0].float16.values.items[0]);
+    try std.testing.expectEqual(nan_payload, v0);
+    try std.testing.expectEqual(@as(f16, 1.5), df2.series.items[0].float16.values.items[1]);
+}
+
+test "adapter: Interval hand-built teddy-to-teddy round-trip" {
+    // Hand-build a df with Series(Interval), write, read back: FLBA(12) +
+    // converted_type=.interval on wire; components identical after re-read;
+    // re-resolves Interval.
+    const allocator = std.testing.allocator;
+    const dataframe_mod = @import("dataframe.zig");
+
+    var df = try dataframe_mod.Dataframe.init(allocator);
+    defer df.deinit();
+
+    var s = try df.createSeries(Interval);
+    try s.rename("dur");
+    try s.append(.{ .months = 1, .days = 2, .millis = 3000 });
+    try s.append(.{ .months = 13, .days = 0, .millis = 1 });
+
+    var cols = try adapter.fromDataframe(allocator, df, .{});
+    defer cols.deinit();
+    const output = try parquet.writeParquet(allocator, cols.columns, .{});
+    defer allocator.free(output);
+
+    var result2 = try parquet.readParquet(allocator, output);
+    defer result2.deinit();
+
+    // Wire: FLBA(12) + converted_type=.interval; NO logical type (none exists).
+    const col = &result2.columns[0];
+    try std.testing.expectEqual(parquet.PhysicalType.fixed_len_byte_array, col.physical_type);
+    try std.testing.expectEqual(@as(?i32, 12), col.type_length);
+    try std.testing.expectEqual(parquet.ConvertedType.interval, col.converted_type.?);
+    try std.testing.expectEqual(@as(?parquet.LogicalType, null), col.logical_type);
+
+    // Re-resolves to interval_
+    try std.testing.expectEqual(adapter.ResolvedKind.interval_, adapter.resolveKind(col));
+
+    // Re-read df: components identical
+    var df2 = try adapter.toDataframe(allocator, &result2);
+    defer df2.deinit();
+    try std.testing.expectEqualStrings("Interval", df2.series.items[0].typeName());
+    const iv0 = df2.series.items[0].interval.values.items[0];
+    try std.testing.expectEqual(@as(u32, 1), iv0.months);
+    try std.testing.expectEqual(@as(u32, 2), iv0.days);
+    try std.testing.expectEqual(@as(u32, 3000), iv0.millis);
+    const iv1 = df2.series.items[0].interval.values.items[1];
+    try std.testing.expectEqual(@as(u32, 13), iv1.months);
+    try std.testing.expectEqual(@as(u32, 0), iv1.days);
+    try std.testing.expectEqual(@as(u32, 1), iv1.millis);
 }

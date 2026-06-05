@@ -9,6 +9,8 @@ const Timestamp = @import("timestamp.zig").Timestamp;
 const Decimal = @import("decimal.zig").Decimal;
 const Binary = @import("binary.zig").Binary;
 const FixedBytes = @import("fixed_bytes.zig").FixedBytes;
+const Uuid = @import("uuid.zig").Uuid;
+const Interval = @import("interval.zig").Interval;
 const GroupBy = @import("group.zig").GroupBy;
 const BoxedGroupBy = @import("boxed_groupby.zig").BoxedGroupBy;
 const Dataframe = @import("dataframe.zig").Dataframe;
@@ -33,6 +35,7 @@ pub const BoxedSeries = union(enum) {
     isize: *Series(isize),
     float32: *Series(f32),
     float64: *Series(f64),
+    float16: *Series(f16),
     string: *Series(String),
     raw: *Series(Raw),
     date: *Series(Date),
@@ -41,6 +44,8 @@ pub const BoxedSeries = union(enum) {
     decimal: *Series(Decimal),
     binary: *Series(Binary),
     fixed_bytes: *Series(FixedBytes),
+    uuid: *Series(Uuid),
+    interval: *Series(Interval),
 
     /// Deallocates the contained Series. After this call, the BoxedSeries is invalid.
     pub fn deinit(self: *Self) void {
@@ -151,7 +156,7 @@ pub const BoxedSeries = union(enum) {
         switch (self.*) {
             inline .int8, .int16, .int32, .int64, .int128, .isize => |s| return @as(f64, @floatFromInt(s.sum())),
             inline .uint8, .uint16, .uint32, .uint64, .uint128, .usize => |s| return @as(f64, @floatFromInt(s.sum())),
-            .float32 => |s| return @as(f64, s.sum()),
+            inline .float32, .float16 => |s| return @as(f64, s.sum()),
             .float64 => |s| return s.sum(),
             else => return null,
         }
@@ -162,7 +167,7 @@ pub const BoxedSeries = union(enum) {
         switch (self.*) {
             inline .int8, .int16, .int32, .int64, .int128, .isize => |s| return if (s.min()) |v| @as(f64, @floatFromInt(v)) else null,
             inline .uint8, .uint16, .uint32, .uint64, .uint128, .usize => |s| return if (s.min()) |v| @as(f64, @floatFromInt(v)) else null,
-            .float32 => |s| return if (s.min()) |v| @as(f64, v) else null,
+            inline .float32, .float16 => |s| return if (s.min()) |v| @as(f64, v) else null,
             .float64 => |s| return s.min(),
             else => return null,
         }
@@ -173,7 +178,7 @@ pub const BoxedSeries = union(enum) {
         switch (self.*) {
             inline .int8, .int16, .int32, .int64, .int128, .isize => |s| return if (s.max()) |v| @as(f64, @floatFromInt(v)) else null,
             inline .uint8, .uint16, .uint32, .uint64, .uint128, .usize => |s| return if (s.max()) |v| @as(f64, @floatFromInt(v)) else null,
-            .float32 => |s| return if (s.max()) |v| @as(f64, v) else null,
+            inline .float32, .float16 => |s| return if (s.max()) |v| @as(f64, v) else null,
             .float64 => |s| return s.max(),
             else => return null,
         }
@@ -268,7 +273,7 @@ pub const BoxedSeries = union(enum) {
         return switch (self.*) {
             .int8, .int16, .int32, .int64, .int128, .isize => |s| @as(f64, @floatFromInt(try s.sumChecked())),
             .uint8, .uint16, .uint32, .uint64, .uint128, .usize => |s| @as(f64, @floatFromInt(try s.sumChecked())),
-            .float32 => |s| @as(f64, try s.sumChecked()),
+            inline .float32, .float16 => |s| @as(f64, try s.sumChecked()),
             .float64 => |s| try s.sumChecked(),
             else => error.TypeNotNumeric,
         };
@@ -279,7 +284,7 @@ pub const BoxedSeries = union(enum) {
         return switch (self.*) {
             .int8, .int16, .int32, .int64, .int128, .isize => |s| @as(f64, @floatFromInt(s.prod())),
             .uint8, .uint16, .uint32, .uint64, .uint128, .usize => |s| @as(f64, @floatFromInt(s.prod())),
-            .float32 => |s| @as(f64, s.prod()),
+            inline .float32, .float16 => |s| @as(f64, s.prod()),
             .float64 => |s| s.prod(),
             else => null,
         };
@@ -290,7 +295,7 @@ pub const BoxedSeries = union(enum) {
         return switch (self.*) {
             .int8, .int16, .int32, .int64, .int128, .isize => |s| if (s.first()) |v| @as(f64, @floatFromInt(v)) else null,
             .uint8, .uint16, .uint32, .uint64, .uint128, .usize => |s| if (s.first()) |v| @as(f64, @floatFromInt(v)) else null,
-            .float32 => |s| if (s.first()) |v| @as(f64, v) else null,
+            inline .float32, .float16 => |s| if (s.first()) |v| @as(f64, v) else null,
             .float64 => |s| s.first(),
             else => null,
         };
@@ -301,7 +306,7 @@ pub const BoxedSeries = union(enum) {
         return switch (self.*) {
             .int8, .int16, .int32, .int64, .int128, .isize => |s| if (s.last()) |v| @as(f64, @floatFromInt(v)) else null,
             .uint8, .uint16, .uint32, .uint64, .uint128, .usize => |s| if (s.last()) |v| @as(f64, @floatFromInt(v)) else null,
-            .float32 => |s| if (s.last()) |v| @as(f64, v) else null,
+            inline .float32, .float16 => |s| if (s.last()) |v| @as(f64, v) else null,
             .float64 => |s| s.last(),
             else => null,
         };
@@ -537,6 +542,7 @@ pub const BoxedSeries = union(enum) {
             .isize => "isize",
             .float32 => "f32",
             .float64 => "f64",
+            .float16 => "f16",
             .string => "String",
             .raw => "Raw",
             .date => "Date",
@@ -545,6 +551,8 @@ pub const BoxedSeries = union(enum) {
             .decimal => "Decimal",
             .binary => "Binary",
             .fixed_bytes => "FixedBytes",
+            .uuid => "Uuid",
+            .interval => "Interval",
         };
     }
 
@@ -567,6 +575,7 @@ pub const BoxedSeries = union(enum) {
             .isize => return isize,
             .float32 => return f32,
             .float64 => return f64,
+            .float16 => return f16,
             .string => return String,
             .raw => return Raw,
             .date => return Date,
@@ -575,6 +584,8 @@ pub const BoxedSeries = union(enum) {
             .decimal => return Decimal,
             .binary => return Binary,
             .fixed_bytes => return FixedBytes,
+            .uuid => return Uuid,
+            .interval => return Interval,
         }
     }
 };
