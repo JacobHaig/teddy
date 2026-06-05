@@ -13,6 +13,11 @@ const reader_mod = @import("parquet_reader.zig");
 
 pub const WriteOptions = struct {
     compression: types.CompressionCodec = .uncompressed,
+    /// Re-emit Timestamp columns whose values all originate from legacy INT96
+    /// as INT96 (bit-faithful). Default writes modern INT64 TIMESTAMP.
+    /// Consumed by the dataframe adapter when choosing the physical type;
+    /// has no effect at this layer.
+    emit_int96: bool = false,
 };
 
 /// Write a complete Parquet file from column data.

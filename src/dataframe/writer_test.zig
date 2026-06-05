@@ -101,3 +101,12 @@ test "writer: builder pattern chaining" {
     try std.testing.expectEqual(@as(u8, ';'), w.delimiter);
     try std.testing.expectEqual(false, w.include_header);
 }
+
+test "writer: withEmitInt96 builder sets field" {
+    const allocator = std.testing.allocator;
+    var w = try Writer.init(allocator, std.Io.Threaded.global_single_threaded.io());
+    defer w.deinit();
+    try std.testing.expectEqual(false, w.emit_int96);
+    _ = w.withEmitInt96(true);
+    try std.testing.expectEqual(true, w.emit_int96);
+}

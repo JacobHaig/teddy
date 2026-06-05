@@ -63,8 +63,11 @@ Sub-phases:
   parse the modern `LogicalType` union (SchemaElement field 10); full lossless
   round-trip; rich per-type ops; `Raw` fallback for deferred types. Design approved,
   spec at `docs/superpowers/specs/2026-06-04-parquet-scalar-logical-types-design.md`.
-  Implement as per-type vertical slices (6d-2a.0 infra ✅ → .1 Date ✅ → .2 Timestamp/Time
-  → .3 Decimal → .4 Binary/FixedBytes → .5 Uuid/Interval/Float16). Infra slice
+  Implement as per-type vertical slices (6d-2a.0 infra ✅ → .1 Date ✅ →
+  .2 Timestamp/Time ✅ → .3 Decimal → .4 Binary/FixedBytes → .5 Uuid/Interval/
+  Float16). INT96 now decodes to Timestamp(nanos, utc=false, origin=int96);
+  writes default to modern INT64, bit-faithful INT96 re-emit behind
+  `Writer.withEmitInt96(true)`. Infra slice
   landed: thrift LogicalType parse/encode (field 10 + type_length), Series
   capability convention (hasMethod/ColumnMeta), comptime-safe BoxedSeries
   guards, `Raw` fallback type — INT96 + VARIANT/GEO now read end-to-end and

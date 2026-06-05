@@ -4,6 +4,8 @@ const hasMethod = @import("series.zig").hasMethod;
 const String = @import("strings.zig").String;
 const Raw = @import("raw.zig").Raw;
 const Date = @import("date.zig").Date;
+const Time = @import("time.zig").Time;
+const Timestamp = @import("timestamp.zig").Timestamp;
 const GroupBy = @import("group.zig").GroupBy;
 const BoxedGroupBy = @import("boxed_groupby.zig").BoxedGroupBy;
 const Dataframe = @import("dataframe.zig").Dataframe;
@@ -31,6 +33,8 @@ pub const BoxedSeries = union(enum) {
     string: *Series(String),
     raw: *Series(Raw),
     date: *Series(Date),
+    time: *Series(Time),
+    timestamp: *Series(Timestamp),
 
     /// Deallocates the contained Series. After this call, the BoxedSeries is invalid.
     pub fn deinit(self: *Self) void {
@@ -530,6 +534,8 @@ pub const BoxedSeries = union(enum) {
             .string => "String",
             .raw => "Raw",
             .date => "Date",
+            .time => "Time",
+            .timestamp => "Timestamp",
         };
     }
 
@@ -555,6 +561,8 @@ pub const BoxedSeries = union(enum) {
             .string => return String,
             .raw => return Raw,
             .date => return Date,
+            .time => return Time,
+            .timestamp => return Timestamp,
         }
     }
 };

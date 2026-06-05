@@ -25,6 +25,7 @@ pub const Writer = struct {
 
     // Parquet options
     compression: parquet.CompressionCodec,
+    emit_int96: bool,
 
     pub fn init(allocator: Allocator, io: std.Io) !*Self {
         const ptr = try allocator.create(Self);
@@ -37,6 +38,7 @@ pub const Writer = struct {
             .include_header = true,
             .json_format = .rows,
             .compression = .uncompressed,
+            .emit_int96 = false,
         };
         return ptr;
     }
@@ -77,6 +79,11 @@ pub const Writer = struct {
         return self;
     }
 
+    pub fn withEmitInt96(self: *Self, v: bool) *Self {
+        self.emit_int96 = v;
+        return self;
+    }
+
     /// Serialize the DataFrame to bytes. Caller owns the returned slice.
     pub fn toString(self: *Self, df: *Dataframe) ![]u8 {
         return switch (self.file_type) {
@@ -86,10 +93,11 @@ pub const Writer = struct {
             }),
             .json => json_writer.writeToString(self.allocator, df, self.json_format),
             .parquet => blk: {
-                var cols = try parquet_adapter.fromDataframe(self.allocator, df);
+                var cols = try parquet_adapter.fromDataframe(self.allocator, df, .{ .emit_int96 = self.emit_int96 });
                 defer cols.deinit();
                 break :blk parquet.writeParquet(self.allocator, cols.columns, .{
                     .compression = self.compression,
+                    .emit_int96 = self.emit_int96,
                 });
             },
             else => error.UnsupportedFileType,

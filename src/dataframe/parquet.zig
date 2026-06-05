@@ -5,6 +5,8 @@ const series_mod = @import("series.zig");
 const String = @import("strings.zig").String;
 const Raw = @import("raw.zig").Raw;
 const Date = @import("date.zig").Date;
+const Time = @import("time.zig").Time;
+const Timestamp = @import("timestamp.zig").Timestamp;
 const BoxedSeries = @import("boxed_series.zig").BoxedSeries;
 const parquet = @import("parquet");
 
@@ -42,13 +44,16 @@ pub const ResolvedKind = enum {
     string,
     raw,
     date_,
+    time_,
+    timestamp_,
 };
 
 /// Resolution precedence: modern logical_type (field 10) → legacy
 /// converted_type (field 6) → bare physical type. Logical annotations not yet
-/// surfaced as dataframe types (time/timestamp/decimal/uuid/float16/...)
+/// surfaced as dataframe types (decimal/uuid/float16/...)
 /// fall through to the physical default; slices 6d-2a.2–.5 flip them one at a
-/// time. Deferred types (VARIANT/GEOMETRY/GEOGRAPHY) and INT96 resolve to Raw.
+/// time. Deferred types (VARIANT/GEOMETRY/GEOGRAPHY) resolve to Raw.
+/// INT96 physical resolves to timestamp_ (legacy format decoded via fromInt96Bytes).
 pub fn resolveKind(col: *const parquet.ParquetColumn) ResolvedKind {
     if (col.logical_type) |lt| switch (lt) {
         .integer => |it| {
@@ -71,6 +76,8 @@ pub fn resolveKind(col: *const parquet.ParquetColumn) ResolvedKind {
             }
         },
         .date => return .date_,
+        .time => return .time_,
+        .timestamp => return .timestamp_,
         .string, .@"enum", .json => return .string,
         .variant, .geometry, .geography => return .raw,
         else => {},
@@ -84,6 +91,8 @@ pub fn resolveKind(col: *const parquet.ParquetColumn) ResolvedKind {
         .uint_64 => return .uint64_,
         .utf8 => return .string,
         .date => return .date_,
+        .time_millis, .time_micros => return .time_,
+        .timestamp_millis, .timestamp_micros => return .timestamp_,
         else => {},
     };
     return switch (col.physical_type) {
@@ -93,7 +102,7 @@ pub fn resolveKind(col: *const parquet.ParquetColumn) ResolvedKind {
         .float => .float32_,
         .double => .float64_,
         .byte_array, .fixed_len_byte_array => .string,
-        .int96 => .raw,
+        .int96 => .timestamp_,
     };
 }
 
@@ -178,6 +187,63 @@ fn addColumn(allocator: Allocator, df: *dataframe.Dataframe, col: *const parquet
                 try s.append(.{ .days = if (valid and i < vals.len) vals[i] else 0 });
             }
         },
+        .time_ => {
+            var s = try df.createSeries(Time);
+            try s.rename(col.name);
+            // unit/utc: modern annotation wins; legacy time_millis/time_micros
+            // imply utc=true per LogicalTypes.md.
+            var unit: parquet.TimeUnit = .millis;
+            var utc = true;
+            if (col.logical_type) |lt| {
+                unit = lt.time.unit;
+                utc = lt.time.is_adjusted_to_utc;
+            } else if (col.converted_type) |ct| {
+                unit = if (ct == .time_micros) .micros else .millis;
+            }
+            if (col.int32s) |vals| { // TIME(MILLIS) is INT32-backed
+                for (0..col.num_rows) |i| {
+                    const valid = if (col.validity) |v| v[i] else true;
+                    try s.append(.{ .value = if (valid and i < vals.len) vals[i] else 0, .unit = unit, .utc = utc });
+                }
+            } else if (col.int64s) |vals| {
+                for (0..col.num_rows) |i| {
+                    const valid = if (col.validity) |v| v[i] else true;
+                    try s.append(.{ .value = if (valid and i < vals.len) vals[i] else 0, .unit = unit, .utc = utc });
+                }
+            } else return error.UnexpectedPhysicalType;
+        },
+        .timestamp_ => {
+            var s = try df.createSeries(Timestamp);
+            try s.rename(col.name);
+            if (col.physical_type == .int96) {
+                // Legacy INT96: 12-byte julian-day timestamps -> nanos.
+                const vals = col.byte_arrays orelse return error.UnexpectedPhysicalType;
+                for (0..col.num_rows) |i| {
+                    const valid = if (col.validity) |v| v[i] else true;
+                    if (valid and i < vals.len) {
+                        if (vals[i].len != 12) return error.InvalidInt96;
+                        const bytes_ptr: *const [12]u8 = vals[i][0..12];
+                        try s.append(try Timestamp.fromInt96Bytes(bytes_ptr));
+                    } else {
+                        try s.append(.{ .value = 0, .unit = .nanos, .utc = false, .origin = .int96 });
+                    }
+                }
+            } else {
+                var unit: parquet.TimeUnit = .millis;
+                var utc = true;
+                if (col.logical_type) |lt| {
+                    unit = lt.timestamp.unit;
+                    utc = lt.timestamp.is_adjusted_to_utc;
+                } else if (col.converted_type) |ct| {
+                    unit = if (ct == .timestamp_micros) .micros else .millis;
+                }
+                const vals = col.int64s orelse return error.UnexpectedPhysicalType;
+                for (0..col.num_rows) |i| {
+                    const valid = if (col.validity) |v| v[i] else true;
+                    try s.append(.{ .value = if (valid and i < vals.len) vals[i] else 0, .unit = unit, .utc = utc, .origin = .int64 });
+                }
+            }
+        },
         .raw => return addRawColumn(allocator, df, col),
     }
 }
@@ -215,51 +281,40 @@ pub const ColumnData = parquet.ColumnData;
 
 pub const DataframeColumns = struct {
     columns: []ColumnData,
-    /// Allocated string slices that need to be freed
-    string_bufs: [][]const []const u8,
-    /// Allocated i32 scratch buffers (Date columns) that need to be freed
-    i32_bufs: [][]i32,
-    allocator: Allocator,
+    /// Owns every scratch allocation made while converting (slice arrays,
+    /// numeric buffers, encoded byte values). Inner slices borrowed from
+    /// Series values (String/Raw bytes) are NOT arena-owned and are not freed.
+    arena: std.heap.ArenaAllocator,
 
     pub fn deinit(self: *DataframeColumns) void {
-        for (self.string_bufs) |buf| {
-            self.allocator.free(buf);
-        }
-        self.allocator.free(self.string_bufs);
-        for (self.i32_bufs) |buf| {
-            self.allocator.free(buf);
-        }
-        self.allocator.free(self.i32_bufs);
-        self.allocator.free(self.columns);
+        self.arena.deinit();
     }
 };
 
+/// Options for the dataframe → Parquet adapter.
+pub const AdapterWriteOptions = struct {
+    /// When true AND every value in a Timestamp column carries origin=int96,
+    /// the column is re-emitted as INT96 (bit-faithful). Default: modern INT64
+    /// TIMESTAMP.
+    emit_int96: bool = false,
+};
+
 /// Convert a Dataframe's columns to ColumnData slices for the Parquet writer.
-pub fn fromDataframe(allocator: Allocator, df: *dataframe.Dataframe) !DataframeColumns {
-    const width = df.width();
-    const cols = try allocator.alloc(ColumnData, width);
-    errdefer allocator.free(cols);
-
-    // Track string buffers that need cleanup
-    var string_bufs: std.ArrayList([]const []const u8) = .empty;
-    defer string_bufs.deinit(allocator);
-
-    // Track i32 scratch buffers (Date columns) that need cleanup
-    var i32_bufs: std.ArrayList([]i32) = .empty;
-    defer i32_bufs.deinit(allocator);
-
+pub fn fromDataframe(allocator: Allocator, df: *dataframe.Dataframe, opts: AdapterWriteOptions) !DataframeColumns {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    errdefer arena.deinit();
+    const scratch = arena.allocator();
+    const cols = try scratch.alloc(ColumnData, df.width());
     for (df.series.items, 0..) |*boxed, i| {
-        cols[i] = try boxedToColumnData(allocator, boxed, &string_bufs, &i32_bufs);
+        cols[i] = try boxedToColumnData(scratch, boxed, opts);
     }
-
-    const bufs = try string_bufs.toOwnedSlice(allocator);
-    const i32s = try i32_bufs.toOwnedSlice(allocator);
-    return .{ .columns = cols, .string_bufs = bufs, .i32_bufs = i32s, .allocator = allocator };
+    return .{ .columns = cols, .arena = arena };
 }
 
-// Convert a BoxedSeries to ColumnData for Parquet writing. Allocates string slices for string columns
-// and i32 scratch buffers for Date columns.
-fn boxedToColumnData(allocator: Allocator, boxed: *BoxedSeries, string_bufs: *std.ArrayList([]const []const u8), i32_bufs: *std.ArrayList([]i32)) !ColumnData {
+// Convert a BoxedSeries to ColumnData for Parquet writing. All scratch
+// allocations (slice arrays, numeric buffers) come from the passed arena
+// allocator; the arena owns them and frees them on DataframeColumns.deinit().
+fn boxedToColumnData(scratch: Allocator, boxed: *BoxedSeries, opts: AdapterWriteOptions) !ColumnData {
     return switch (boxed.*) {
         .int32 => |s| .{
             .name = s.name.toSlice(),
@@ -292,12 +347,11 @@ fn boxedToColumnData(allocator: Allocator, boxed: *BoxedSeries, string_bufs: *st
             .num_values = s.values.items.len,
         },
         .string => |s| blk: {
-            // Convert String values to []const u8 slices
-            const slices = try allocator.alloc([]const u8, s.values.items.len);
+            // Convert String values to []const u8 slices; arena owns the array.
+            const slices = try scratch.alloc([]const u8, s.values.items.len);
             for (s.values.items, 0..) |*str, j| {
                 slices[j] = str.toSlice();
             }
-            try string_bufs.append(allocator, slices);
             break :blk .{
                 .name = s.name.toSlice(),
                 .physical_type = .byte_array,
@@ -308,11 +362,10 @@ fn boxedToColumnData(allocator: Allocator, boxed: *BoxedSeries, string_bufs: *st
         },
         .raw => |s| blk: {
             // Re-emit the preserved physical type + annotations bit-faithfully.
-            const slices = try allocator.alloc([]const u8, s.values.items.len);
+            const slices = try scratch.alloc([]const u8, s.values.items.len);
             for (s.values.items, 0..) |*r, j| {
                 slices[j] = r.toSlice();
             }
-            try string_bufs.append(allocator, slices);
             break :blk .{
                 .name = s.name.toSlice(),
                 .physical_type = s.meta.physical_type,
@@ -366,11 +419,10 @@ fn boxedToColumnData(allocator: Allocator, boxed: *BoxedSeries, string_bufs: *st
         .date => |s| blk: {
             // DATE re-emits as INT32 + both annotations (modern field 10 and
             // legacy converted_type), matching what pyarrow writes.
-            const days = try allocator.alloc(i32, s.values.items.len);
+            const days = try scratch.alloc(i32, s.values.items.len);
             for (s.values.items, 0..) |d, j| {
                 days[j] = d.days;
             }
-            try i32_bufs.append(allocator, days);
             break :blk .{
                 .name = s.name.toSlice(),
                 .physical_type = .int32,
@@ -378,6 +430,108 @@ fn boxedToColumnData(allocator: Allocator, boxed: *BoxedSeries, string_bufs: *st
                 .logical_type = .date,
                 .int32s = days,
                 .num_values = s.values.items.len,
+            };
+        },
+        .time => |s| blk: {
+            const n = s.values.items.len;
+            // TIME(MILLIS) is INT32-backed; micros/nanos are INT64. Legacy
+            // converted_type exists only for millis/micros.
+            // Column metadata contract (first-value-wins): unit/utc come from
+            // values[0] — uniform by construction when read from parquet. For
+            // hand-built mixed columns: values that re-express losslessly in
+            // values[0]'s unit are silently normalized; precision loss errors
+            // (LossyTimeUnit); a mixed utc flag is silently coerced to
+            // values[0]'s. Revisit if hand-built mixing becomes a use case.
+            const unit: parquet.TimeUnit = if (n > 0) s.values.items[0].unit else .millis;
+            const utc: bool = if (n > 0) s.values.items[0].utc else true;
+            const lt: parquet.LogicalType = .{ .time = .{ .is_adjusted_to_utc = utc, .unit = unit } };
+            if (unit == .millis) {
+                const buf = try scratch.alloc(i32, n);
+                for (s.values.items, 0..) |t, j| {
+                    const nanos = t.toNanos();
+                    const per: i128 = 1_000_000;
+                    if (@rem(nanos, per) != 0) return error.LossyTimeUnit;
+                    buf[j] = std.math.cast(i32, @divTrunc(nanos, per)) orelse return error.Overflow;
+                }
+                break :blk .{
+                    .name = s.name.toSlice(),
+                    .physical_type = .int32,
+                    .converted_type = .time_millis,
+                    .logical_type = lt,
+                    .int32s = buf,
+                    .num_values = n,
+                };
+            }
+            const buf = try scratch.alloc(i64, n);
+            const per: i128 = if (unit == .micros) 1_000 else 1;
+            for (s.values.items, 0..) |t, j| {
+                const nanos = t.toNanos();
+                if (@rem(nanos, per) != 0) return error.LossyTimeUnit;
+                buf[j] = std.math.cast(i64, @divTrunc(nanos, per)) orelse return error.Overflow;
+            }
+            break :blk .{
+                .name = s.name.toSlice(),
+                .physical_type = .int64,
+                .converted_type = if (unit == .micros) .time_micros else null,
+                .logical_type = lt,
+                .int64s = buf,
+                .num_values = n,
+            };
+        },
+        .timestamp => |s| blk: {
+            const n = s.values.items.len;
+            // Same first-value-wins unit/utc contract as the .time arm above.
+            const unit: parquet.TimeUnit = if (n > 0) s.values.items[0].unit else .millis;
+            const utc: bool = if (n > 0) s.values.items[0].utc else true;
+            // INT96 re-emit: opt-in AND every value must carry int96 origin —
+            // any non-int96 value (or an empty column) forces the modern
+            // INT64 path.
+            var all_int96 = n > 0;
+            for (s.values.items) |t| {
+                if (t.origin != .int96) {
+                    all_int96 = false;
+                    break;
+                }
+            }
+            if (opts.emit_int96 and all_int96) {
+                const slices = try scratch.alloc([]const u8, n);
+                for (s.values.items, 0..) |t, j| {
+                    const bytes = try scratch.alloc(u8, 12);
+                    const encoded = try t.toInt96Bytes();
+                    @memcpy(bytes, &encoded);
+                    slices[j] = bytes;
+                }
+                break :blk .{
+                    .name = s.name.toSlice(),
+                    .physical_type = .int96,
+                    .byte_arrays = slices,
+                    .num_values = n,
+                };
+            }
+            // Modern default: INT64 + TIMESTAMP(unit, utc); legacy converted
+            // only for utc millis/micros (matches pyarrow's emission).
+            const buf = try scratch.alloc(i64, n);
+            const per: i128 = switch (unit) {
+                .millis => 1_000_000,
+                .micros => 1_000,
+                .nanos => 1,
+            };
+            for (s.values.items, 0..) |t, j| {
+                const nanos = t.toNanos();
+                if (@rem(nanos, per) != 0) return error.LossyTimeUnit;
+                buf[j] = std.math.cast(i64, @divTrunc(nanos, per)) orelse return error.Overflow;
+            }
+            break :blk .{
+                .name = s.name.toSlice(),
+                .physical_type = .int64,
+                .converted_type = if (!utc) null else switch (unit) {
+                    .millis => .timestamp_millis,
+                    .micros => .timestamp_micros,
+                    .nanos => null,
+                },
+                .logical_type = .{ .timestamp = .{ .is_adjusted_to_utc = utc, .unit = unit } },
+                .int64s = buf,
+                .num_values = n,
             };
         },
     };

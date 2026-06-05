@@ -2,6 +2,8 @@ const std = @import("std");
 const strings = @import("strings.zig");
 const Raw = @import("raw.zig").Raw;
 const Date = @import("date.zig").Date;
+const Time = @import("time.zig").Time;
+const Timestamp = @import("timestamp.zig").Timestamp;
 
 const BoxedSeries = @import("boxed_series.zig").BoxedSeries;
 const GroupBy = @import("group.zig").GroupBy;
@@ -427,6 +429,8 @@ pub fn Series(comptime T: type) type {
                 strings.String => BoxedSeries{ .string = self },
                 Raw => BoxedSeries{ .raw = self },
                 Date => BoxedSeries{ .date = self },
+                Time => BoxedSeries{ .time = self },
+                Timestamp => BoxedSeries{ .timestamp = self },
                 // Add other types as needed
                 else => @compileError("Unsupported type " ++ @typeName(T) ++ " for SeriesType conversion"),
             };

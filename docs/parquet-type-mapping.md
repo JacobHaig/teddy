@@ -87,7 +87,7 @@ integer families — we just have to *read the annotation* instead of assuming
 |---|---|---|
 | `Date` | `i32` days since epoch | DATE |
 | `Time` | `{ unit: enum{millis,micros,nanos}, value: i64 }` (widen MILLIS i32→i64 internally) | TIME |
-| `Timestamp` | `{ unit, is_utc: bool, value: i64 }` | TIMESTAMP (and decoded INT96) |
+| `Timestamp` | `{ unit, is_utc: bool, value: i64 }` | TIMESTAMP (and decoded INT96 — implemented in 6d-2a.2: INT96 → Timestamp(nanos, utc=false, origin=int96), re-emit via `emit_int96`) |
 | `Decimal` | `{ unscaled: i256, precision: u8, scale: i8 }` for **precision ≤ 76** (== Arrow decimal256; raw-bytes fallback only beyond 76) | DECIMAL on INT32/INT64/FLBA |
 | `Binary` | owned `[]u8` | unannotated BYTE_ARRAY, BSON |
 | `FixedBytes` | owned `[]u8` (+ width) | generic FLBA |

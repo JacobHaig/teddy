@@ -141,12 +141,19 @@ classDiagram
 │  f64         │  .float64     │  DOUBLE       │  Float64       │
 │  String      │  .string      │  BYTE_ARRAY   │  String        │
 │  Date        │  .date        │  INT32+DATE   │  Date          │
+│  Time        │  .time        │  INT32/64+TIME│  Time          │
+│  Timestamp   │  .timestamp   │  INT64+TS **  │  Timestamp     │
 │  Raw         │  .raw         │  (preserved)* │  Raw           │
 └──────────────┴───────────────┴───────────────┴────────────────┘
 
 * Raw re-emits whatever physical type + logical/converted annotation the
-  column carried on read (INT96, FLBA(n), BYTE_ARRAY+VARIANT, ...), stored in
+  column carried on read (FLBA(n), BYTE_ARRAY+VARIANT, ...), stored in
   `Series(Raw).meta`. Reader-side resolution precedence (modern logical_type →
   legacy converted_type → bare physical) lives in `resolveKind`
   (src/dataframe/parquet.zig).
+
+** Time: millis → INT32+TIME_MILLIS, micros/nanos → INT64 (+TIME_MICROS for
+   micros). Timestamp: INT64 + TIMESTAMP(unit, utc) by default; legacy INT96
+   decodes to Timestamp(nanos, utc=false, origin=int96) and re-emits as INT96
+   bit-faithfully only via `Writer.withEmitInt96(true)`.
 ```

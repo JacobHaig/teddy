@@ -79,9 +79,23 @@ def logical_annotations():
     print("data/logical_annotations.parquet: DATE/TIME/TIMESTAMP/DECIMAL logical types, 2 rows")
 
 
+def time_units():
+    # Unit/utc breadth for TIME/TIMESTAMP resolution: time32(ms) is INT32-backed;
+    # timestamp without tz -> isAdjustedToUTC=false.
+    tbl = pa.table({
+        "t_ms":     pa.array([dt.time(1, 2, 3), dt.time(4, 5, 6)], type=pa.time32("ms")),
+        "ts_ms":    pa.array([dt.datetime(2020, 1, 1, 12, 0, 0)] * 2, type=pa.timestamp("ms", tz="UTC")),
+        "ts_ns":    pa.array([dt.datetime(2021, 6, 15, 8, 30, 0)] * 2, type=pa.timestamp("ns", tz="UTC")),
+        "ts_local": pa.array([dt.datetime(2022, 3, 3, 3, 3, 3)] * 2, type=pa.timestamp("us")),
+    })
+    pq.write_table(tbl, "data/time_units.parquet", compression=None)
+    print("data/time_units.parquet: TIME(ms)/TIMESTAMP(ms,ns,local us), 2 rows")
+
+
 if __name__ == "__main__":
     multi_rowgroup()
     fixed_len_byte_array()
     int96_timestamps()
     unsigned_ints()
     logical_annotations()
+    time_units()
