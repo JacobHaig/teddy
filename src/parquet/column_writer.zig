@@ -28,6 +28,9 @@ pub const ColumnData = struct {
     converted_type: ?types.ConvertedType = null,
     logical_type: ?types.LogicalType = null,
     type_length: ?i32 = null,
+    // Legacy DECIMAL fields 7/8; propagated to schema element on write.
+    scale: ?i32 = null,
+    precision: ?i32 = null,
     int32s: ?[]const i32 = null,
     int64s: ?[]const i64 = null,
     floats: ?[]const f32 = null,

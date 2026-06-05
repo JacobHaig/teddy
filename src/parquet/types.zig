@@ -133,6 +133,9 @@ pub const ParquetColumn = struct {
     converted_type: ?ConvertedType,
     logical_type: ?LogicalType,
     type_length: ?i32, // non-null only for FIXED_LEN_BYTE_ARRAY
+    // Legacy DECIMAL fields 7/8; modern files also carry them in logical_type.
+    scale: ?i32,
+    precision: ?i32,
     is_optional: bool,
 
     booleans: ?[]bool,
@@ -170,6 +173,8 @@ pub const ParquetColumn = struct {
             .converted_type = null,
             .logical_type = null,
             .type_length = null,
+            .scale = null,
+            .precision = null,
             .is_optional = false,
             .booleans = null,
             .int32s = null,

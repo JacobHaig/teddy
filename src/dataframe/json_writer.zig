@@ -97,6 +97,9 @@ fn isStringSeries(series: *BoxedSeries) bool {
         .date => true,
         .time => true,
         .timestamp => true,
+        // Decimal strings stay quoted: documents exactness and avoids JSON
+        // float mangling of the fixed-point value.
+        .decimal => true,
         else => false,
     };
 }

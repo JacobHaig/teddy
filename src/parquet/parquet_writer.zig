@@ -55,6 +55,8 @@ pub fn writeParquet(allocator: Allocator, columns: []const ColumnData, options: 
             .repetition_type = .required,
             .name = col.name,
             .converted_type = col.converted_type,
+            .scale = col.scale,
+            .precision = col.precision,
             .logical_type = col.logical_type,
         };
     }

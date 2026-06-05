@@ -7,6 +7,7 @@ const Raw = @import("raw.zig").Raw;
 const Date = @import("date.zig").Date;
 const Time = @import("time.zig").Time;
 const Timestamp = @import("timestamp.zig").Timestamp;
+const Decimal = @import("decimal.zig").Decimal;
 const BoxedSeries = @import("boxed_series.zig").BoxedSeries;
 const parquet = @import("parquet");
 
@@ -46,14 +47,16 @@ pub const ResolvedKind = enum {
     date_,
     time_,
     timestamp_,
+    decimal_,
 };
 
 /// Resolution precedence: modern logical_type (field 10) → legacy
 /// converted_type (field 6) → bare physical type. Logical annotations not yet
-/// surfaced as dataframe types (decimal/uuid/float16/...)
+/// surfaced as dataframe types (uuid/float16/...)
 /// fall through to the physical default; slices 6d-2a.2–.5 flip them one at a
 /// time. Deferred types (VARIANT/GEOMETRY/GEOGRAPHY) resolve to Raw.
 /// INT96 physical resolves to timestamp_ (legacy format decoded via fromInt96Bytes).
+/// DECIMAL with precision 1..76 resolves to decimal_; precision > 76 → raw.
 pub fn resolveKind(col: *const parquet.ParquetColumn) ResolvedKind {
     if (col.logical_type) |lt| switch (lt) {
         .integer => |it| {
@@ -78,6 +81,10 @@ pub fn resolveKind(col: *const parquet.ParquetColumn) ResolvedKind {
         .date => return .date_,
         .time => return .time_,
         .timestamp => return .timestamp_,
+        .decimal => |d| {
+            if (d.precision >= 1 and d.precision <= 76) return .decimal_;
+            return .raw;
+        },
         .string, .@"enum", .json => return .string,
         .variant, .geometry, .geography => return .raw,
         else => {},
@@ -93,6 +100,13 @@ pub fn resolveKind(col: *const parquet.ParquetColumn) ResolvedKind {
         .date => return .date_,
         .time_millis, .time_micros => return .time_,
         .timestamp_millis, .timestamp_micros => return .timestamp_,
+        .decimal => {
+            // precision must come from legacy field 8; if absent or out of range → raw.
+            if (col.precision) |p| {
+                if (p >= 1 and p <= 76) return .decimal_;
+            }
+            return .raw;
+        },
         else => {},
     };
     return switch (col.physical_type) {
@@ -243,6 +257,43 @@ fn addColumn(allocator: Allocator, df: *dataframe.Dataframe, col: *const parquet
                     try s.append(.{ .value = if (valid and i < vals.len) vals[i] else 0, .unit = unit, .utc = utc, .origin = .int64 });
                 }
             }
+        },
+        .decimal_ => {
+            var s = try df.createSeries(Decimal);
+            try s.rename(col.name);
+            // precision/scale: modern annotation wins, else legacy fields 7/8.
+            var precision: u8 = 38;
+            var scale: i8 = 0;
+            if (col.logical_type) |lt| {
+                if (lt == .decimal) {
+                    precision = std.math.cast(u8, lt.decimal.precision) orelse return error.InvalidDecimal;
+                    scale = std.math.cast(i8, lt.decimal.scale) orelse return error.InvalidDecimal;
+                }
+            } else {
+                if (col.precision) |p| precision = std.math.cast(u8, p) orelse return error.InvalidDecimal;
+                if (col.scale) |sc| scale = std.math.cast(i8, sc) orelse return error.InvalidDecimal;
+            }
+            if (col.int32s) |vals| {
+                for (0..col.num_rows) |i| {
+                    const valid = if (col.validity) |v| v[i] else true;
+                    try s.append(.{ .unscaled = if (valid and i < vals.len) @as(i256, vals[i]) else 0, .precision = precision, .scale = scale });
+                }
+            } else if (col.int64s) |vals| {
+                for (0..col.num_rows) |i| {
+                    const valid = if (col.validity) |v| v[i] else true;
+                    try s.append(.{ .unscaled = if (valid and i < vals.len) @as(i256, vals[i]) else 0, .precision = precision, .scale = scale });
+                }
+            } else if (col.byte_arrays) |vals| {
+                // FLBA / BYTE_ARRAY: two's-complement big-endian unscaled.
+                for (0..col.num_rows) |i| {
+                    const valid = if (col.validity) |v| v[i] else true;
+                    if (valid and i < vals.len) {
+                        try s.append(.{ .unscaled = try Decimal.fromBeBytes(vals[i]), .precision = precision, .scale = scale });
+                    } else {
+                        try s.append(.{ .unscaled = 0, .precision = precision, .scale = scale });
+                    }
+                }
+            } else return error.UnexpectedPhysicalType;
         },
         .raw => return addRawColumn(allocator, df, col),
     }
@@ -531,6 +582,64 @@ fn boxedToColumnData(scratch: Allocator, boxed: *BoxedSeries, opts: AdapterWrite
                 },
                 .logical_type = .{ .timestamp = .{ .is_adjusted_to_utc = utc, .unit = unit } },
                 .int64s = buf,
+                .num_values = n,
+            };
+        },
+        .decimal => |s| blk: {
+            const n = s.values.items.len;
+            // First-value-wins precision/scale contract (same convention as
+            // the .time arm); mixed precision/scale in a hand-built column is
+            // not supported and writes the first value's parameters.
+            const precision: u8 = if (n > 0) s.values.items[0].precision else 38;
+            const scale: i8 = if (n > 0) s.values.items[0].scale else 0;
+            const lt: parquet.LogicalType = .{ .decimal = .{ .scale = @as(i32, scale), .precision = @as(i32, precision) } };
+            if (precision <= 9) {
+                const buf = try scratch.alloc(i32, n);
+                for (s.values.items, 0..) |d, j| {
+                    buf[j] = std.math.cast(i32, d.unscaled) orelse return error.DecimalOverflow;
+                }
+                break :blk .{
+                    .name = s.name.toSlice(),
+                    .physical_type = .int32,
+                    .converted_type = .decimal,
+                    .logical_type = lt,
+                    .scale = @as(i32, scale),
+                    .precision = @as(i32, precision),
+                    .int32s = buf,
+                    .num_values = n,
+                };
+            } else if (precision <= 18) {
+                const buf = try scratch.alloc(i64, n);
+                for (s.values.items, 0..) |d, j| {
+                    buf[j] = std.math.cast(i64, d.unscaled) orelse return error.DecimalOverflow;
+                }
+                break :blk .{
+                    .name = s.name.toSlice(),
+                    .physical_type = .int64,
+                    .converted_type = .decimal,
+                    .logical_type = lt,
+                    .scale = @as(i32, scale),
+                    .precision = @as(i32, precision),
+                    .int64s = buf,
+                    .num_values = n,
+                };
+            }
+            const width = Decimal.minBytesForPrecision(precision);
+            const slices = try scratch.alloc([]const u8, n);
+            for (s.values.items, 0..) |d, j| {
+                const bytes = try scratch.alloc(u8, width);
+                try Decimal.toBeBytes(d.unscaled, bytes);
+                slices[j] = bytes;
+            }
+            break :blk .{
+                .name = s.name.toSlice(),
+                .physical_type = .fixed_len_byte_array,
+                .type_length = @as(i32, width),
+                .converted_type = .decimal,
+                .logical_type = lt,
+                .scale = @as(i32, scale),
+                .precision = @as(i32, precision),
+                .byte_arrays = slices,
                 .num_values = n,
             };
         },

@@ -4,6 +4,7 @@ const adapter = @import("parquet.zig");
 const Raw = @import("raw.zig").Raw;
 const Time = @import("time.zig").Time;
 const Timestamp = @import("timestamp.zig").Timestamp;
+const Decimal = @import("decimal.zig").Decimal;
 
 test "resolveKind: precedence logical -> converted -> physical" {
     // NOTE: `col` is mutated across cases and fields CARRY OVER — when adding
@@ -69,6 +70,32 @@ test "resolveKind: precedence logical -> converted -> physical" {
     col.physical_type = .byte_array;
     col.converted_type = .utf8;
     try std.testing.expectEqual(adapter.ResolvedKind.string, adapter.resolveKind(&col));
+
+    // logical decimal precision 10 -> decimal_
+    col.converted_type = null;
+    col.logical_type = .{ .decimal = .{ .precision = 10, .scale = 2 } };
+    col.physical_type = .fixed_len_byte_array;
+    col.precision = null;
+    try std.testing.expectEqual(adapter.ResolvedKind.decimal_, adapter.resolveKind(&col));
+
+    // logical decimal precision 77 -> raw (exceeds 76-digit cap)
+    col.logical_type = .{ .decimal = .{ .precision = 77, .scale = 0 } };
+    col.precision = null;
+    try std.testing.expectEqual(adapter.ResolvedKind.raw, adapter.resolveKind(&col));
+
+    // converted .decimal with col.precision=9 -> decimal_
+    col.logical_type = null;
+    col.physical_type = .int32;
+    col.converted_type = .decimal;
+    col.precision = 9;
+    try std.testing.expectEqual(adapter.ResolvedKind.decimal_, adapter.resolveKind(&col));
+
+    // converted .decimal with col.precision=null -> raw (defensive: no field 8)
+    col.logical_type = null;
+    col.physical_type = .int32;
+    col.converted_type = .decimal;
+    col.precision = null;
+    try std.testing.expectEqual(adapter.ResolvedKind.raw, adapter.resolveKind(&col));
 }
 
 test "adapter: INT96 column decodes to Timestamp" {
@@ -107,7 +134,7 @@ test "adapter: INT96 column decodes to Timestamp" {
 
 test "adapter: logical_annotations.parquet still reads end-to-end" {
     // date -> Date (6d-2a.1); time -> Time (6d-2a.2); timestamp -> Timestamp (6d-2a.2);
-    // decimal FLBA still resolves to String.
+    // decimal FLBA -> Decimal (6d-2a.3).
     const allocator = std.testing.allocator;
     const cwd = std.Io.Dir.cwd();
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -153,8 +180,16 @@ test "adapter: logical_annotations.parquet still reads end-to-end" {
     try std.testing.expectEqual(@as(u8, 1), ts_date0.day);
     try std.testing.expectEqual(@as(u8, 12), ts0.timeOfDay().hour());
 
-    // Column 3: decimal FLBA -> String (for now)
-    try std.testing.expectEqualStrings("String", df.series.items[3].typeName());
+    // Column 3: decimal(10,2) FLBA -> Decimal (6d-2a.3)
+    try std.testing.expectEqualStrings("Decimal", df.series.items[3].typeName());
+    const dec0 = df.series.items[3].decimal.values.items[0];
+    try std.testing.expectEqual(@as(u8, 10), dec0.precision);
+    try std.testing.expectEqual(@as(i8, 2), dec0.scale);
+    try std.testing.expectEqual(@as(i256, 1234567890), dec0.unscaled); // 12345678.90 * 100
+    // Check format "12345678.90"
+    var fmtbuf: [64]u8 = undefined;
+    const fmted = try std.fmt.bufPrint(&fmtbuf, "{f}", .{dec0});
+    try std.testing.expectEqualStrings("12345678.90", fmted);
 }
 
 test "adapter: Date column round-trips losslessly with both annotations" {
@@ -186,11 +221,13 @@ test "adapter: Date column round-trips losslessly with both annotations" {
     try std.testing.expectEqual(@as(i32, 18262), result2.columns[0].int32s.?[0]);
     try std.testing.expectEqual(@as(i32, 18793), result2.columns[0].int32s.?[1]);
 
-    // Re-resolves at the dataframe layer
+    // Re-resolves at the dataframe layer — decimal column now writes as Decimal
     var df2 = try adapter.toDataframe(allocator, &result2);
     defer df2.deinit();
     try std.testing.expectEqual(@as(usize, 4), df2.width());
     try std.testing.expectEqualStrings("Date", df2.series.items[0].typeName());
+    // Column 3 re-resolves to Decimal (no longer String)
+    try std.testing.expectEqualStrings("Decimal", df2.series.items[3].typeName());
 }
 
 test "adapter: Time and Timestamp round-trip losslessly with annotations" {
@@ -441,4 +478,130 @@ test "adapter: time_units.parquet unit/utc breadth" {
     const ts_local = df.series.items[3].timestamp.values.items[0];
     try std.testing.expectEqual(parquet.TimeUnit.micros, ts_local.unit);
     try std.testing.expect(!ts_local.utc);
+}
+
+test "adapter: decimals.parquet all three physicals" {
+    // decimals.parquet: d9 (INT32, p=9, s=2), d18 (INT64, p=18, s=4), d38 (FLBA(16), p=38, s=10).
+    // Both rows per column: positive + negative value.
+    const allocator = std.testing.allocator;
+    const cwd = std.Io.Dir.cwd();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const file_data = try cwd.readFileAlloc(io, "data/decimals.parquet", allocator, .unlimited);
+    defer allocator.free(file_data);
+
+    var result = try parquet.readParquet(allocator, file_data);
+    defer result.deinit();
+    var df = try adapter.toDataframe(allocator, &result);
+    defer df.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), df.width());
+
+    // d9: precision=9, scale=2; INT32-backed; 1234567.89 -> unscaled 123456789
+    try std.testing.expectEqualStrings("Decimal", df.series.items[0].typeName());
+    const d9_0 = df.series.items[0].decimal.values.items[0];
+    try std.testing.expectEqual(@as(u8, 9), d9_0.precision);
+    try std.testing.expectEqual(@as(i8, 2), d9_0.scale);
+    try std.testing.expectEqual(@as(i256, 123456789), d9_0.unscaled);
+    var buf9: [32]u8 = undefined;
+    const fmt9 = try std.fmt.bufPrint(&buf9, "{f}", .{d9_0});
+    try std.testing.expectEqualStrings("1234567.89", fmt9);
+    // row 1: -0.01 -> unscaled -1
+    const d9_1 = df.series.items[0].decimal.values.items[1];
+    try std.testing.expectEqual(@as(i256, -1), d9_1.unscaled);
+    var buf9b: [32]u8 = undefined;
+    const fmt9b = try std.fmt.bufPrint(&buf9b, "{f}", .{d9_1});
+    try std.testing.expectEqualStrings("-0.01", fmt9b);
+
+    // d18: precision=18, scale=4; INT64-backed; 12345678901234.5678 -> unscaled 123456789012345678
+    try std.testing.expectEqualStrings("Decimal", df.series.items[1].typeName());
+    const d18_0 = df.series.items[1].decimal.values.items[0];
+    try std.testing.expectEqual(@as(u8, 18), d18_0.precision);
+    try std.testing.expectEqual(@as(i8, 4), d18_0.scale);
+    try std.testing.expectEqual(@as(i256, 123456789012345678), d18_0.unscaled);
+    // row 1: -1.0001 -> unscaled -10001
+    const d18_1 = df.series.items[1].decimal.values.items[1];
+    try std.testing.expectEqual(@as(i256, -10001), d18_1.unscaled);
+    var buf18b: [32]u8 = undefined;
+    const fmt18b = try std.fmt.bufPrint(&buf18b, "{f}", .{d18_1});
+    try std.testing.expectEqualStrings("-1.0001", fmt18b);
+
+    // d38: precision=38, scale=10; FLBA(16)-backed
+    try std.testing.expectEqualStrings("Decimal", df.series.items[2].typeName());
+    const d38_0 = df.series.items[2].decimal.values.items[0];
+    try std.testing.expectEqual(@as(u8, 38), d38_0.precision);
+    try std.testing.expectEqual(@as(i8, 10), d38_0.scale);
+    try std.testing.expectEqual(@as(i256, 12345678901234567890123456780123456789), d38_0.unscaled);
+    // row 1: -0.0000000001 -> unscaled -1
+    const d38_1 = df.series.items[2].decimal.values.items[1];
+    try std.testing.expectEqual(@as(i256, -1), d38_1.unscaled);
+    var buf38b: [64]u8 = undefined;
+    const fmt38b = try std.fmt.bufPrint(&buf38b, "{f}", .{d38_1});
+    try std.testing.expectEqualStrings("-0.0000000001", fmt38b);
+}
+
+test "adapter: Decimal round-trips losslessly across physicals" {
+    // decimals.parquet -> df -> write -> read: physicals int32/int64/FLBA(16)
+    // respectively; unscaled values identical; scale/precision fields 7/8 +
+    // logical annotation present on re-read; re-resolves to Decimal.
+    const allocator = std.testing.allocator;
+    const cwd = std.Io.Dir.cwd();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const file_data = try cwd.readFileAlloc(io, "data/decimals.parquet", allocator, .unlimited);
+    defer allocator.free(file_data);
+
+    var result = try parquet.readParquet(allocator, file_data);
+    defer result.deinit();
+    var df = try adapter.toDataframe(allocator, &result);
+    defer df.deinit();
+
+    var cols = try adapter.fromDataframe(allocator, df, .{});
+    defer cols.deinit();
+    const output = try parquet.writeParquet(allocator, cols.columns, .{});
+    defer allocator.free(output);
+
+    var result2 = try parquet.readParquet(allocator, output);
+    defer result2.deinit();
+
+    // d9: INT32 on wire, decimal annotation present, scale/precision fields
+    try std.testing.expectEqual(parquet.PhysicalType.int32, result2.columns[0].physical_type);
+    try std.testing.expectEqual(parquet.ConvertedType.decimal, result2.columns[0].converted_type.?);
+    try std.testing.expect(result2.columns[0].logical_type.? == .decimal);
+    try std.testing.expectEqual(@as(i32, 2), result2.columns[0].scale.?);
+    try std.testing.expectEqual(@as(i32, 9), result2.columns[0].precision.?);
+    try std.testing.expectEqual(@as(i32, 123456789), result2.columns[0].int32s.?[0]);
+    try std.testing.expectEqual(@as(i32, -1), result2.columns[0].int32s.?[1]);
+
+    // d18: INT64 on wire
+    try std.testing.expectEqual(parquet.PhysicalType.int64, result2.columns[1].physical_type);
+    try std.testing.expectEqual(parquet.ConvertedType.decimal, result2.columns[1].converted_type.?);
+    try std.testing.expect(result2.columns[1].logical_type.? == .decimal);
+    try std.testing.expectEqual(@as(i32, 4), result2.columns[1].scale.?);
+    try std.testing.expectEqual(@as(i32, 18), result2.columns[1].precision.?);
+    try std.testing.expectEqual(@as(i64, 123456789012345678), result2.columns[1].int64s.?[0]);
+    try std.testing.expectEqual(@as(i64, -10001), result2.columns[1].int64s.?[1]);
+
+    // d38: FLBA(16) on wire
+    try std.testing.expectEqual(parquet.PhysicalType.fixed_len_byte_array, result2.columns[2].physical_type);
+    try std.testing.expectEqual(parquet.ConvertedType.decimal, result2.columns[2].converted_type.?);
+    try std.testing.expect(result2.columns[2].logical_type.? == .decimal);
+    try std.testing.expectEqual(@as(i32, 10), result2.columns[2].scale.?);
+    try std.testing.expectEqual(@as(i32, 38), result2.columns[2].precision.?);
+    try std.testing.expectEqual(@as(?i32, 16), result2.columns[2].type_length); // minBytes(38)=16
+
+    // Re-resolve to Decimal with same precision/scale
+    var df2 = try adapter.toDataframe(allocator, &result2);
+    defer df2.deinit();
+    try std.testing.expectEqualStrings("Decimal", df2.series.items[0].typeName());
+    try std.testing.expectEqualStrings("Decimal", df2.series.items[1].typeName());
+    try std.testing.expectEqualStrings("Decimal", df2.series.items[2].typeName());
+
+    const d9_rt = df2.series.items[0].decimal.values.items[0];
+    try std.testing.expectEqual(@as(i256, 123456789), d9_rt.unscaled);
+    try std.testing.expectEqual(@as(u8, 9), d9_rt.precision);
+    try std.testing.expectEqual(@as(i8, 2), d9_rt.scale);
+
+    const d38_rt = df2.series.items[2].decimal.values.items[0];
+    try std.testing.expectEqual(@as(i256, 12345678901234567890123456780123456789), d38_rt.unscaled);
+    try std.testing.expectEqual(@as(u8, 38), d38_rt.precision);
+    try std.testing.expectEqual(@as(i8, 10), d38_rt.scale);
 }

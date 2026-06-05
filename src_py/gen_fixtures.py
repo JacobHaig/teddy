@@ -92,6 +92,27 @@ def time_units():
     print("data/time_units.parquet: TIME(ms)/TIMESTAMP(ms,ns,local us), 2 rows")
 
 
+def decimals():
+    # All three DECIMAL physical backings + negatives.
+    # store_decimal_as_integer makes pyarrow emit INT32 (p<=9) / INT64 (p<=18).
+    combined = pa.table({
+        "d9":  pa.array([PyDecimal("1234567.89"), PyDecimal("-0.01")], type=pa.decimal128(9, 2)),
+        "d18": pa.array([PyDecimal("12345678901234.5678"), PyDecimal("-1.0001")], type=pa.decimal128(18, 4)),
+        "d38": pa.array([PyDecimal("1234567890123456789012345678.0123456789"),
+                         PyDecimal("-0.0000000001")], type=pa.decimal128(38, 10)),
+    })
+    try:
+        pq.write_table(combined, "data/decimals.parquet", compression=None,
+                       store_decimal_as_integer=True)
+        print("data/decimals.parquet: DECIMAL INT32/INT64/FLBA (store_decimal_as_integer=True), 2 rows")
+    except TypeError:
+        # Older pyarrow without store_decimal_as_integer; falls back to FLBA for all.
+        pq.write_table(combined, "data/decimals.parquet", compression=None)
+        print("data/decimals.parquet: DECIMAL FLBA/FLBA/FLBA (store_decimal_as_integer unavailable), 2 rows")
+    pf = pq.ParquetFile("data/decimals.parquet")
+    print(f"  schema: {pf.schema}")
+
+
 if __name__ == "__main__":
     multi_rowgroup()
     fixed_len_byte_array()
@@ -99,3 +120,4 @@ if __name__ == "__main__":
     unsigned_ints()
     logical_annotations()
     time_units()
+    decimals()

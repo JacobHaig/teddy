@@ -336,6 +336,14 @@ pub const SchemaElement = struct {
             try w.writeFieldHeader(6, .i32);
             try w.writeZigZagI32(@intCast(@intFromEnum(ct)));
         }
+        if (self.scale) |sc| {
+            try w.writeFieldHeader(7, .i32);
+            try w.writeZigZagI32(sc);
+        }
+        if (self.precision) |p| {
+            try w.writeFieldHeader(8, .i32);
+            try w.writeZigZagI32(p);
+        }
         if (self.logical_type) |lt| {
             try w.writeFieldHeader(10, .@"struct");
             try encodeLogicalType(w, lt);
@@ -1096,6 +1104,31 @@ test "SchemaElement decode: field 10 logical_type (DATE)" {
     const elem = try SchemaElement.decode(&reader);
     try std.testing.expectEqualStrings("d", elem.name);
     try std.testing.expect(elem.logical_type.? == .date);
+}
+
+test "SchemaElement encode/decode round-trip: scale + precision + logical decimal" {
+    const allocator = std.testing.allocator;
+    const orig = SchemaElement{
+        .type_ = .int32,
+        .repetition_type = .required,
+        .name = "amount",
+        .converted_type = .decimal,
+        .scale = 2,
+        .precision = 9,
+        .logical_type = .{ .decimal = .{ .scale = 2, .precision = 9 } },
+    };
+    var w = ThriftWriter.init(allocator);
+    defer w.deinit();
+    try orig.encode(&w);
+    var r = ThriftReader.init(w.written());
+    const decoded = try SchemaElement.decode(&r);
+    try std.testing.expectEqual(orig.converted_type.?, decoded.converted_type.?);
+    try std.testing.expectEqual(@as(?i32, 2), decoded.scale);
+    try std.testing.expectEqual(@as(?i32, 9), decoded.precision);
+    try std.testing.expect(decoded.logical_type.? == .decimal);
+    try std.testing.expectEqual(@as(i32, 2), decoded.logical_type.?.decimal.scale);
+    try std.testing.expectEqual(@as(i32, 9), decoded.logical_type.?.decimal.precision);
+    try std.testing.expectEqualStrings("amount", decoded.name);
 }
 
 test "SchemaElement encode/decode round-trip: logical_type + type_length" {

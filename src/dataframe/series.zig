@@ -4,6 +4,7 @@ const Raw = @import("raw.zig").Raw;
 const Date = @import("date.zig").Date;
 const Time = @import("time.zig").Time;
 const Timestamp = @import("timestamp.zig").Timestamp;
+const Decimal = @import("decimal.zig").Decimal;
 
 const BoxedSeries = @import("boxed_series.zig").BoxedSeries;
 const GroupBy = @import("group.zig").GroupBy;
@@ -431,6 +432,7 @@ pub fn Series(comptime T: type) type {
                 Date => BoxedSeries{ .date = self },
                 Time => BoxedSeries{ .time = self },
                 Timestamp => BoxedSeries{ .timestamp = self },
+                Decimal => BoxedSeries{ .decimal = self },
                 // Add other types as needed
                 else => @compileError("Unsupported type " ++ @typeName(T) ++ " for SeriesType conversion"),
             };

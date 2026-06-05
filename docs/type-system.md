@@ -143,6 +143,7 @@ classDiagram
 │  Date        │  .date        │  INT32+DATE   │  Date          │
 │  Time        │  .time        │  INT32/64+TIME│  Time          │
 │  Timestamp   │  .timestamp   │  INT64+TS **  │  Timestamp     │
+│  Decimal     │  .decimal     │  I32/64/FLBA  │  Decimal       │
 │  Raw         │  .raw         │  (preserved)* │  Raw           │
 └──────────────┴───────────────┴───────────────┴────────────────┘
 
