@@ -12,5 +12,6 @@ comptime {
     _ = @import("join_test.zig");
     _ = @import("writer_test.zig");
     _ = @import("raw.zig");
+    _ = @import("date.zig");
     _ = @import("parquet_test.zig");
 }

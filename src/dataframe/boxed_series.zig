@@ -3,6 +3,7 @@ const Series = @import("series.zig").Series;
 const hasMethod = @import("series.zig").hasMethod;
 const String = @import("strings.zig").String;
 const Raw = @import("raw.zig").Raw;
+const Date = @import("date.zig").Date;
 const GroupBy = @import("group.zig").GroupBy;
 const BoxedGroupBy = @import("boxed_groupby.zig").BoxedGroupBy;
 const Dataframe = @import("dataframe.zig").Dataframe;
@@ -29,6 +30,7 @@ pub const BoxedSeries = union(enum) {
     float64: *Series(f64),
     string: *Series(String),
     raw: *Series(Raw),
+    date: *Series(Date),
 
     /// Deallocates the contained Series. After this call, the BoxedSeries is invalid.
     pub fn deinit(self: *Self) void {
@@ -456,7 +458,17 @@ pub const BoxedSeries = union(enum) {
                 if (comptime *Series(T) == @TypeOf(s)) {
                     var indices = std.ArrayList(usize).empty;
                     for (s.values.items, 0..) |item, i| {
-                        const match = if (comptime T == String) blk: {
+                        const match = if (comptime hasMethod(T, "order")) blk: {
+                            const o = item.order(&value);
+                            break :blk switch (op) {
+                                .eq => o == .eq,
+                                .neq => o != .eq,
+                                .lt => o == .lt,
+                                .lte => o != .gt,
+                                .gt => o == .gt,
+                                .gte => o != .lt,
+                            };
+                        } else if (comptime T == String) blk: {
                             const ord = std.mem.order(u8, item.toSlice(), value.toSlice());
                             break :blk switch (op) {
                                 .eq => ord == .eq,
@@ -517,6 +529,7 @@ pub const BoxedSeries = union(enum) {
             .float64 => "f64",
             .string => "String",
             .raw => "Raw",
+            .date => "Date",
         };
     }
 
@@ -541,6 +554,7 @@ pub const BoxedSeries = union(enum) {
             .float64 => return f64,
             .string => return String,
             .raw => return Raw,
+            .date => return Date,
         }
     }
 };

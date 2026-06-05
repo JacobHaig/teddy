@@ -25,5 +25,9 @@ Series capability convention [[parquet-type-mapping]], Raw fallback) ✅
 **Why:** owner wants the codebase "up to snuff" — remove template cruft, finish
 half-implemented IO, add validation.
 
-**How to apply:** work one phase at a time; user reviews + commits each phase
-before the next. Update the ⬜/✅ markers in docs/cleanup-roadmap.md as phases land.
+**How to apply:** work one phase at a time. As of 2026-06-05 (after 6d-2a.0)
+the review cadence changed: Claude commits each slice on green tests WITHOUT a
+per-slice user gate; the user reviews in larger sections afterwards. Keep
+commits per-slice and well-described so bulk review stays easy. Pushing to
+origin still requires an explicit user request. Update the ⬜/✅ markers in
+docs/cleanup-roadmap.md as phases land.

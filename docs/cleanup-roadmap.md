@@ -63,7 +63,7 @@ Sub-phases:
   parse the modern `LogicalType` union (SchemaElement field 10); full lossless
   round-trip; rich per-type ops; `Raw` fallback for deferred types. Design approved,
   spec at `docs/superpowers/specs/2026-06-04-parquet-scalar-logical-types-design.md`.
-  Implement as per-type vertical slices (6d-2a.0 infra ✅ → .1 Date → .2 Timestamp/Time
+  Implement as per-type vertical slices (6d-2a.0 infra ✅ → .1 Date ✅ → .2 Timestamp/Time
   → .3 Decimal → .4 Binary/FixedBytes → .5 Uuid/Interval/Float16). Infra slice
   landed: thrift LogicalType parse/encode (field 10 + type_length), Series
   capability convention (hasMethod/ColumnMeta), comptime-safe BoxedSeries

@@ -20,10 +20,10 @@ test "resolveKind: precedence logical -> converted -> physical" {
     col.logical_type = .{ .integer = .{ .bit_width = 8, .is_signed = true } };
     try std.testing.expectEqual(adapter.ResolvedKind.int8_, adapter.resolveKind(&col));
 
-    // Not-yet-surfaced logical annotation falls through to the physical default
+    // date logical annotation now surfaces as date_ (6d-2a.1)
     col.converted_type = null;
     col.logical_type = .date;
-    try std.testing.expectEqual(adapter.ResolvedKind.int32_, adapter.resolveKind(&col));
+    try std.testing.expectEqual(adapter.ResolvedKind.date_, adapter.resolveKind(&col));
 
     // Deferred logical types -> raw
     col.physical_type = .byte_array;
@@ -87,8 +87,8 @@ test "adapter: INT96 column loads as Raw and round-trips bit-faithfully" {
 }
 
 test "adapter: logical_annotations.parquet still reads end-to-end" {
-    // date/time/timestamp/decimal aren't surfaced yet (slices .1-.5); this
-    // pins that they keep resolving to their physical defaults, not Raw.
+    // date now surfaces as Date (6d-2a.1); time/timestamp/decimal still resolve
+    // to their physical defaults (slices .2-.5 flip them one at a time).
     const allocator = std.testing.allocator;
     const cwd = std.Io.Dir.cwd();
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -101,8 +101,46 @@ test "adapter: logical_annotations.parquet still reads end-to-end" {
     defer df.deinit();
 
     try std.testing.expectEqual(@as(usize, 4), df.width());
-    try std.testing.expectEqualStrings("i32", df.series.items[0].typeName()); // date32 -> i32
+    try std.testing.expectEqualStrings("Date", df.series.items[0].typeName()); // date32 -> Date (6d-2a.1)
+    const d0 = df.series.items[0].date.values.items[0].toCivil();
+    try std.testing.expectEqual(@as(i32, 2020), d0.year);
+    try std.testing.expectEqual(@as(u8, 1), d0.month);
+    try std.testing.expectEqual(@as(u8, 1), d0.day);
+    const d1 = df.series.items[0].date.values.items[1].toCivil();
+    try std.testing.expectEqual(@as(i32, 2021), d1.year);
+    try std.testing.expectEqual(@as(u8, 6), d1.month);
+    try std.testing.expectEqual(@as(u8, 15), d1.day);
     try std.testing.expectEqualStrings("i64", df.series.items[1].typeName()); // time64(us) -> i64
     try std.testing.expectEqualStrings("i64", df.series.items[2].typeName()); // timestamp(us) -> i64
     try std.testing.expectEqualStrings("String", df.series.items[3].typeName()); // decimal FLBA -> String (for now)
+}
+
+test "adapter: Date column round-trips losslessly with both annotations" {
+    const allocator = std.testing.allocator;
+    const cwd = std.Io.Dir.cwd();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const file_data = try cwd.readFileAlloc(io, "data/logical_annotations.parquet", allocator, .unlimited);
+    defer allocator.free(file_data);
+
+    var result = try parquet.readParquet(allocator, file_data);
+    defer result.deinit();
+    var df = try adapter.toDataframe(allocator, &result);
+    defer df.deinit();
+
+    var cols = try adapter.fromDataframe(allocator, df);
+    defer cols.deinit();
+    const output = try parquet.writeParquet(allocator, cols.columns, .{});
+    defer allocator.free(output);
+
+    var result2 = try parquet.readParquet(allocator, output);
+    defer result2.deinit();
+    // Annotations preserved on the wire
+    try std.testing.expect(result2.columns[0].logical_type.? == .date);
+    try std.testing.expectEqual(parquet.ConvertedType.date, result2.columns[0].converted_type.?);
+    // Days identical
+    try std.testing.expectEqualSlices(i32, result.columns[0].int32s.?, result2.columns[0].int32s.?);
+    // Re-resolves to Date at the dataframe layer
+    var df2 = try adapter.toDataframe(allocator, &result2);
+    defer df2.deinit();
+    try std.testing.expectEqualStrings("Date", df2.series.items[0].typeName());
 }

@@ -140,6 +140,7 @@ classDiagram
 │  f32         │  .float32     │  FLOAT        │  Float32       │
 │  f64         │  .float64     │  DOUBLE       │  Float64       │
 │  String      │  .string      │  BYTE_ARRAY   │  String        │
+│  Date        │  .date        │  INT32+DATE   │  Date          │
 │  Raw         │  .raw         │  (preserved)* │  Raw           │
 └──────────────┴───────────────┴───────────────┴────────────────┘
 

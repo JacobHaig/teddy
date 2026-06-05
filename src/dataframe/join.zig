@@ -154,7 +154,7 @@ fn addJoinedColumn(
                         errdefer empty.deinit();
                         try new_series.values.append(allocator, empty);
                     } else {
-                        const default_val: ValType = if (comptime ValType == bool) false else @as(ValType, 0);
+                        const default_val: ValType = std.mem.zeroes(ValType);
                         try new_series.values.append(allocator, default_val);
                     }
                 }

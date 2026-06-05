@@ -1,6 +1,7 @@
 const std = @import("std");
 const strings = @import("strings.zig");
 const Raw = @import("raw.zig").Raw;
+const Date = @import("date.zig").Date;
 
 const BoxedSeries = @import("boxed_series.zig").BoxedSeries;
 const GroupBy = @import("group.zig").GroupBy;
@@ -18,7 +19,9 @@ fn canBeSlice(comptime T: type) bool {
 /// True if T declares `name`. @hasDecl is only legal on container types, so
 /// primitives (i32, f64, bool, ...) safely report false. This drives the value-
 /// type capability convention: deinit/clone/eql/toSlice/format/init/type_name/
-/// ColumnMeta — String, Blob (tests), and Raw opt in by declaring them.
+/// ColumnMeta/order — String, Blob (tests), Raw, and Date opt in by declaring them.
+/// `order(self: *const T, other: *const T) std.math.Order` provides total ordering
+/// for argSort/filter comparisons (used before the toSlice arm).
 pub fn hasMethod(comptime T: type, comptime name: []const u8) bool {
     return switch (@typeInfo(T)) {
         .@"struct", .@"union", .@"enum", .@"opaque" => @hasDecl(T, name),
@@ -423,6 +426,7 @@ pub fn Series(comptime T: type) type {
                 f64 => BoxedSeries{ .float64 = self },
                 strings.String => BoxedSeries{ .string = self },
                 Raw => BoxedSeries{ .raw = self },
+                Date => BoxedSeries{ .date = self },
                 // Add other types as needed
                 else => @compileError("Unsupported type " ++ @typeName(T) ++ " for SeriesType conversion"),
             };
@@ -469,7 +473,9 @@ pub fn Series(comptime T: type) type {
                 pub fn lessThan(ctx: @This(), a_idx: usize, b_idx: usize) bool {
                     const a = ctx.items_ptr[a_idx];
                     const b = ctx.items_ptr[b_idx];
-                    if (comptime hasMethod(T, "toSlice")) {
+                    if (comptime hasMethod(T, "order")) {
+                        return if (ctx.asc) a.order(&b) == .lt else a.order(&b) == .gt;
+                    } else if (comptime hasMethod(T, "toSlice")) {
                         const order = std.mem.order(u8, a.toSlice(), b.toSlice());
                         return if (ctx.asc) order == .lt else order == .gt;
                     } else if (comptime T == bool) {

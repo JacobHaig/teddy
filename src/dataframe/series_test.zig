@@ -1203,3 +1203,82 @@ test "capability: replace on owning type deinits old and clones new" {
     // independence: replacing didn't alias new_v's buffer
     try std.testing.expect(replaced.values.items[0].bytes.ptr != new_v.bytes.ptr);
 }
+
+// ---------------------------------------------------------------------------
+// Date capability tests (Phase 6d-2a.1)
+// ---------------------------------------------------------------------------
+
+const Date = @import("date.zig").Date;
+const BoxedSeries = @import("boxed_series.zig").BoxedSeries;
+const CompareOp = @import("boxed_series.zig").CompareOp;
+
+test "Date: argSort on Series(Date) ascending" {
+    const allocator = std.testing.allocator;
+    var s = try Series(Date).init(allocator);
+    defer s.deinit();
+    // Append out of order: 2021-06-15, 2020-01-01, 2020-02-29
+    try s.append(Date.fromCivil(.{ .year = 2021, .month = 6, .day = 15 }));
+    try s.append(Date.fromCivil(.{ .year = 2020, .month = 1, .day = 1 }));
+    try s.append(Date.fromCivil(.{ .year = 2020, .month = 2, .day = 29 }));
+
+    var sorted = try s.argSort(allocator, true);
+    defer sorted.deinit(allocator);
+
+    // Ascending: 2020-01-01 (idx 1) < 2020-02-29 (idx 2) < 2021-06-15 (idx 0)
+    try std.testing.expectEqualSlices(usize, &.{ 1, 2, 0 }, sorted.items);
+}
+
+test "Date: argSort on Series(Date) descending" {
+    const allocator = std.testing.allocator;
+    var s = try Series(Date).init(allocator);
+    defer s.deinit();
+    try s.append(Date.fromCivil(.{ .year = 2021, .month = 6, .day = 15 }));
+    try s.append(Date.fromCivil(.{ .year = 2020, .month = 1, .day = 1 }));
+    try s.append(Date.fromCivil(.{ .year = 2020, .month = 2, .day = 29 }));
+
+    var sorted = try s.argSort(allocator, false);
+    defer sorted.deinit(allocator);
+
+    // Descending: 2021-06-15 (idx 0) > 2020-02-29 (idx 2) > 2020-01-01 (idx 1)
+    try std.testing.expectEqualSlices(usize, &.{ 0, 2, 1 }, sorted.items);
+}
+
+test "Date: indicesWhere .lt via BoxedSeries" {
+    const allocator = std.testing.allocator;
+    var s = try Series(Date).init(allocator);
+    defer s.deinit();
+    try s.append(Date.fromCivil(.{ .year = 2020, .month = 1, .day = 1 }));
+    try s.append(Date.fromCivil(.{ .year = 2021, .month = 6, .day = 15 }));
+    try s.append(Date.fromCivil(.{ .year = 2019, .month = 12, .day = 31 }));
+
+    var boxed = s.toBoxedSeries();
+    // Note: do NOT call boxed.deinit() — s owns the memory.
+
+    const cutoff = Date.fromCivil(.{ .year = 2020, .month = 6, .day = 1 });
+    var indices = try boxed.indicesWhere(Date, allocator, .lt, cutoff);
+    defer indices.deinit(allocator);
+
+    // Only idx 0 (2020-01-01) and idx 2 (2019-12-31) are < 2020-06-01
+    try std.testing.expectEqual(@as(usize, 2), indices.items.len);
+    try std.testing.expectEqual(@as(usize, 0), indices.items[0]);
+    try std.testing.expectEqual(@as(usize, 2), indices.items[1]);
+}
+
+test "Date: indicesWhere .eq via BoxedSeries" {
+    const allocator = std.testing.allocator;
+    var s = try Series(Date).init(allocator);
+    defer s.deinit();
+    try s.append(Date.fromCivil(.{ .year = 2020, .month = 1, .day = 1 }));
+    try s.append(Date.fromCivil(.{ .year = 2021, .month = 6, .day = 15 }));
+    try s.append(Date.fromCivil(.{ .year = 2020, .month = 1, .day = 1 }));
+
+    var boxed = s.toBoxedSeries();
+
+    const target = Date.fromCivil(.{ .year = 2020, .month = 1, .day = 1 });
+    var indices = try boxed.indicesWhere(Date, allocator, .eq, target);
+    defer indices.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), indices.items.len);
+    try std.testing.expectEqual(@as(usize, 0), indices.items[0]);
+    try std.testing.expectEqual(@as(usize, 2), indices.items[1]);
+}

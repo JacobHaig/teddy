@@ -150,3 +150,45 @@ test "join: Raw value column is deep-copied (no double-free)" {
     // Deep copy: joined values must not alias the source buffers.
     try std.testing.expect(joined_raw.values.items[0].bytes.ptr != payload.values.items[0].bytes.ptr);
 }
+
+test "join: Date value column compiles and unmatched row gets epoch (days=0)" {
+    // Left df: key=i32, right df: key=i32 + when=Date.
+    // Left join on key — row k=2 (left) has no right match, so the right's
+    // Date cell must be synthesized as zeroes(Date) = {.days=0} = epoch.
+    const Date = @import("date.zig").Date;
+    const allocator = std.testing.allocator;
+
+    var left = try Dataframe.init(allocator);
+    defer left.deinit();
+    var lk = try left.createSeries(i32);
+    try lk.rename("k");
+    try lk.append(1);
+    try lk.append(2);
+
+    var right = try Dataframe.init(allocator);
+    defer right.deinit();
+    var rk = try right.createSeries(i32);
+    try rk.rename("k");
+    try rk.append(1);
+    var when = try right.createSeries(Date);
+    try when.rename("when");
+    try when.append(Date.fromCivil(.{ .year = 2020, .month = 1, .day = 1 }));
+
+    var result = try join(allocator, left, right, "k", .left);
+    defer result.deinit();
+
+    // Both left rows present
+    try std.testing.expectEqual(@as(usize, 2), result.height());
+
+    const when_col = result.getSeries("when") orelse return error.TestUnexpectedResult;
+    const when_s = when_col.date;
+
+    // Row 0 (k=1): matched → 2020-01-01
+    const c0 = when_s.values.items[0].toCivil();
+    try std.testing.expectEqual(@as(i32, 2020), c0.year);
+    try std.testing.expectEqual(@as(u8, 1), c0.month);
+    try std.testing.expectEqual(@as(u8, 1), c0.day);
+
+    // Row 1 (k=2): no right match → synthesized epoch (days=0)
+    try std.testing.expectEqual(@as(i32, 0), when_s.values.items[1].days);
+}

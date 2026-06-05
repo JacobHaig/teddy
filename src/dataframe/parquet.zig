@@ -4,6 +4,7 @@ const dataframe = @import("dataframe.zig");
 const series_mod = @import("series.zig");
 const String = @import("strings.zig").String;
 const Raw = @import("raw.zig").Raw;
+const Date = @import("date.zig").Date;
 const BoxedSeries = @import("boxed_series.zig").BoxedSeries;
 const parquet = @import("parquet");
 
@@ -40,12 +41,13 @@ pub const ResolvedKind = enum {
     float64_,
     string,
     raw,
+    date_,
 };
 
 /// Resolution precedence: modern logical_type (field 10) → legacy
 /// converted_type (field 6) → bare physical type. Logical annotations not yet
-/// surfaced as dataframe types (date/time/timestamp/decimal/uuid/float16/...)
-/// fall through to the physical default; slices 6d-2a.1–.5 flip them one at a
+/// surfaced as dataframe types (time/timestamp/decimal/uuid/float16/...)
+/// fall through to the physical default; slices 6d-2a.2–.5 flip them one at a
 /// time. Deferred types (VARIANT/GEOMETRY/GEOGRAPHY) and INT96 resolve to Raw.
 pub fn resolveKind(col: *const parquet.ParquetColumn) ResolvedKind {
     if (col.logical_type) |lt| switch (lt) {
@@ -68,6 +70,7 @@ pub fn resolveKind(col: *const parquet.ParquetColumn) ResolvedKind {
                 }
             }
         },
+        .date => return .date_,
         .string, .@"enum", .json => return .string,
         .variant, .geometry, .geography => return .raw,
         else => {},
@@ -80,6 +83,7 @@ pub fn resolveKind(col: *const parquet.ParquetColumn) ResolvedKind {
         .uint_32 => return .uint32_,
         .uint_64 => return .uint64_,
         .utf8 => return .string,
+        .date => return .date_,
         else => {},
     };
     return switch (col.physical_type) {
@@ -164,6 +168,16 @@ fn addColumn(allocator: Allocator, df: *dataframe.Dataframe, col: *const parquet
                 }
             }
         },
+        .date_ => {
+            var s = try df.createSeries(Date);
+            try s.rename(col.name);
+            // DATE is INT32-backed (days since epoch).
+            const vals = col.int32s orelse return error.UnexpectedPhysicalType;
+            for (0..col.num_rows) |i| {
+                const valid = if (col.validity) |v| v[i] else true;
+                try s.append(.{ .days = if (valid and i < vals.len) vals[i] else 0 });
+            }
+        },
         .raw => return addRawColumn(allocator, df, col),
     }
 }
@@ -203,6 +217,8 @@ pub const DataframeColumns = struct {
     columns: []ColumnData,
     /// Allocated string slices that need to be freed
     string_bufs: [][]const []const u8,
+    /// Allocated i32 scratch buffers (Date columns) that need to be freed
+    i32_bufs: [][]i32,
     allocator: Allocator,
 
     pub fn deinit(self: *DataframeColumns) void {
@@ -210,6 +226,10 @@ pub const DataframeColumns = struct {
             self.allocator.free(buf);
         }
         self.allocator.free(self.string_bufs);
+        for (self.i32_bufs) |buf| {
+            self.allocator.free(buf);
+        }
+        self.allocator.free(self.i32_bufs);
         self.allocator.free(self.columns);
     }
 };
@@ -224,16 +244,22 @@ pub fn fromDataframe(allocator: Allocator, df: *dataframe.Dataframe) !DataframeC
     var string_bufs: std.ArrayList([]const []const u8) = .empty;
     defer string_bufs.deinit(allocator);
 
+    // Track i32 scratch buffers (Date columns) that need cleanup
+    var i32_bufs: std.ArrayList([]i32) = .empty;
+    defer i32_bufs.deinit(allocator);
+
     for (df.series.items, 0..) |*boxed, i| {
-        cols[i] = try boxedToColumnData(allocator, boxed, &string_bufs);
+        cols[i] = try boxedToColumnData(allocator, boxed, &string_bufs, &i32_bufs);
     }
 
     const bufs = try string_bufs.toOwnedSlice(allocator);
-    return .{ .columns = cols, .string_bufs = bufs, .allocator = allocator };
+    const i32s = try i32_bufs.toOwnedSlice(allocator);
+    return .{ .columns = cols, .string_bufs = bufs, .i32_bufs = i32s, .allocator = allocator };
 }
 
-// Convert a BoxedSeries to ColumnData for Parquet writing. Allocates string slices for string columns.
-fn boxedToColumnData(allocator: Allocator, boxed: *BoxedSeries, string_bufs: *std.ArrayList([]const []const u8)) !ColumnData {
+// Convert a BoxedSeries to ColumnData for Parquet writing. Allocates string slices for string columns
+// and i32 scratch buffers for Date columns.
+fn boxedToColumnData(allocator: Allocator, boxed: *BoxedSeries, string_bufs: *std.ArrayList([]const []const u8), i32_bufs: *std.ArrayList([]i32)) !ColumnData {
     return switch (boxed.*) {
         .int32 => |s| .{
             .name = s.name.toSlice(),
@@ -336,6 +362,23 @@ fn boxedToColumnData(allocator: Allocator, boxed: *BoxedSeries, string_bufs: *st
         .usize => |s| blk: {
             _ = s;
             break :blk error.UnsupportedType;
+        },
+        .date => |s| blk: {
+            // DATE re-emits as INT32 + both annotations (modern field 10 and
+            // legacy converted_type), matching what pyarrow writes.
+            const days = try allocator.alloc(i32, s.values.items.len);
+            for (s.values.items, 0..) |d, j| {
+                days[j] = d.days;
+            }
+            try i32_bufs.append(allocator, days);
+            break :blk .{
+                .name = s.name.toSlice(),
+                .physical_type = .int32,
+                .converted_type = .date,
+                .logical_type = .date,
+                .int32s = days,
+                .num_values = s.values.items.len,
+            };
         },
     };
 }
