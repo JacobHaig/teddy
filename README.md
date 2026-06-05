@@ -212,9 +212,6 @@ The `Reader` and `Writer` use a fluent builder pattern. File type is set with `.
 ### Reading
 
 ```zig
-var reader = try teddy.Reader.init(allocator);
-defer reader.deinit();
-
 // CSV (auto-infers column types)
 var reader = try teddy.Reader.init(allocator, io);
 defer reader.deinit();
@@ -286,7 +283,7 @@ Format is auto-detected on read. NDJSON is detected when content starts with `{`
 
 ```sh
 zig build          # compile
-zig build test     # run all tests (~385 tests)
+zig build test     # run the full test suite
 zig build run      # run the example (loads data/ files)
 ```
 

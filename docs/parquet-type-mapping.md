@@ -88,7 +88,7 @@ integer families — we just have to *read the annotation* instead of assuming
 | `Date` | `i32` days since epoch | DATE |
 | `Time` | `{ unit: enum{millis,micros,nanos}, value: i64 }` (widen MILLIS i32→i64 internally) | TIME |
 | `Timestamp` | `{ unit, is_utc: bool, value: i64 }` | TIMESTAMP (and decoded INT96) |
-| `Decimal` | `{ unscaled: i128, precision: u8, scale: i8 }` for **precision ≤ 38** | DECIMAL on INT32/INT64/FLBA |
+| `Decimal` | `{ unscaled: i256, precision: u8, scale: i8 }` for **precision ≤ 76** (== Arrow decimal256; raw-bytes fallback only beyond 76) | DECIMAL on INT32/INT64/FLBA |
 | `Binary` | owned `[]u8` | unannotated BYTE_ARRAY, BSON |
 | `FixedBytes` | owned `[]u8` (+ width) | generic FLBA |
 | `Uuid` | `[16]u8` | UUID |
@@ -103,11 +103,10 @@ lets us claim "reads almost any file" — unknown types round-trip as bytes rath
 than erroring or corrupting.
 
 ### Notable Zig wins
-- `i128` losslessly holds DECIMAL precision ≤ 38 (10³⁸ < 2¹²⁷). **Precision 39–76**
-  (large FLBA/BYTE_ARRAY) exceeds `i128` → store the raw two's-complement
-  big-endian bytes via the `Binary` fallback (Arrow uses `decimal256` here; see
-  open question).
-- Zig has native `f16` and `i128`, so FLOAT16 and most decimals need no bigint lib.
+- Zig's arbitrary-width integers mean `i256` losslessly holds DECIMAL precision
+  ≤ 76 (10⁷⁶ < 2²⁵⁵) with no bigint library — matching Arrow `decimal256`.
+  Only precision > 76 (nonstandard) falls back to raw two's-complement bytes.
+- Zig has native `f16`, so FLOAT16 needs no conversion shim either.
 
 ---
 
@@ -123,16 +122,20 @@ quoted primary source). The proposed teddy variants line up one-to-one with Arro
 
 ---
 
-## 5. Open decisions (need a call before 6d)
+## 5. Open decisions — RESOLVED (2026-06-04, approved 6d-2a spec)
 
-1. **Nested types (MAP/LIST/STRUCT):** boxed recursive Series, Arrow-style child
-   arrays with def/rep levels, or defer entirely behind the `Raw` fallback for now?
-2. **DECIMAL precision 39–76:** add an `i256`/bigint decimal variant (à la Arrow
-   `decimal256`) or keep the raw-bytes fallback?
-3. **VARIANT / GEOMETRY / GEOGRAPHY:** dedicated handling or generic `Raw` fallback?
-4. **INT96:** fully decode to `Timestamp(nanos, is_utc=false)` on read (Arrow/Spark
-   behavior) or preserve the raw 12 bytes? I.e. is lossless round-trip of legacy
-   files a requirement?
+All four are decided in
+`docs/superpowers/specs/2026-06-04-parquet-scalar-logical-types-design.md`:
+
+1. **Nested types (MAP/LIST/STRUCT):** deferred to a separate spec (Phase
+   6d-2b); they read as `Raw` until built.
+2. **DECIMAL precision 39–76:** `i256` unscaled (Arrow decimal256 parity);
+   raw-bytes fallback only for precision > 76.
+3. **VARIANT / GEOMETRY / GEOGRAPHY:** generic `Raw` fallback (full support
+   deferred to 6d-2b).
+4. **INT96:** fully decode to `Timestamp(nanos, utc=false)` tagged
+   `origin=int96`; write defaults to modern INT64 TIMESTAMP, with bit-faithful
+   INT96 re-emit behind `WriteOptions.emit_int96 = true`.
 
 ---
 

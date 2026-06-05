@@ -49,7 +49,7 @@ Sub-phases:
   `readLeafConcat` that concatenates every row group's values + validity. Added a
   pyarrow-generated 3-row-group fixture (`data/multi_rowgroup.parquet`,
   `src_py/gen_fixtures.py`) + reader test. Also wired the previously-dead parquet
-  reader/writer inline tests into the aggregator (393→411 tests run).
+  reader/writer inline tests into the aggregator.
 - **6c — `FIXED_LEN_BYTE_ARRAY` + `INT96` decode ✅** — both now read as raw owned
   bytes (FLBA uses schema `type_length`; INT96 is fixed 12 bytes) across plain,
   dictionary, moveInto/expandWithNulls, and multi-RG concat paths. Semantic
@@ -71,8 +71,10 @@ Sub-phases:
 - **6e — Nested schemas ⬜** — MAP/LIST/STRUCT (currently flat-only,
   `parquet_reader.zig:127`); biggest, may split out.
 
-Open decisions before 6d (see design note §5): nested-type strategy,
-DECIMAL precision 39–76, VARIANT/GEOMETRY/GEOGRAPHY handling, INT96 decode-vs-raw.
+The design note's §5 open decisions are all **resolved** by the approved 6d-2a
+spec: Decimal = i256 (precision ≤ 76); INT96 decodes to Timestamp(nanos) with
+opt-in INT96 re-emit; VARIANT/GEO → `Raw` fallback; nested types → separate
+spec (6d-2b).
 
 ### Phase 7 — JSON reader/serialization fixes ⬜
 - Fix `.auto => unreachable` type inference (`json_reader.zig:31`).
@@ -89,3 +91,41 @@ DECIMAL precision 39–76, VARIANT/GEOMETRY/GEOGRAPHY handling, INT96 decode-vs-
 - Expand the pandas helper into fixture-generation + parity-checking basis.
 - `data/` fixtures stay as-is (intentional test inputs).
 - Break into sub-phases when reached.
+
+---
+
+## Hardening Track (from the 2026-06-04 full-project review)
+
+Findings, file:line detail, and rationale live in
+`docs/reviews/2026-06-04-full-project-review.md`. Planned to land after the
+6d-2a slices (the 6d-2a.0 infra commit already fixes the review's Theme-2
+comptime hazards).
+
+### Phase 10 — Null-correctness pass ⬜ (review Theme 1)
+- Readers (parquet/JSON/CSV adapters): call `appendNull` instead of
+  materializing placeholders; round-trip tests asserting `isNull`.
+- Writers (CSV/JSON): check `isNull` explicitly (empty CSV field, bare JSON
+  `null`) instead of relying on `asStringAt`'s `"null"` literal.
+- GroupBy: null-key policy + `isNull` guards in sum/mean/min/max/stdDev.
+- Join: nulls never match (SQL semantics); unmatched outer-join cells become
+  real nulls via `appendNull`, not fabricated 0/"".
+- `indicesWhere`/filter and `applyInplace` skip null slots.
+- Sub-phase (larger): parquet writer definition levels so nulls survive
+  df→parquet (`ColumnData.validity`, OPTIONAL columns).
+
+### Phase 11 — Parquet untrusted-input hardening ⬜ (review Theme 3)
+- Checked narrowing helpers replacing `@intCast` on file-controlled values;
+  non-exhaustive enums (or checked `@enumFromInt` wrapper).
+- Bounds-check every length prefix / offset before slicing (def levels,
+  dictionary indices, column offsets); bound thrift `skip` recursion depth.
+- Fix `expandWithNulls` byte-array leak on malformed def-levels.
+- Malformed-file test suite: "garbage bytes error, never panic".
+
+### Phase 12 — Bug-fix batch ⬜ (review Theme 4)
+- `groupByMultiple` double-free + non-transactional `_group_key` mutation.
+- Latent compile errors: `json_reader` `@trunc` int arm; `tryAppend[Slice]`
+  missing allocator; JSON mixed-type columns silently becoming `""`.
+- Builder `withPath` error swallowing; cross-column length invariant
+  (`height`/`dropRow`/`print` on ragged frames); join duplicate column names;
+  `slice()` schema loss; `asStringAt` 128-byte buffer; `fromDataframe`
+  error-path leak; unify error sets (`TypeNotNumeric`/`TypeMismatch`).

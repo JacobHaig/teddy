@@ -3,8 +3,10 @@
 Requires pyarrow:  python3 -m pip install pyarrow
 Run from the repo root:  python3 src_py/gen_fixtures.py
 
-(Phase 9 will fold this into a proper Python<->Zig regression framework; for now
-it just regenerates the committed fixtures under data/.)
+Regenerates the pyarrow-generated fixtures under data/. Note that
+data/addresses.parquet and data/addresses_snappy.parquet are externally
+sourced (parquet-cpp-arrow) and have NO generator here — do not delete them.
+(Phase 9 will fold this into a proper Python<->Zig regression framework.)
 """
 
 import datetime as dt
