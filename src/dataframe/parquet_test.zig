@@ -2,6 +2,8 @@ const std = @import("std");
 const parquet = @import("parquet");
 const adapter = @import("parquet.zig");
 const Raw = @import("raw.zig").Raw;
+const Binary = @import("binary.zig").Binary;
+const FixedBytes = @import("fixed_bytes.zig").FixedBytes;
 const Time = @import("time.zig").Time;
 const Timestamp = @import("timestamp.zig").Timestamp;
 const Decimal = @import("decimal.zig").Decimal;
@@ -66,9 +68,44 @@ test "resolveKind: precedence logical -> converted -> physical" {
     col.converted_type = null;
     try std.testing.expectEqual(adapter.ResolvedKind.timestamp_, adapter.resolveKind(&col));
 
-    // byte_array + utf8 -> string (unchanged behavior)
+    // byte_array + utf8 -> string (unchanged: annotation wins over physical default)
+    col.logical_type = null;
     col.physical_type = .byte_array;
     col.converted_type = .utf8;
+    try std.testing.expectEqual(adapter.ResolvedKind.string, adapter.resolveKind(&col));
+
+    // bare byte_array (no annotation) -> binary_ (6d-2a.4)
+    col.converted_type = null;
+    col.logical_type = null;
+    col.physical_type = .byte_array;
+    try std.testing.expectEqual(adapter.ResolvedKind.binary_, adapter.resolveKind(&col));
+
+    // bare fixed_len_byte_array (no annotation) -> fixedbytes_ (6d-2a.4)
+    col.converted_type = null;
+    col.logical_type = null;
+    col.physical_type = .fixed_len_byte_array;
+    try std.testing.expectEqual(adapter.ResolvedKind.fixedbytes_, adapter.resolveKind(&col));
+
+    // converted .bson -> binary_
+    col.logical_type = null;
+    col.physical_type = .byte_array;
+    col.converted_type = .bson;
+    try std.testing.expectEqual(adapter.ResolvedKind.binary_, adapter.resolveKind(&col));
+
+    // logical .bson -> binary_
+    col.converted_type = null;
+    col.physical_type = .byte_array;
+    col.logical_type = .bson;
+    try std.testing.expectEqual(adapter.ResolvedKind.binary_, adapter.resolveKind(&col));
+
+    // converted .@"enum" -> string (legacy ENUM annotation preserved as String)
+    col.logical_type = null;
+    col.physical_type = .byte_array;
+    col.converted_type = .@"enum";
+    try std.testing.expectEqual(adapter.ResolvedKind.string, adapter.resolveKind(&col));
+
+    // converted .json -> string (legacy JSON annotation preserved as String)
+    col.converted_type = .json;
     try std.testing.expectEqual(adapter.ResolvedKind.string, adapter.resolveKind(&col));
 
     // logical decimal precision 10 -> decimal_
@@ -604,4 +641,181 @@ test "adapter: Decimal round-trips losslessly across physicals" {
     try std.testing.expectEqual(@as(i256, 12345678901234567890123456780123456789), d38_rt.unscaled);
     try std.testing.expectEqual(@as(u8, 38), d38_rt.precision);
     try std.testing.expectEqual(@as(i8, 10), d38_rt.scale);
+}
+
+test "adapter: binary_kinds.parquet reads as Binary" {
+    // Unannotated BYTE_ARRAY -> Binary (6d-2a.4). Fixture written by gen_fixtures.py
+    // with pa.binary(): rows b"\x00\x01\xff" and b"\xde\xad\xbe\xef".
+    const allocator = std.testing.allocator;
+    const cwd = std.Io.Dir.cwd();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const file_data = try cwd.readFileAlloc(io, "data/binary_kinds.parquet", allocator, .unlimited);
+    defer allocator.free(file_data);
+
+    var result = try parquet.readParquet(allocator, file_data);
+    defer result.deinit();
+    var df = try adapter.toDataframe(allocator, &result);
+    defer df.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), df.width());
+    const boxed = &df.series.items[0];
+    try std.testing.expectEqualStrings("Binary", boxed.typeName());
+
+    const s = boxed.binary;
+    try std.testing.expectEqual(@as(usize, 2), s.len());
+
+    // Row 0: b"\x00\x01\xff"
+    try std.testing.expectEqualSlices(u8, &.{ 0x00, 0x01, 0xff }, s.values.items[0].toSlice());
+    // Row 1: b"\xde\xad\xbe\xef"
+    try std.testing.expectEqualSlices(u8, &.{ 0xde, 0xad, 0xbe, 0xef }, s.values.items[1].toSlice());
+
+    // Plain binary: no annotations on meta
+    try std.testing.expect(s.meta.converted_type == null);
+    try std.testing.expect(s.meta.logical_type == null);
+}
+
+test "adapter: flba.parquet reads as FixedBytes with width 4" {
+    // Unannotated FIXED_LEN_BYTE_ARRAY(4) -> FixedBytes (6d-2a.4).
+    // Fixture: "fb" column with "abcd"/"efgh"/"ijkl".
+    const allocator = std.testing.allocator;
+    const cwd = std.Io.Dir.cwd();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const file_data = try cwd.readFileAlloc(io, "data/flba.parquet", allocator, .unlimited);
+    defer allocator.free(file_data);
+
+    var result = try parquet.readParquet(allocator, file_data);
+    defer result.deinit();
+    var df = try adapter.toDataframe(allocator, &result);
+    defer df.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), df.width());
+    const boxed = &df.series.items[0];
+    try std.testing.expectEqualStrings("FixedBytes", boxed.typeName());
+
+    const s = boxed.fixed_bytes;
+    try std.testing.expectEqual(@as(usize, 3), s.len());
+    // Width captured from type_length on the parquet column
+    try std.testing.expectEqual(@as(?i32, 4), s.meta.width);
+    // Values
+    try std.testing.expectEqualStrings("abcd", s.values.items[0].toSlice());
+    try std.testing.expectEqualStrings("efgh", s.values.items[1].toSlice());
+    try std.testing.expectEqualStrings("ijkl", s.values.items[2].toSlice());
+}
+
+test "adapter: binary_kinds round-trip (no annotations, bytes identical)" {
+    // binary_kinds.parquet -> df -> write -> read: physical BYTE_ARRAY,
+    // no converted/logical annotations, bytes identical; re-resolves Binary.
+    const allocator = std.testing.allocator;
+    const cwd = std.Io.Dir.cwd();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const file_data = try cwd.readFileAlloc(io, "data/binary_kinds.parquet", allocator, .unlimited);
+    defer allocator.free(file_data);
+
+    var result = try parquet.readParquet(allocator, file_data);
+    defer result.deinit();
+    var df = try adapter.toDataframe(allocator, &result);
+    defer df.deinit();
+
+    var cols = try adapter.fromDataframe(allocator, df, .{});
+    defer cols.deinit();
+    const output = try parquet.writeParquet(allocator, cols.columns, .{});
+    defer allocator.free(output);
+
+    var result2 = try parquet.readParquet(allocator, output);
+    defer result2.deinit();
+
+    // Physical BYTE_ARRAY, no annotations
+    try std.testing.expectEqual(parquet.PhysicalType.byte_array, result2.columns[0].physical_type);
+    try std.testing.expectEqual(@as(?parquet.ConvertedType, null), result2.columns[0].converted_type);
+    try std.testing.expectEqual(@as(?parquet.LogicalType, null), result2.columns[0].logical_type);
+
+    // Bytes preserved
+    const vals = result2.columns[0].byte_arrays orelse return error.MissingData;
+    try std.testing.expectEqualSlices(u8, &.{ 0x00, 0x01, 0xff }, vals[0]);
+    try std.testing.expectEqualSlices(u8, &.{ 0xde, 0xad, 0xbe, 0xef }, vals[1]);
+
+    // Re-resolves to Binary
+    var df2 = try adapter.toDataframe(allocator, &result2);
+    defer df2.deinit();
+    try std.testing.expectEqualStrings("Binary", df2.series.items[0].typeName());
+}
+
+test "adapter: flba round-trip (FLBA type_length 4, bytes identical)" {
+    // flba.parquet -> df (FixedBytes width=4) -> write -> read: FLBA(4), bytes
+    // identical; re-resolves FixedBytes with width 4.
+    const allocator = std.testing.allocator;
+    const cwd = std.Io.Dir.cwd();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const file_data = try cwd.readFileAlloc(io, "data/flba.parquet", allocator, .unlimited);
+    defer allocator.free(file_data);
+
+    var result = try parquet.readParquet(allocator, file_data);
+    defer result.deinit();
+    var df = try adapter.toDataframe(allocator, &result);
+    defer df.deinit();
+
+    var cols = try adapter.fromDataframe(allocator, df, .{});
+    defer cols.deinit();
+    const output = try parquet.writeParquet(allocator, cols.columns, .{});
+    defer allocator.free(output);
+
+    var result2 = try parquet.readParquet(allocator, output);
+    defer result2.deinit();
+
+    // Physical FIXED_LEN_BYTE_ARRAY with type_length=4
+    try std.testing.expectEqual(parquet.PhysicalType.fixed_len_byte_array, result2.columns[0].physical_type);
+    try std.testing.expectEqual(@as(?i32, 4), result2.columns[0].type_length);
+
+    // Bytes preserved
+    const vals = result2.columns[0].byte_arrays orelse return error.MissingData;
+    try std.testing.expectEqualStrings("abcd", vals[0]);
+    try std.testing.expectEqualStrings("efgh", vals[1]);
+    try std.testing.expectEqualStrings("ijkl", vals[2]);
+
+    // Re-resolves to FixedBytes with width 4
+    var df2 = try adapter.toDataframe(allocator, &result2);
+    defer df2.deinit();
+    try std.testing.expectEqualStrings("FixedBytes", df2.series.items[0].typeName());
+    try std.testing.expectEqual(@as(?i32, 4), df2.series.items[0].fixed_bytes.meta.width);
+}
+
+test "adapter: hand-built Binary(bson) round-trips annotations" {
+    // Hand-built Binary column with BSON meta -> write -> read:
+    // re-read carries converted_type=.bson AND logical_type=.bson AND resolves binary_.
+    const allocator = std.testing.allocator;
+    const dataframe_mod = @import("dataframe.zig");
+
+    var df = try dataframe_mod.Dataframe.init(allocator);
+    defer df.deinit();
+
+    var s = try df.createSeries(Binary);
+    try s.rename("bson_col");
+    s.meta = .{ .converted_type = .bson, .logical_type = .bson };
+    try s.append(try Binary.fromSlice(allocator, &.{ 0x01, 0x02, 0x03 }));
+    try s.append(try Binary.fromSlice(allocator, &.{ 0xAA, 0xBB }));
+
+    var cols = try adapter.fromDataframe(allocator, df, .{});
+    defer cols.deinit();
+    const output = try parquet.writeParquet(allocator, cols.columns, .{});
+    defer allocator.free(output);
+
+    var result2 = try parquet.readParquet(allocator, output);
+    defer result2.deinit();
+
+    // Annotations preserved on the wire
+    const col = &result2.columns[0];
+    try std.testing.expectEqual(parquet.PhysicalType.byte_array, col.physical_type);
+    try std.testing.expectEqual(parquet.ConvertedType.bson, col.converted_type.?);
+    try std.testing.expect(col.logical_type.? == .bson);
+
+    // Re-resolves to binary_
+    try std.testing.expectEqual(adapter.ResolvedKind.binary_, adapter.resolveKind(col));
+
+    // Re-read df carries the annotations
+    var df2 = try adapter.toDataframe(allocator, &result2);
+    defer df2.deinit();
+    try std.testing.expectEqualStrings("Binary", df2.series.items[0].typeName());
+    const s2 = df2.series.items[0].binary;
+    try std.testing.expectEqual(parquet.ConvertedType.bson, s2.meta.converted_type.?);
+    try std.testing.expect(s2.meta.logical_type.? == .bson);
 }

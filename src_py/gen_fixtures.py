@@ -113,6 +113,24 @@ def decimals():
     print(f"  schema: {pf.schema}")
 
 
+def binary_kinds():
+    # Unannotated BYTE_ARRAY (true binary, non-UTF8 bytes) -> Binary as of 6d-2a.4.
+    # pa.binary() writes BYTE_ARRAY with no converted_type and no logical_type,
+    # ensuring the physical-default path resolves to binary_ (not string).
+    tbl = pa.table({
+        "blob": pa.array([b"\x00\x01\xff", b"\xde\xad\xbe\xef"], type=pa.binary()),
+    })
+    pq.write_table(tbl, "data/binary_kinds.parquet", compression=None)
+    pf = pq.ParquetFile("data/binary_kinds.parquet")
+    schema = pf.schema_arrow
+    blob_field = schema.field("blob")
+    print("data/binary_kinds.parquet: unannotated BYTE_ARRAY, 2 rows")
+    print(f"  blob type: {blob_field.type}, metadata: {blob_field.metadata}")
+    # Verify no UTF8/BSON annotation on the parquet schema element
+    pq_schema = pf.schema
+    print(f"  parquet schema: {pq_schema}")
+
+
 if __name__ == "__main__":
     multi_rowgroup()
     fixed_len_byte_array()
@@ -121,3 +139,4 @@ if __name__ == "__main__":
     logical_annotations()
     time_units()
     decimals()
+    binary_kinds()

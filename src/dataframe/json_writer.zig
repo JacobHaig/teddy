@@ -100,6 +100,9 @@ fn isStringSeries(series: *BoxedSeries) bool {
         // Decimal strings stay quoted: documents exactness and avoids JSON
         // float mangling of the fixed-point value.
         .decimal => true,
+        // Binary/FixedBytes render as hex strings — must be quoted.
+        .binary => true,
+        .fixed_bytes => true,
         else => false,
     };
 }

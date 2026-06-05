@@ -8,6 +8,8 @@ const Date = @import("date.zig").Date;
 const Time = @import("time.zig").Time;
 const Timestamp = @import("timestamp.zig").Timestamp;
 const Decimal = @import("decimal.zig").Decimal;
+const Binary = @import("binary.zig").Binary;
+const FixedBytes = @import("fixed_bytes.zig").FixedBytes;
 const BoxedSeries = @import("boxed_series.zig").BoxedSeries;
 const parquet = @import("parquet");
 
@@ -48,6 +50,10 @@ pub const ResolvedKind = enum {
     time_,
     timestamp_,
     decimal_,
+    /// Unannotated BYTE_ARRAY or BSON-annotated (6d-2a.4).
+    binary_,
+    /// Unannotated FIXED_LEN_BYTE_ARRAY (6d-2a.4).
+    fixedbytes_,
 };
 
 /// Resolution precedence: modern logical_type (field 10) → legacy
@@ -57,6 +63,9 @@ pub const ResolvedKind = enum {
 /// time. Deferred types (VARIANT/GEOMETRY/GEOGRAPHY) resolve to Raw.
 /// INT96 physical resolves to timestamp_ (legacy format decoded via fromInt96Bytes).
 /// DECIMAL with precision 1..76 resolves to decimal_; precision > 76 → raw.
+/// As of 6d-2a.4: unannotated BYTE_ARRAY → binary_; unannotated
+/// FIXED_LEN_BYTE_ARRAY → fixedbytes_. String requires a UTF8/ENUM/JSON
+/// annotation (logical or converted).
 pub fn resolveKind(col: *const parquet.ParquetColumn) ResolvedKind {
     if (col.logical_type) |lt| switch (lt) {
         .integer => |it| {
@@ -86,6 +95,7 @@ pub fn resolveKind(col: *const parquet.ParquetColumn) ResolvedKind {
             return .raw;
         },
         .string, .@"enum", .json => return .string,
+        .bson => return .binary_,
         .variant, .geometry, .geography => return .raw,
         else => {},
     };
@@ -97,6 +107,12 @@ pub fn resolveKind(col: *const parquet.ParquetColumn) ResolvedKind {
         .uint_32 => return .uint32_,
         .uint_64 => return .uint64_,
         .utf8 => return .string,
+        // Legacy ENUM/JSON annotations: preserve String (same as their logical
+        // twins). Without these, files written before LogicalType existed would
+        // fall through to the physical default and read as binary_.
+        .@"enum" => return .string,
+        .json => return .string,
+        .bson => return .binary_,
         .date => return .date_,
         .time_millis, .time_micros => return .time_,
         .timestamp_millis, .timestamp_micros => return .timestamp_,
@@ -115,7 +131,10 @@ pub fn resolveKind(col: *const parquet.ParquetColumn) ResolvedKind {
         .int64 => .int64_,
         .float => .float32_,
         .double => .float64_,
-        .byte_array, .fixed_len_byte_array => .string,
+        // As of 6d-2a.4: unannotated byte payloads are Binary/FixedBytes.
+        // UTF8/ENUM/JSON annotation (logical or converted) routes to string above.
+        .byte_array => .binary_,
+        .fixed_len_byte_array => .fixedbytes_,
         .int96 => .timestamp_,
     };
 }
@@ -294,6 +313,43 @@ fn addColumn(allocator: Allocator, df: *dataframe.Dataframe, col: *const parquet
                     }
                 }
             } else return error.UnexpectedPhysicalType;
+        },
+        .binary_ => {
+            var s = try df.createSeries(Binary);
+            try s.rename(col.name);
+            // Preserve the BSON annotation for lossless re-emit; plain
+            // unannotated binary keeps both null (ColumnMeta defaults).
+            if (col.converted_type == .bson or
+                (col.logical_type != null and col.logical_type.? == .bson))
+            {
+                s.meta = .{ .converted_type = col.converted_type, .logical_type = col.logical_type };
+            }
+            const vals = col.byte_arrays orelse return error.UnexpectedPhysicalType;
+            for (0..col.num_rows) |i| {
+                const valid = if (col.validity) |v| v[i] else true;
+                if (valid and i < vals.len) {
+                    try s.append(try Binary.fromSlice(allocator, vals[i]));
+                } else {
+                    try s.append(try Binary.fromSlice(allocator, ""));
+                }
+            }
+        },
+        .fixedbytes_ => {
+            var s = try df.createSeries(FixedBytes);
+            try s.rename(col.name);
+            s.meta = .{ .width = col.type_length };
+            const vals = col.byte_arrays orelse return error.UnexpectedPhysicalType;
+            for (0..col.num_rows) |i| {
+                const valid = if (col.validity) |v| v[i] else true;
+                if (valid and i < vals.len) {
+                    try s.append(try FixedBytes.fromSlice(allocator, vals[i]));
+                } else {
+                    // Null-row placeholder: empty slice (width-mismatched).
+                    // Null fidelity is a Phase 10 concern; write would error
+                    // FixedLengthMismatch for these rows, which is acceptable.
+                    try s.append(try FixedBytes.fromSlice(allocator, ""));
+                }
+            }
         },
         .raw => return addRawColumn(allocator, df, col),
     }
@@ -582,6 +638,40 @@ fn boxedToColumnData(scratch: Allocator, boxed: *BoxedSeries, opts: AdapterWrite
                 },
                 .logical_type = .{ .timestamp = .{ .is_adjusted_to_utc = utc, .unit = unit } },
                 .int64s = buf,
+                .num_values = n,
+            };
+        },
+        .binary => |s| blk: {
+            // Re-emit as BYTE_ARRAY; preserve BSON annotation from meta if set,
+            // otherwise no annotations (plain binary). Same borrowed-slice pattern
+            // as .string and .raw.
+            const slices = try scratch.alloc([]const u8, s.values.items.len);
+            for (s.values.items, 0..) |*b, j| {
+                slices[j] = b.toSlice();
+            }
+            break :blk .{
+                .name = s.name.toSlice(),
+                .physical_type = .byte_array,
+                .converted_type = s.meta.converted_type,
+                .logical_type = s.meta.logical_type,
+                .byte_arrays = slices,
+                .num_values = s.values.items.len,
+            };
+        },
+        .fixed_bytes => |s| blk: {
+            const n = s.values.items.len;
+            // Width: column meta wins; else derive from the first value.
+            const width: i32 = s.meta.width orelse
+                (if (n > 0) std.math.cast(i32, s.values.items[0].bytes.len) orelse return error.InvalidTypeLength else return error.MissingTypeLength);
+            const slices = try scratch.alloc([]const u8, n);
+            for (s.values.items, 0..) |*fb, j| {
+                slices[j] = fb.toSlice();
+            }
+            break :blk .{
+                .name = s.name.toSlice(),
+                .physical_type = .fixed_len_byte_array,
+                .type_length = width,
+                .byte_arrays = slices,
                 .num_values = n,
             };
         },

@@ -64,8 +64,10 @@ Sub-phases:
   round-trip; rich per-type ops; `Raw` fallback for deferred types. Design approved,
   spec at `docs/superpowers/specs/2026-06-04-parquet-scalar-logical-types-design.md`.
   Implement as per-type vertical slices (6d-2a.0 infra ✅ → .1 Date ✅ →
-  .2 Timestamp/Time ✅ → .3 Decimal ✅ → .4 Binary/FixedBytes → .5 Uuid/
-  Interval/Float16). Decimal is i256-backed (precision ≤ 76) across all three
+  .2 Timestamp/Time ✅ → .3 Decimal ✅ → .4 Binary/FixedBytes ✅ → .5 Uuid/
+  Interval/Float16). Unannotated BYTE_ARRAY/FLBA now read as Binary/FixedBytes
+  (String requires a UTF8/ENUM/JSON annotation — deliberate behavior change in
+  .4). Decimal is i256-backed (precision ≤ 76) across all three
   physicals (INT32/INT64/FLBA) with scale-aware strict arithmetic. INT96 now
   decodes to Timestamp(nanos, utc=false, origin=int96);
   writes default to modern INT64, bit-faithful INT96 re-emit behind

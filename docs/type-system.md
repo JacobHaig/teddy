@@ -144,6 +144,8 @@ classDiagram
 │  Time        │  .time        │  INT32/64+TIME│  Time          │
 │  Timestamp   │  .timestamp   │  INT64+TS **  │  Timestamp     │
 │  Decimal     │  .decimal     │  I32/64/FLBA  │  Decimal       │
+│  Binary      │  .binary      │  BYTE_ARRAY***│  Binary        │
+│  FixedBytes  │  .fixed_bytes │  FLBA(n)***   │  FixedBytes    │
 │  Raw         │  .raw         │  (preserved)* │  Raw           │
 └──────────────┴───────────────┴───────────────┴────────────────┘
 
@@ -157,4 +159,9 @@ classDiagram
    micros). Timestamp: INT64 + TIMESTAMP(unit, utc) by default; legacy INT96
    decodes to Timestamp(nanos, utc=false, origin=int96) and re-emits as INT96
    bit-faithfully only via `Writer.withEmitInt96(true)`.
+
+*** Unannotated byte payloads (as of 6d-2a.4): BYTE_ARRAY without a
+    UTF8/ENUM/JSON annotation reads as Binary (BSON annotation preserved on
+    `Series.meta`); unannotated FLBA(n) reads as FixedBytes with the width on
+    `Series.meta`. String requires a text annotation.
 ```

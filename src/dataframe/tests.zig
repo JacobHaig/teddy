@@ -16,5 +16,7 @@ comptime {
     _ = @import("time.zig");
     _ = @import("timestamp.zig");
     _ = @import("decimal.zig");
+    _ = @import("binary.zig");
+    _ = @import("fixed_bytes.zig");
     _ = @import("parquet_test.zig");
 }

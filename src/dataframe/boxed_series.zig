@@ -7,6 +7,8 @@ const Date = @import("date.zig").Date;
 const Time = @import("time.zig").Time;
 const Timestamp = @import("timestamp.zig").Timestamp;
 const Decimal = @import("decimal.zig").Decimal;
+const Binary = @import("binary.zig").Binary;
+const FixedBytes = @import("fixed_bytes.zig").FixedBytes;
 const GroupBy = @import("group.zig").GroupBy;
 const BoxedGroupBy = @import("boxed_groupby.zig").BoxedGroupBy;
 const Dataframe = @import("dataframe.zig").Dataframe;
@@ -37,6 +39,8 @@ pub const BoxedSeries = union(enum) {
     time: *Series(Time),
     timestamp: *Series(Timestamp),
     decimal: *Series(Decimal),
+    binary: *Series(Binary),
+    fixed_bytes: *Series(FixedBytes),
 
     /// Deallocates the contained Series. After this call, the BoxedSeries is invalid.
     pub fn deinit(self: *Self) void {
@@ -539,6 +543,8 @@ pub const BoxedSeries = union(enum) {
             .time => "Time",
             .timestamp => "Timestamp",
             .decimal => "Decimal",
+            .binary => "Binary",
+            .fixed_bytes => "FixedBytes",
         };
     }
 
@@ -567,6 +573,8 @@ pub const BoxedSeries = union(enum) {
             .time => return Time,
             .timestamp => return Timestamp,
             .decimal => return Decimal,
+            .binary => return Binary,
+            .fixed_bytes => return FixedBytes,
         }
     }
 };
