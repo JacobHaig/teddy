@@ -21,9 +21,13 @@ Status: 1–5 ✅; 6a–6d-1 ✅; **6d-2a COMPLETE 2026-06-05** (all six slices:
 infra + Date + Time/Timestamp + Decimal(i256) + Binary/FixedBytes +
 Uuid/Interval/Float16 — every scalar logical type is a dedicated BoxedSeries
 variant; Raw remains only for VARIANT/GEO/nested/unknown
-[[parquet-type-mapping]]). Next: 6d-2b nested types (needs its own
-brainstorm/spec — repetition-level record assembly), or hardening phases
-10–12 from the review.
+[[parquet-type-mapping]]). **Hardening track COMPLETE 2026-06-07**: Phase 10
+(null correctness end-to-end incl. parquet definition levels), Phase 11
+(malformed-file hardening + battery), Phase 12 (bug batch incl.
+groupByMultiple double-free). Remaining: 6d-2b nested types (needs its own
+brainstorm/spec — repetition-level record assembly), Phase 7 JSON fixes
+(partly absorbed by Phase 12 B2), Phase 8 native serialization format,
+Phase 9 Python↔Zig regression framework.
 
 **Why:** owner wants the codebase "up to snuff" — remove template cruft, finish
 half-implemented IO, add validation.
