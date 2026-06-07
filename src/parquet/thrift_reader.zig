@@ -30,6 +30,16 @@ pub const ListHeader = struct {
     size: u32,
 };
 
+/// Checked nibble-to-CompactType conversion: values 13–15 are unassigned and
+/// must produce null rather than an @enumFromInt panic (boundary validation,
+/// Phase 11 Unit C). Mirrors the enumFromWire pattern from metadata.zig.
+fn compactTypeFromNibble(nibble: u4) ?CompactType {
+    inline for (@typeInfo(CompactType).@"enum".fields) |field| {
+        if (field.value == nibble) return @field(CompactType, field.name);
+    }
+    return null;
+}
+
 // ============================================================
 // Thrift Compact Protocol Reader
 // ============================================================
@@ -74,7 +84,7 @@ pub const ThriftReader = struct {
     /// Read a zigzag-encoded i32 (stored as varint).
     pub fn readZigZagI32(self: *ThriftReader) !i32 {
         const n = try self.readVarint();
-        const unsigned: u32 = @intCast(n);
+        const unsigned = std.math.cast(u32, n) orelse return error.VarintOverflow;
         return zigzagDecode32(unsigned);
     }
 
@@ -87,8 +97,9 @@ pub const ThriftReader = struct {
     /// Read a zigzag-encoded i16 (stored as varint).
     pub fn readZigZagI16(self: *ThriftReader) !i16 {
         const n = try self.readVarint();
-        const unsigned: u32 = @intCast(n);
-        return @intCast(zigzagDecode32(unsigned));
+        const unsigned = std.math.cast(u32, n) orelse return error.VarintOverflow;
+        const decoded = zigzagDecode32(unsigned);
+        return std.math.cast(i16, decoded) orelse return error.VarintOverflow;
     }
 
     /// Read a single byte.
@@ -129,7 +140,7 @@ pub const ThriftReader = struct {
     pub fn readFieldHeader(self: *ThriftReader) !FieldHeader {
         const byte = try self.readByte();
         const type_nibble: u4 = @intCast(byte & 0x0F);
-        const field_type: CompactType = @enumFromInt(type_nibble);
+        const field_type: CompactType = compactTypeFromNibble(type_nibble) orelse return error.InvalidEnumValue;
 
         if (field_type == .stop) {
             return .{ .field_id = 0, .field_type = .stop };
@@ -154,12 +165,13 @@ pub const ThriftReader = struct {
     pub fn readListHeader(self: *ThriftReader) !ListHeader {
         const byte = try self.readByte();
         const size_nibble: u4 = @intCast((byte >> 4) & 0x0F);
-        const elem_type: CompactType = @enumFromInt(@as(u4, @intCast(byte & 0x0F)));
+        const elem_type: CompactType = compactTypeFromNibble(@intCast(byte & 0x0F)) orelse return error.InvalidEnumValue;
 
         var size: u32 = undefined;
         if (size_nibble == 0x0F) {
-            // Large list: read varint for size
-            size = @intCast(try self.readVarint());
+            // Large list: read varint for size. Checked — a malformed varint
+            // above u32 range must error, not trap (review P4).
+            size = std.math.cast(u32, try self.readVarint()) orelse return error.VarintOverflow;
         } else {
             size = size_nibble;
         }
@@ -168,11 +180,12 @@ pub const ThriftReader = struct {
     }
 
     /// Push the current field ID state before entering a nested struct.
-    pub fn pushStruct(self: *ThriftReader) void {
-        if (self.stack_depth < self.field_id_stack.len) {
-            self.field_id_stack[self.stack_depth] = self.last_field_id;
-            self.stack_depth += 1;
-        }
+    /// Returns error.NestingTooDeep if the fixed-depth stack is exhausted
+    /// (review P7 — previously silently corrupted field-id tracking).
+    pub fn pushStruct(self: *ThriftReader) !void {
+        if (self.stack_depth >= self.field_id_stack.len) return error.NestingTooDeep;
+        self.field_id_stack[self.stack_depth] = self.last_field_id;
+        self.stack_depth += 1;
         self.last_field_id = 0;
     }
 
@@ -185,7 +198,14 @@ pub const ThriftReader = struct {
     }
 
     /// Skip an unknown field of the given type.
+    /// Recursion is bounded to 32 levels (review P7 — unbounded recursion on
+    /// hostile data).
     pub fn skip(self: *ThriftReader, compact_type: CompactType) !void {
+        return self.skipDepth(compact_type, 0);
+    }
+
+    fn skipDepth(self: *ThriftReader, compact_type: CompactType, depth: u32) !void {
+        if (depth > 32) return error.NestingTooDeep;
         switch (compact_type) {
             .stop => {},
             .boolean_true, .boolean_false => {},
@@ -193,33 +213,37 @@ pub const ThriftReader = struct {
             .i16, .i32, .i64 => _ = try self.readVarint(),
             .double => self.pos += 8,
             .binary => {
-                const len: usize = @intCast(try self.readVarint());
+                // Checked for 32-bit-target consistency (usize may be < u64).
+                const len: usize = std.math.cast(usize, try self.readVarint()) orelse return error.VarintOverflow;
                 self.pos += len;
             },
             .list, .set => {
                 const header = try self.readListHeader();
                 for (0..header.size) |_| {
-                    try self.skip(header.elem_type);
+                    try self.skipDepth(header.elem_type, depth + 1);
                 }
             },
             .map => {
-                const size: u32 = @intCast(try self.readVarint());
+                // Checked — see readListHeader (review P4).
+                const size: u32 = std.math.cast(u32, try self.readVarint()) orelse return error.VarintOverflow;
                 if (size > 0) {
                     const type_byte = try self.readByte();
-                    const key_type: CompactType = @enumFromInt(@as(u4, @intCast((type_byte >> 4) & 0x0F)));
-                    const val_type: CompactType = @enumFromInt(@as(u4, @intCast(type_byte & 0x0F)));
+                    // Same boundary validation as readFieldHeader/readListHeader:
+                    // nibbles 13-15 are unassigned and must error, not panic.
+                    const key_type = compactTypeFromNibble(@intCast((type_byte >> 4) & 0x0F)) orelse return error.InvalidEnumValue;
+                    const val_type = compactTypeFromNibble(@intCast(type_byte & 0x0F)) orelse return error.InvalidEnumValue;
                     for (0..size) |_| {
-                        try self.skip(key_type);
-                        try self.skip(val_type);
+                        try self.skipDepth(key_type, depth + 1);
+                        try self.skipDepth(val_type, depth + 1);
                     }
                 }
             },
             .@"struct" => {
-                self.pushStruct();
+                try self.pushStruct();
                 while (true) {
                     const fh = try self.readFieldHeader();
                     if (fh.field_type == .stop) break;
-                    try self.skip(fh.field_type);
+                    try self.skipDepth(fh.field_type, depth + 1);
                 }
                 self.popStruct();
             },
@@ -350,7 +374,7 @@ test "readListHeader: large list" {
 test "pushStruct/popStruct preserves field ID" {
     var reader = ThriftReader.init(&.{});
     reader.last_field_id = 5;
-    reader.pushStruct();
+    try reader.pushStruct();
     try std.testing.expectEqual(@as(i16, 0), reader.last_field_id);
     reader.last_field_id = 10;
     reader.popStruct();
@@ -507,12 +531,24 @@ test "skip: non-empty map" {
     try std.testing.expect(reader.isEof());
 }
 
+test "skip: map with unassigned type nibble errors (no panic)" {
+    // size=1, key_type nibble 13 (0xD, unassigned) | val_type i32(5) = 0xD5.
+    // Must error.InvalidEnumValue rather than trap in @enumFromInt.
+    const data = [_]u8{ 0x01, 0xD5, 0x00 };
+    var reader = ThriftReader.init(&data);
+    try std.testing.expectError(error.InvalidEnumValue, reader.skip(.map));
+    // val_type nibble 15: 0x5F.
+    const data2 = [_]u8{ 0x01, 0x5F, 0x00 };
+    var reader2 = ThriftReader.init(&data2);
+    try std.testing.expectError(error.InvalidEnumValue, reader2.skip(.map));
+}
+
 test "nested struct: two levels of pushStruct/popStruct" {
     var reader = ThriftReader.init(&.{});
     reader.last_field_id = 5;
-    reader.pushStruct(); // level 1
+    try reader.pushStruct(); // level 1
     reader.last_field_id = 3;
-    reader.pushStruct(); // level 2
+    try reader.pushStruct(); // level 2
     try std.testing.expectEqual(@as(i16, 0), reader.last_field_id);
     reader.last_field_id = 7;
     reader.popStruct(); // back to level 1
@@ -534,7 +570,7 @@ test "multiple readFieldHeaders track sequential field IDs" {
         0x00, // stop
     };
     var reader = ThriftReader.init(&data);
-    reader.pushStruct();
+    try reader.pushStruct();
 
     const fh1 = try reader.readFieldHeader();
     try std.testing.expectEqual(@as(i16, 1), fh1.field_id);
@@ -551,4 +587,65 @@ test "multiple readFieldHeaders track sequential field IDs" {
     const fh4 = try reader.readFieldHeader();
     try std.testing.expectEqual(CompactType.stop, fh4.field_type);
     reader.popStruct();
+}
+
+// ============================================================
+// Hardening Tests (Phase 11 Unit A)
+// ============================================================
+
+test "readZigZagI32: value > u32 max returns error.VarintOverflow" {
+    // Encode 2^33 = 8589934592 as a varint (> u32::MAX = 4294967295).
+    // 8589934592 = 0x2_0000_0000
+    // varint encoding (7 bits per byte, LSB first, continuation bit):
+    //   byte 0: 0x80 (bits 0-6: 0, cont)
+    //   byte 1: 0x80 (bits 7-13: 0, cont)
+    //   byte 2: 0x80 (bits 14-20: 0, cont)
+    //   byte 3: 0x80 (bits 21-27: 0, cont)
+    //   byte 4: 0x80 (bits 28-34: 0, cont)
+    //   byte 5: 0x02 (bits 35-41: 2, no cont)
+    // 2^33 = bit 33 set; in 7-bit groups: group0=0, group1=0, group2=0, group3=0, group4=4, group5=0
+    // Actually: 8589934592 = 0x200000000
+    // bits 0-6:   0x00 | 0x80 = 0x80
+    // bits 7-13:  0x00 | 0x80 = 0x80
+    // bits 14-20: 0x00 | 0x80 = 0x80
+    // bits 21-27: 0x00 | 0x80 = 0x80
+    // bits 28-34: (0x200000000 >> 28) & 0x7F = 0x20 | 0x00 (no more) = 0x20
+    // so bytes: {0x80, 0x80, 0x80, 0x80, 0x20}
+    const bytes = [_]u8{ 0x80, 0x80, 0x80, 0x80, 0x20 };
+    var reader = ThriftReader.init(&bytes);
+    try std.testing.expectError(error.VarintOverflow, reader.readZigZagI32());
+}
+
+test "readZigZagI16: value out of i16 range returns error.VarintOverflow" {
+    // zigzag(32768) = 65536 — fits in u32 but NOT in i16.
+    // zigzag(n) = 2*n for positive n, so zigzag(32768)=65536.
+    // 65536 varint: 0x80, 0x80, 0x04
+    const bytes = [_]u8{ 0x80, 0x80, 0x04 };
+    var reader = ThriftReader.init(&bytes);
+    try std.testing.expectError(error.VarintOverflow, reader.readZigZagI16());
+}
+
+test "skip: 33-deep nested struct returns error.NestingTooDeep" {
+    // Build bytes: 33 levels of struct, each opening with a field header
+    // for a nested struct (type 12 = 0x0C, delta=1 => byte 0x1C), then
+    // 33 stop bytes (0x00) to close each level.
+    // Each struct level: byte 0x1C (field 1, type struct), then content, then 0x00 stop
+    // We need 34 levels total (skip is called on the outermost struct arm at depth 0,
+    // then reads fields inside at depth 1, finding another struct at depth 1 → depth+1=2, ...).
+    // To trigger depth>32 we need 34 nested struct field entries.
+    var buf: [34 + 34]u8 = undefined;
+    // 34 field headers for type=struct (0x1C), then 34 stop bytes
+    for (0..34) |i| buf[i] = 0x1C; // field header: delta=1, type=struct(12)
+    for (34..68) |i| buf[i] = 0x00; // stop bytes
+    var reader = ThriftReader.init(&buf);
+    try std.testing.expectError(error.NestingTooDeep, reader.skip(.@"struct"));
+}
+
+test "pushStruct: 17th push returns error.NestingTooDeep" {
+    var reader = ThriftReader.init(&.{});
+    // The stack is 16 deep; first 16 should succeed, 17th should error.
+    for (0..16) |_| {
+        try reader.pushStruct();
+    }
+    try std.testing.expectError(error.NestingTooDeep, reader.pushStruct());
 }

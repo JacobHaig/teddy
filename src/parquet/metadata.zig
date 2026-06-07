@@ -5,6 +5,18 @@ const CompactType = @import("thrift_reader.zig").CompactType;
 const ThriftWriter = @import("thrift_writer.zig").ThriftWriter;
 const types = @import("types.zig");
 
+/// Checked wire-to-enum conversion: unknown or out-of-range values from the
+/// file become an error instead of an @enumFromInt panic (review P3 — wire
+/// enums are validated here at the boundary and trusted everywhere else).
+fn enumFromWire(comptime E: type, raw: i32) !E {
+    const Tag = @typeInfo(E).@"enum".tag_type;
+    const tag = std.math.cast(Tag, raw) orelse return error.InvalidEnumValue;
+    inline for (@typeInfo(E).@"enum".fields) |field| {
+        if (field.value == tag) return @field(E, field.name);
+    }
+    return error.InvalidEnumValue;
+}
+
 // ============================================================
 // Parquet Metadata Structures (decoded from Thrift)
 // ============================================================
@@ -21,7 +33,7 @@ pub const Statistics = struct {
 
     pub fn decode(reader: *ThriftReader) !Statistics {
         var result = Statistics{};
-        reader.pushStruct();
+        try reader.pushStruct();
         while (true) {
             const fh = try reader.readFieldHeader();
             if (fh.field_type == .stop) break;
@@ -48,7 +60,7 @@ pub const Statistics = struct {
 
 fn decodeTimeUnit(reader: *ThriftReader) !types.TimeUnit {
     var result: ?types.TimeUnit = null;
-    reader.pushStruct();
+    try reader.pushStruct();
     while (true) {
         const fh = try reader.readFieldHeader();
         if (fh.field_type == .stop) break;
@@ -74,7 +86,7 @@ fn decodeTimeUnit(reader: *ThriftReader) !types.TimeUnit {
 
 fn decodeDecimalType(reader: *ThriftReader) !types.DecimalParams {
     var result = types.DecimalParams{ .scale = 0, .precision = 0 };
-    reader.pushStruct();
+    try reader.pushStruct();
     while (true) {
         const fh = try reader.readFieldHeader();
         if (fh.field_type == .stop) break;
@@ -90,7 +102,7 @@ fn decodeDecimalType(reader: *ThriftReader) !types.DecimalParams {
 
 fn decodeTimeType(reader: *ThriftReader) !types.TimeParams {
     var result = types.TimeParams{ .is_adjusted_to_utc = false, .unit = .millis };
-    reader.pushStruct();
+    try reader.pushStruct();
     while (true) {
         const fh = try reader.readFieldHeader();
         if (fh.field_type == .stop) break;
@@ -111,7 +123,7 @@ fn decodeTimestampType(reader: *ThriftReader) !types.TimestampParams {
 
 fn decodeIntType(reader: *ThriftReader) !types.IntParams {
     var result = types.IntParams{ .bit_width = 0, .is_signed = false };
-    reader.pushStruct();
+    try reader.pushStruct();
     while (true) {
         const fh = try reader.readFieldHeader();
         if (fh.field_type == .stop) break;
@@ -131,7 +143,7 @@ fn decodeIntType(reader: *ThriftReader) !types.IntParams {
 /// so callers fall back to converted_type / physical type.
 pub fn decodeLogicalType(reader: *ThriftReader) !?types.LogicalType {
     var result: ?types.LogicalType = null;
-    reader.pushStruct();
+    try reader.pushStruct();
     while (true) {
         const fh = try reader.readFieldHeader();
         if (fh.field_type == .stop) break;
@@ -290,17 +302,17 @@ pub const SchemaElement = struct {
 
     pub fn decode(reader: *ThriftReader) !SchemaElement {
         var result = SchemaElement{};
-        reader.pushStruct();
+        try reader.pushStruct();
         while (true) {
             const fh = try reader.readFieldHeader();
             if (fh.field_type == .stop) break;
             switch (fh.field_id) {
-                1 => result.type_ = @enumFromInt(@as(u8, @intCast(try reader.readZigZagI32()))),
+                1 => result.type_ = try enumFromWire(types.PhysicalType, try reader.readZigZagI32()),
                 2 => result.type_length = try reader.readZigZagI32(),
-                3 => result.repetition_type = @enumFromInt(@as(u8, @intCast(try reader.readZigZagI32()))),
+                3 => result.repetition_type = try enumFromWire(types.FieldRepetitionType, try reader.readZigZagI32()),
                 4 => result.name = try reader.readString(),
                 5 => result.num_children = try reader.readZigZagI32(),
-                6 => result.converted_type = @enumFromInt(@as(u8, @intCast(try reader.readZigZagI32()))),
+                6 => result.converted_type = try enumFromWire(types.ConvertedType, try reader.readZigZagI32()),
                 7 => result.scale = try reader.readZigZagI32(),
                 8 => result.precision = try reader.readZigZagI32(),
                 9 => result.field_id = try reader.readZigZagI32(),
@@ -362,15 +374,15 @@ pub const DataPageHeader = struct {
 
     pub fn decode(reader: *ThriftReader) !DataPageHeader {
         var result = DataPageHeader{};
-        reader.pushStruct();
+        try reader.pushStruct();
         while (true) {
             const fh = try reader.readFieldHeader();
             if (fh.field_type == .stop) break;
             switch (fh.field_id) {
                 1 => result.num_values = try reader.readZigZagI32(),
-                2 => result.encoding = @enumFromInt(@as(u8, @intCast(try reader.readZigZagI32()))),
-                3 => result.definition_level_encoding = @enumFromInt(@as(u8, @intCast(try reader.readZigZagI32()))),
-                4 => result.repetition_level_encoding = @enumFromInt(@as(u8, @intCast(try reader.readZigZagI32()))),
+                2 => result.encoding = try enumFromWire(types.Encoding, try reader.readZigZagI32()),
+                3 => result.definition_level_encoding = try enumFromWire(types.Encoding, try reader.readZigZagI32()),
+                4 => result.repetition_level_encoding = try enumFromWire(types.Encoding, try reader.readZigZagI32()),
                 5 => result.statistics = try Statistics.decode(reader),
                 else => try reader.skip(fh.field_type),
             }
@@ -401,13 +413,13 @@ pub const DictionaryPageHeader = struct {
 
     pub fn decode(reader: *ThriftReader) !DictionaryPageHeader {
         var result = DictionaryPageHeader{};
-        reader.pushStruct();
+        try reader.pushStruct();
         while (true) {
             const fh = try reader.readFieldHeader();
             if (fh.field_type == .stop) break;
             switch (fh.field_id) {
                 1 => result.num_values = try reader.readZigZagI32(),
-                2 => result.encoding = @enumFromInt(@as(u8, @intCast(try reader.readZigZagI32()))),
+                2 => result.encoding = try enumFromWire(types.Encoding, try reader.readZigZagI32()),
                 3 => result.is_sorted = fh.field_type == .boolean_true,
                 else => try reader.skip(fh.field_type),
             }
@@ -429,7 +441,7 @@ pub const DataPageHeaderV2 = struct {
 
     pub fn decode(reader: *ThriftReader) !DataPageHeaderV2 {
         var result = DataPageHeaderV2{};
-        reader.pushStruct();
+        try reader.pushStruct();
         while (true) {
             const fh = try reader.readFieldHeader();
             if (fh.field_type == .stop) break;
@@ -437,7 +449,7 @@ pub const DataPageHeaderV2 = struct {
                 1 => result.num_values = try reader.readZigZagI32(),
                 2 => result.num_nulls = try reader.readZigZagI32(),
                 3 => result.num_rows = try reader.readZigZagI32(),
-                4 => result.encoding = @enumFromInt(@as(u8, @intCast(try reader.readZigZagI32()))),
+                4 => result.encoding = try enumFromWire(types.Encoding, try reader.readZigZagI32()),
                 5 => result.definition_levels_byte_length = try reader.readZigZagI32(),
                 6 => result.repetition_levels_byte_length = try reader.readZigZagI32(),
                 7 => result.is_compressed = fh.field_type == .boolean_true,
@@ -462,12 +474,12 @@ pub const PageHeader = struct {
 
     pub fn decode(reader: *ThriftReader) !PageHeader {
         var result = PageHeader{};
-        reader.pushStruct();
+        try reader.pushStruct();
         while (true) {
             const fh = try reader.readFieldHeader();
             if (fh.field_type == .stop) break;
             switch (fh.field_id) {
-                1 => result.page_type = @enumFromInt(@as(u8, @intCast(try reader.readZigZagI32()))),
+                1 => result.page_type = try enumFromWire(types.PageType, try reader.readZigZagI32()),
                 2 => result.uncompressed_page_size = try reader.readZigZagI32(),
                 3 => result.compressed_page_size = try reader.readZigZagI32(),
                 4 => result.crc = try reader.readZigZagI32(),
@@ -505,7 +517,7 @@ pub const KeyValue = struct {
 
     pub fn decode(reader: *ThriftReader) !KeyValue {
         var result = KeyValue{};
-        reader.pushStruct();
+        try reader.pushStruct();
         while (true) {
             const fh = try reader.readFieldHeader();
             if (fh.field_type == .stop) break;
@@ -539,17 +551,20 @@ pub const ColumnMetaData = struct {
 
     pub fn decode(reader: *ThriftReader, allocator: Allocator) !ColumnMetaData {
         var result = ColumnMetaData{};
-        reader.pushStruct();
+        // Free any already-owned allocations if a later field fails to decode.
+        errdefer result.deinit(allocator);
+        try reader.pushStruct();
         while (true) {
             const fh = try reader.readFieldHeader();
             if (fh.field_type == .stop) break;
             switch (fh.field_id) {
-                1 => result.type_ = @enumFromInt(@as(u8, @intCast(try reader.readZigZagI32()))),
+                1 => result.type_ = try enumFromWire(types.PhysicalType, try reader.readZigZagI32()),
                 2 => {
                     const list_hdr = try reader.readListHeader();
                     const encs = try allocator.alloc(types.Encoding, list_hdr.size);
+                    errdefer allocator.free(encs); // free if decode fails mid-loop
                     for (0..list_hdr.size) |i| {
-                        encs[i] = @enumFromInt(@as(u8, @intCast(try reader.readZigZagI32())));
+                        encs[i] = try enumFromWire(types.Encoding, try reader.readZigZagI32());
                     }
                     result.encodings = encs;
                     result._encodings_owned = true;
@@ -557,13 +572,14 @@ pub const ColumnMetaData = struct {
                 3 => {
                     const list_hdr = try reader.readListHeader();
                     const paths = try allocator.alloc([]const u8, list_hdr.size);
+                    errdefer allocator.free(paths); // free if decode fails mid-loop
                     for (0..list_hdr.size) |i| {
                         paths[i] = try reader.readString();
                     }
                     result.path_in_schema = paths;
                     result._paths_owned = true;
                 },
-                4 => result.codec = @enumFromInt(@as(u8, @intCast(try reader.readZigZagI32()))),
+                4 => result.codec = try enumFromWire(types.CompressionCodec, try reader.readZigZagI32()),
                 5 => result.num_values = try reader.readZigZagI64(),
                 6 => result.total_uncompressed_size = try reader.readZigZagI64(),
                 7 => result.total_compressed_size = try reader.readZigZagI64(),
@@ -628,7 +644,9 @@ pub const ColumnChunk = struct {
 
     pub fn decode(reader: *ThriftReader, allocator: Allocator) !ColumnChunk {
         var result = ColumnChunk{};
-        reader.pushStruct();
+        // Free meta_data if a later field or the stop-byte read fails.
+        errdefer result.deinit(allocator);
+        try reader.pushStruct();
         while (true) {
             const fh = try reader.readFieldHeader();
             if (fh.field_type == .stop) break;
@@ -673,7 +691,9 @@ pub const RowGroup = struct {
 
     pub fn decode(reader: *ThriftReader, allocator: Allocator) !RowGroup {
         var result = RowGroup{};
-        reader.pushStruct();
+        // Free any already-owned columns if a later field fails to decode.
+        errdefer result.deinit(allocator);
+        try reader.pushStruct();
         while (true) {
             const fh = try reader.readFieldHeader();
             if (fh.field_type == .stop) break;
@@ -681,8 +701,15 @@ pub const RowGroup = struct {
                 1 => {
                     const list_hdr = try reader.readListHeader();
                     const cols = try allocator.alloc(ColumnChunk, list_hdr.size);
+                    var cols_init: usize = 0;
+                    errdefer {
+                        // Free only the ColumnChunks that were fully decoded.
+                        for (cols[0..cols_init]) |*c| c.deinit(allocator);
+                        allocator.free(cols);
+                    }
                     for (0..list_hdr.size) |i| {
                         cols[i] = try ColumnChunk.decode(reader, allocator);
+                        cols_init += 1;
                     }
                     result.columns = cols;
                     result._columns_owned = true;
@@ -740,15 +767,24 @@ pub const FileMetaData = struct {
 
     pub fn decode(reader: *ThriftReader, allocator: Allocator) !FileMetaData {
         var result = FileMetaData{};
-        reader.pushStruct();
+        // Free any already-owned allocations if a later field fails to decode.
+        errdefer result.deinit(allocator);
+        try reader.pushStruct();
         while (true) {
             const fh = try reader.readFieldHeader();
             if (fh.field_type == .stop) break;
             switch (fh.field_id) {
                 1 => result.version = try reader.readZigZagI32(),
                 2 => {
+                    // Free any previously-decoded schema (duplicate field in corrupt data).
+                    if (result._schema_owned) {
+                        allocator.free(result.schema);
+                        result.schema = &.{};
+                        result._schema_owned = false;
+                    }
                     const list_hdr = try reader.readListHeader();
                     const elems = try allocator.alloc(SchemaElement, list_hdr.size);
+                    errdefer allocator.free(elems); // SchemaElements are POD; free if decode fails
                     for (0..list_hdr.size) |i| {
                         elems[i] = try SchemaElement.decode(reader);
                     }
@@ -757,17 +793,38 @@ pub const FileMetaData = struct {
                 },
                 3 => result.num_rows = try reader.readZigZagI64(),
                 4 => {
+                    // Free any previously-decoded row groups (duplicate field in corrupt data).
+                    if (result._row_groups_owned) {
+                        for (result.row_groups) |*rg| rg.deinit(allocator);
+                        allocator.free(result.row_groups);
+                        result.row_groups = &.{};
+                        result._row_groups_owned = false;
+                    }
                     const list_hdr = try reader.readListHeader();
                     const rgs = try allocator.alloc(RowGroup, list_hdr.size);
+                    var rgs_init: usize = 0;
+                    errdefer {
+                        // Free only the RowGroups that were fully decoded.
+                        for (rgs[0..rgs_init]) |*rg| rg.deinit(allocator);
+                        allocator.free(rgs);
+                    }
                     for (0..list_hdr.size) |i| {
                         rgs[i] = try RowGroup.decode(reader, allocator);
+                        rgs_init += 1;
                     }
                     result.row_groups = rgs;
                     result._row_groups_owned = true;
                 },
                 5 => {
+                    // Free any previously-decoded kv metadata (duplicate field in corrupt data).
+                    if (result._kv_owned) {
+                        if (result.key_value_metadata) |kvs| allocator.free(kvs);
+                        result.key_value_metadata = null;
+                        result._kv_owned = false;
+                    }
                     const list_hdr = try reader.readListHeader();
                     const kvs = try allocator.alloc(KeyValue, list_hdr.size);
+                    errdefer allocator.free(kvs); // KeyValues are POD; free if decode fails
                     for (0..list_hdr.size) |i| {
                         kvs[i] = try KeyValue.decode(reader);
                     }
@@ -1256,4 +1313,57 @@ test "FileMetaData encode/decode round-trip" {
     try std.testing.expectEqualStrings("id", decoded.schema[1].name);
     try std.testing.expectEqual(@as(i64, 100), decoded.num_rows);
     try std.testing.expectEqualStrings("teddy (Zig)", decoded.created_by.?);
+}
+
+// ============================================================
+// Hardening Tests (Phase 11 Unit A)
+// ============================================================
+
+test "SchemaElement decode: unknown type_ value 99 → error.InvalidEnumValue" {
+    // field 1 (type_), i32, delta=1 → byte 0x15
+    // zigzag(99) = 198 = varint [0xC6, 0x01]
+    // then stop byte
+    const data = [_]u8{ 0x15, 0xC6, 0x01, 0x00 };
+    var reader = ThriftReader.init(&data);
+    try std.testing.expectError(error.InvalidEnumValue, SchemaElement.decode(&reader));
+}
+
+test "PageHeader decode: unknown page_type 99 → error.InvalidEnumValue" {
+    // field 1 (page_type), i32, delta=1 → byte 0x15
+    // zigzag(99) = 198 = varint [0xC6, 0x01]
+    // then stop
+    const data = [_]u8{ 0x15, 0xC6, 0x01, 0x00 };
+    var reader = ThriftReader.init(&data);
+    try std.testing.expectError(error.InvalidEnumValue, PageHeader.decode(&reader));
+}
+
+test "ColumnMetaData decode: unknown codec 200 → error.InvalidEnumValue" {
+    const allocator = std.testing.allocator;
+    // We build a minimal ColumnMetaData with field 4 (codec) = 200.
+    // field 4 header: delta=4 from 0, type=i32(5) → byte 0x45
+    // zigzag(200) = 400 = varint [0x90, 0x03]
+    // then stop
+    const data = [_]u8{ 0x45, 0x90, 0x03, 0x00 };
+    var reader = ThriftReader.init(&data);
+    try std.testing.expectError(error.InvalidEnumValue, ColumnMetaData.decode(&reader, allocator));
+}
+
+test "SchemaElement decode: negative enum value (zigzag(-1)=1) → error.InvalidEnumValue" {
+    // field 1 (type_), i32, value zigzag(-1)=1 → varint [0x01]
+    // std.math.cast(u8, -1) fails → error.InvalidEnumValue
+    const data = [_]u8{ 0x15, 0x01, 0x00 };
+    var reader = ThriftReader.init(&data);
+    try std.testing.expectError(error.InvalidEnumValue, SchemaElement.decode(&reader));
+}
+
+test "DataPageHeader decode: unknown encoding value 99 → error.InvalidEnumValue" {
+    // field 2 (encoding), delta=2, type=i32(5) → byte 0x25
+    // zigzag(99) = 198 = varint [0xC6, 0x01]
+    // We skip field 1 by jumping straight to field 2 with absolute id if needed.
+    // Actually: field 1 first (num_values), then field 2 (encoding).
+    // Skip field 1 with delta=1, type=i32, value=0: 0x15, 0x00
+    // Then field 2 encoding=99: delta=1, type=i32(5) → 0x15, then zigzag(99)=[0xC6,0x01]
+    const data = [_]u8{ 0x15, 0x00, 0x15, 0xC6, 0x01, 0x00 };
+    var reader = ThriftReader.init(&data);
+    try std.testing.expectError(error.InvalidEnumValue, DataPageHeader.decode(&reader));
 }

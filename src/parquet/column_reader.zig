@@ -29,18 +29,25 @@ pub fn readColumnChunk(
     const col_meta = column_chunk.meta_data orelse return error.MissingColumnMetadata;
     const physical_type = col_meta.type_;
 
-    // Determine starting offset in the file
+    // P5: file-controlled i64 offsets. A negative value (cast fails) or a value
+    // past EOF would otherwise produce an out-of-bounds slice panic, so convert
+    // through std.math.cast and validate both ends against the buffer length.
     const start_offset: usize = blk: {
         if (col_meta.dictionary_page_offset) |dpo| {
-            break :blk @intCast(dpo);
+            break :blk std.math.cast(usize, dpo) orelse return error.CorruptFile;
         }
-        break :blk @intCast(col_meta.data_page_offset);
+        break :blk std.math.cast(usize, col_meta.data_page_offset) orelse return error.CorruptFile;
     };
 
-    // Total bytes for this column chunk
-    const total_size: usize = @intCast(col_meta.total_compressed_size);
-    const end_offset = start_offset + total_size;
+    // Total bytes for this column chunk (file-controlled i64; negative → error).
+    const total_size: usize = std.math.cast(usize, col_meta.total_compressed_size) orelse return error.CorruptFile;
+    // Checked add: start_offset + total_size could overflow usize on a crafted file.
+    const end_offset = std.math.add(usize, start_offset, total_size) catch return error.CorruptFile;
 
+    // Validate BOTH ends: start_offset must itself be in-bounds (the slice
+    // file_data[pos..end_offset] below would otherwise panic) and end_offset
+    // must not run past EOF.
+    if (start_offset > file_data.len) return error.ColumnDataOutOfBounds;
     if (end_offset > file_data.len) return error.ColumnDataOutOfBounds;
 
     // Accumulated values across pages
@@ -56,7 +63,9 @@ pub fn readColumnChunk(
 
     var pos = start_offset;
     var values_read: usize = 0;
-    const total_values: usize = @intCast(col_meta.num_values);
+    // P4: num_values is a file-controlled i64; a negative value (cast fails) is
+    // corrupt rather than "read nothing".
+    const total_values: usize = std.math.cast(usize, col_meta.num_values) orelse return error.CorruptFile;
 
     while (pos < end_offset and values_read < total_values) {
         // Decode page header (Thrift)
@@ -64,12 +73,15 @@ pub fn readColumnChunk(
         const page_header = try metadata.PageHeader.decode(&thrift_reader);
         pos += thrift_reader.pos; // advance past the Thrift header
 
-        const compressed_size: usize = @intCast(page_header.compressed_page_size);
-        const uncompressed_size: usize = @intCast(page_header.uncompressed_page_size);
+        // P4: page sizes are file-controlled i32s; negative (cast fails) → error.
+        const compressed_size: usize = std.math.cast(usize, page_header.compressed_page_size) orelse return error.CorruptPageData;
+        const uncompressed_size: usize = std.math.cast(usize, page_header.uncompressed_page_size) orelse return error.CorruptPageData;
 
-        if (pos + compressed_size > file_data.len) return error.PageDataOutOfBounds;
-        const page_data = file_data[pos .. pos + compressed_size];
-        pos += compressed_size;
+        // Checked add: pos + compressed_size could overflow usize on a crafted file.
+        const page_end = std.math.add(usize, pos, compressed_size) catch return error.PageDataOutOfBounds;
+        if (page_end > file_data.len) return error.PageDataOutOfBounds;
+        const page_data = file_data[pos..page_end];
+        pos = page_end;
 
         switch (page_header.page_type) {
             .dictionary_page => {
@@ -77,28 +89,42 @@ pub fn readColumnChunk(
                 const decompressed = try decompressPage(allocator, page_data, col_meta.codec, uncompressed_size);
                 defer if (decompressed.ptr != page_data.ptr) allocator.free(decompressed);
 
-                dict = try DictionaryStore.init(allocator, decompressed, physical_type, leaf.schema_element.type_length orelse 0, @intCast(dict_header.num_values));
+                // P4: dictionary entry count is a file-controlled i32; negative → error.
+                const dict_num_values: usize = std.math.cast(usize, dict_header.num_values) orelse return error.CorruptPageData;
+                dict = try DictionaryStore.init(allocator, decompressed, physical_type, leaf.schema_element.type_length orelse 0, dict_num_values);
             },
             .data_page => {
                 const dp_header = page_header.data_page_header orelse return error.MissingDataPageHeader;
-                const num_values_in_page: usize = @intCast(dp_header.num_values);
+                // P4: file-controlled i32; negative → error.
+                const num_values_in_page: usize = std.math.cast(usize, dp_header.num_values) orelse return error.CorruptPageData;
 
                 const decompressed = try decompressPage(allocator, page_data, col_meta.codec, uncompressed_size);
                 defer if (decompressed.ptr != page_data.ptr) allocator.free(decompressed);
 
                 var data_pos: usize = 0;
 
-                // Read repetition levels (skip for flat schema: max_rep_level == 0)
+                // Read repetition levels (skip for flat schema: max_rep_level == 0).
+                // P2: the 4-byte length prefix and the levels region it describes are
+                // file-controlled; validate both before slicing or a malformed page
+                // would panic on an out-of-bounds slice.
                 if (leaf.max_rep_level > 0) {
-                    const rep_len = std.mem.readInt(u32, decompressed[data_pos..][0..4], .little);
-                    data_pos += 4 + rep_len;
+                    if (decompressed.len < data_pos + 4) return error.CorruptPageData;
+                    const rep_len: usize = std.mem.readInt(u32, decompressed[data_pos..][0..4], .little);
+                    // data_pos + 4 + rep_len could overflow / exceed the page.
+                    const rep_end = std.math.add(usize, data_pos + 4, rep_len) catch return error.CorruptPageData;
+                    if (rep_end > decompressed.len) return error.CorruptPageData;
+                    data_pos = rep_end;
                 }
 
-                // Read definition levels
+                // Read definition levels (P2: same length-prefix validation).
                 if (leaf.max_def_level > 0) {
-                    const def_len_bytes = std.mem.readInt(u32, decompressed[data_pos..][0..4], .little);
-                    const def_data = decompressed[data_pos + 4 .. data_pos + 4 + def_len_bytes];
-                    data_pos += 4 + def_len_bytes;
+                    if (decompressed.len < data_pos + 4) return error.CorruptPageData;
+                    const def_len_bytes: usize = std.mem.readInt(u32, decompressed[data_pos..][0..4], .little);
+                    const def_start = data_pos + 4;
+                    const def_end = std.math.add(usize, def_start, def_len_bytes) catch return error.CorruptPageData;
+                    if (def_end > decompressed.len) return error.CorruptPageData;
+                    const def_data = decompressed[def_start..def_end];
+                    data_pos = def_end;
 
                     var rle_dec = encoding.RleBitPackedDecoder.init(def_data, leaf.max_def_level);
                     const levels = try rle_dec.readBatch(num_values_in_page, allocator);
@@ -122,9 +148,20 @@ pub fn readColumnChunk(
             },
             .data_page_v2 => {
                 const dp2 = page_header.data_page_header_v2 orelse return error.MissingDataPageV2Header;
-                const num_values_in_page: usize = @intCast(dp2.num_values);
-                const rep_len: usize = @intCast(dp2.repetition_levels_byte_length);
-                const def_len: usize = @intCast(dp2.definition_levels_byte_length);
+                // P4: file-controlled i32s; negative (cast fails) → error.
+                const num_values_in_page: usize = std.math.cast(usize, dp2.num_values) orelse return error.CorruptPageData;
+                const rep_len: usize = std.math.cast(usize, dp2.repetition_levels_byte_length) orelse return error.CorruptPageData;
+                const def_len: usize = std.math.cast(usize, dp2.definition_levels_byte_length) orelse return error.CorruptPageData;
+
+                // P2: rep_len + def_len is subtracted from uncompressed_size below;
+                // if the header lies that sum can exceed uncompressed_size and the
+                // subtraction would underflow usize. It is also used to slice
+                // page_data. Validate the combined prefix against BOTH bounds up
+                // front so every downstream slice/subtraction is safe.
+                const levels_total = std.math.add(usize, rep_len, def_len) catch return error.CorruptPageData;
+                if (levels_total > uncompressed_size) return error.CorruptPageData;
+                if (levels_total > page_data.len) return error.CorruptPageData;
+                const values_uncompressed_size = uncompressed_size - levels_total;
 
                 // In v2, rep/def levels are NOT compressed
                 var data_pos: usize = 0;
@@ -147,10 +184,11 @@ pub fn readColumnChunk(
                         if (l == leaf.max_def_level) non_null += 1;
                     }
 
-                    // The rest of the page is compressed (unless is_compressed=false)
+                    // The rest of the page is compressed (unless is_compressed=false).
+                    // values_uncompressed_size was validated above (no underflow);
+                    // data_pos == rep_len + def_len <= page_data.len so the slice is safe.
                     const is_compressed = dp2.is_compressed orelse true;
                     const values_data = page_data[data_pos..];
-                    const values_uncompressed_size = uncompressed_size - rep_len - def_len;
 
                     const decompressed_vals = if (is_compressed)
                         try decompressPage(allocator, values_data, col_meta.codec, values_uncompressed_size)
@@ -163,7 +201,6 @@ pub fn readColumnChunk(
                     data_pos += def_len;
                     const is_compressed = dp2.is_compressed orelse true;
                     const values_data = page_data[data_pos..];
-                    const values_uncompressed_size = uncompressed_size - rep_len - def_len;
 
                     const decompressed_vals = if (is_compressed)
                         try decompressPage(allocator, values_data, col_meta.codec, values_uncompressed_size)
@@ -356,6 +393,7 @@ pub const ValueAccumulator = struct {
             },
             .fixed_len_byte_array => {
                 if (self.type_length <= 0) return error.InvalidTypeLength;
+                // Safe @intCast: the `<= 0` guard above proves type_length is positive.
                 const n: usize = @intCast(self.type_length);
                 for (0..count) |_| {
                     const src = try dec.readFixedByteArray(n);
@@ -381,12 +419,30 @@ pub const ValueAccumulator = struct {
     pub fn decodeDictionary(self: *ValueAccumulator, rle_dec: *encoding.RleBitPackedDecoder, dict: *const DictionaryStore, count: usize, physical_type: types.PhysicalType, allocator: Allocator) !void {
         for (0..count) |_| {
             const idx = try rle_dec.next();
+            // P1: idx is decoded from the file's RLE index stream and is entirely
+            // attacker-controlled. Bounds-check against the matching dictionary
+            // array for this physical type before indexing, or a malformed stream
+            // panics on an out-of-bounds access. (byte_array/flba/int96 all share
+            // the byte_arrays store.)
             switch (physical_type) {
-                .int32 => try self.int32s.append(allocator, dict.int32s.items[idx]),
-                .int64 => try self.int64s.append(allocator, dict.int64s.items[idx]),
-                .float => try self.floats.append(allocator, dict.floats.items[idx]),
-                .double => try self.doubles.append(allocator, dict.doubles.items[idx]),
+                .int32 => {
+                    if (idx >= dict.int32s.items.len) return error.InvalidDictionaryIndex;
+                    try self.int32s.append(allocator, dict.int32s.items[idx]);
+                },
+                .int64 => {
+                    if (idx >= dict.int64s.items.len) return error.InvalidDictionaryIndex;
+                    try self.int64s.append(allocator, dict.int64s.items[idx]);
+                },
+                .float => {
+                    if (idx >= dict.floats.items.len) return error.InvalidDictionaryIndex;
+                    try self.floats.append(allocator, dict.floats.items[idx]);
+                },
+                .double => {
+                    if (idx >= dict.doubles.items.len) return error.InvalidDictionaryIndex;
+                    try self.doubles.append(allocator, dict.doubles.items[idx]);
+                },
                 .byte_array, .fixed_len_byte_array, .int96 => {
+                    if (idx >= dict.byte_arrays.items.len) return error.InvalidDictionaryIndex;
                     const src = dict.byte_arrays.items[idx];
                     const copy = try allocator.alloc(u8, src.len);
                     @memcpy(copy, src);
@@ -512,7 +568,13 @@ pub const ValueAccumulator = struct {
                     }
                     initialized += 1;
                 }
-                // Mark all elements as transferred so deinit won't double-free them
+                // P6: when the def-levels imply fewer values than were actually
+                // decoded (a malformed file), `vi` stops short of the accumulator
+                // length and the tail entries items[vi..] were never moved into
+                // `result`. clearRetainingCapacity() would drop those slices
+                // without freeing them → leak. Free the untransferred tail first.
+                for (self.byte_arrays.items[vi..]) |arr| allocator.free(arr);
+                // Mark all elements as transferred so deinit won't double-free them.
                 self.byte_arrays.clearRetainingCapacity();
                 col.byte_arrays = result;
             },
@@ -575,6 +637,7 @@ pub const DictionaryStore = struct {
             },
             .fixed_len_byte_array => {
                 if (type_length <= 0) return error.InvalidTypeLength;
+                // Safe @intCast: the `<= 0` guard above proves type_length is positive.
                 const n: usize = @intCast(type_length);
                 for (0..num_values) |_| {
                     const src = try dec.readFixedByteArray(n);

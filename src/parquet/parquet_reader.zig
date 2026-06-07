@@ -20,9 +20,12 @@ pub fn readParquet(allocator: Allocator, file_data: []const u8) !types.ParquetRe
     if (!std.mem.eql(u8, file_data[0..4], MAGIC)) return error.InvalidParquetFile;
     if (!std.mem.eql(u8, file_data[file_data.len - 4 ..], MAGIC)) return error.InvalidParquetFile;
 
-    // 2. Read footer length (4 bytes LE, just before closing magic)
+    // 2. Read footer length (4 bytes LE, just before closing magic).
+    // footer_len comes from a u32 (max ~4G); on a 64-bit usize `footer_len + 8`
+    // cannot overflow, but use a checked add for clarity and 32-bit safety.
     const footer_len: usize = @intCast(std.mem.readInt(u32, file_data[file_data.len - 8 ..][0..4], .little));
-    if (footer_len + 8 > file_data.len) return error.InvalidParquetFile;
+    const footer_plus_magic = std.math.add(usize, footer_len, 8) catch return error.InvalidParquetFile;
+    if (footer_plus_magic > file_data.len) return error.InvalidParquetFile;
 
     // 3. Decode FileMetaData from footer
     const footer_start = file_data.len - 8 - footer_len;
@@ -36,7 +39,8 @@ pub fn readParquet(allocator: Allocator, file_data: []const u8) !types.ParquetRe
     const leaves = try resolveSchema(allocator, file_metadata.schema);
     defer allocator.free(leaves);
 
-    const num_rows: usize = @intCast(file_metadata.num_rows);
+    // file-controlled i64; a negative row count is corrupt, not zero.
+    const num_rows: usize = std.math.cast(usize, file_metadata.num_rows) orelse return error.CorruptFile;
 
     // 5. Read all columns across all row groups
     const columns = try allocator.alloc(types.ParquetColumn, leaves.len);
@@ -109,7 +113,8 @@ fn readLeafConcat(
 
     for (row_groups) |rg| {
         if (leaf.column_index >= rg.columns.len) return error.ColumnIndexOutOfBounds;
-        const rg_rows: usize = @intCast(rg.num_rows);
+        // file-controlled i64; negative → error.
+        const rg_rows: usize = std.math.cast(usize, rg.num_rows) orelse return error.CorruptFile;
 
         var chunk = try column_reader.readColumnChunk(
             allocator,
@@ -568,6 +573,96 @@ test "readParquet: addresses.parquet all column types" {
     const addresses = result.columns[3].byte_arrays.?;
     try std.testing.expectEqualStrings("120 jefferson st.", addresses[0]);
     try std.testing.expectEqualStrings("220 hobo Av.", addresses[1]);
+}
+
+// ============================================================
+// Phase 11 Unit B — malformed-file hardening (file level)
+// ============================================================
+
+const ThriftWriter = @import("thrift_writer.zig").ThriftWriter;
+const column_writer = @import("column_writer.zig");
+const parquet_writer = @import("parquet_writer.zig");
+
+test "P2: corrupt v1 def-level length prefix returns CorruptPageData (not panic)" {
+    const allocator = std.testing.allocator;
+
+    // Write a valid OPTIONAL int64 column (uncompressed → def-level length prefix
+    // is plaintext in the page body). DataPage v1 with max_rep_level==0: the page
+    // body begins with the 4-byte LE def-level length prefix.
+    const vals = [_]i64{ 10, 0, 30 };
+    const valid = [_]bool{ true, false, true };
+    const cols = [_]column_writer.ColumnData{.{
+        .name = "x",
+        .physical_type = .int64,
+        .int64s = &vals,
+        .num_values = 3,
+        .validity = &valid,
+    }};
+    const output = try parquet_writer.writeParquet(allocator, &cols, .{});
+    defer allocator.free(output);
+
+    // Sanity: it reads cleanly before corruption.
+    {
+        var ok = try readParquet(allocator, output);
+        ok.deinit();
+    }
+
+    // Locate the column chunk's first page: decode the footer, take the chunk's
+    // data_page_offset, then decode the page header to find where the body (and
+    // thus the def-length prefix) begins.
+    const footer_len: usize = @intCast(std.mem.readInt(u32, output[output.len - 8 ..][0..4], .little));
+    const footer_start = output.len - 8 - footer_len;
+    var tr = ThriftReader.init(output[footer_start .. footer_start + footer_len]);
+    var fmd = try metadata.FileMetaData.decode(&tr, allocator);
+    defer fmd.deinit(allocator);
+
+    const cmd = fmd.row_groups[0].columns[0].meta_data.?;
+    const page_off: usize = @intCast(cmd.data_page_offset);
+    var ph_reader = ThriftReader.init(output[page_off..]);
+    _ = try metadata.PageHeader.decode(&ph_reader);
+    const body_off = page_off + ph_reader.pos; // first byte of the page body
+
+    // Corrupt the 4-byte LE def-level length prefix to a huge value so the
+    // def-level slice would run past the page → CorruptPageData, never a panic.
+    const corrupt = try allocator.dupe(u8, output);
+    defer allocator.free(corrupt);
+    std.mem.writeInt(u32, corrupt[body_off..][0..4], 0xFFFF_FFFF, .little);
+
+    try std.testing.expectError(error.CorruptPageData, readParquet(allocator, corrupt));
+}
+
+test "P4: negative num_rows in FileMetaData returns CorruptFile (not panic)" {
+    const allocator = std.testing.allocator;
+
+    // Build a minimal but structurally valid FileMetaData with num_rows = -1.
+    // schema: root(num_children=1) + one required int32 leaf; one (empty) row group.
+    const schema = [_]metadata.SchemaElement{
+        .{ .name = "root", .num_children = 1 },
+        .{ .name = "c", .type_ = .int32, .repetition_type = .required },
+    };
+    const fmd = metadata.FileMetaData{
+        .version = 1,
+        .schema = @constCast(schema[0..]),
+        .num_rows = -1, // corrupt
+        .row_groups = &.{},
+    };
+
+    var w = ThriftWriter.init(allocator);
+    defer w.deinit();
+    try fmd.encode(&w);
+    const footer = w.written();
+
+    // Assemble: PAR1 + footer + 4-byte LE footer_len + PAR1.
+    var file = std.ArrayList(u8).empty;
+    defer file.deinit(allocator);
+    try file.appendSlice(allocator, "PAR1");
+    try file.appendSlice(allocator, footer);
+    var len_bytes: [4]u8 = undefined;
+    std.mem.writeInt(u32, &len_bytes, @intCast(footer.len), .little);
+    try file.appendSlice(allocator, &len_bytes);
+    try file.appendSlice(allocator, "PAR1");
+
+    try std.testing.expectError(error.CorruptFile, readParquet(allocator, file.items));
 }
 
 test "readParquet: snappy and uncompressed produce same data" {

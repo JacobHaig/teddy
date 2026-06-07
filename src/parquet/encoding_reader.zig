@@ -194,6 +194,9 @@ pub const RleBitPackedDecoder = struct {
     pub fn next(self: *RleBitPackedDecoder) !u32 {
         if (self.run_remaining == 0) {
             try self.readRunHeader();
+            // A zero-length run from a malformed header must error rather than
+            // underflow the subtraction below (boundary validation, Phase 11 Unit C).
+            if (self.run_remaining == 0) return error.CorruptFile;
         }
 
         self.run_remaining -= 1;

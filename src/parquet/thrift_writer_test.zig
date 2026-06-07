@@ -211,7 +211,7 @@ test "full struct round-trip: SchemaElement-like" {
     w.popStruct();
 
     var r = ThriftReader.init(w.written());
-    r.pushStruct();
+    try r.pushStruct();
 
     const fh1 = try r.readFieldHeader();
     try std.testing.expectEqual(@as(i16, 1), fh1.field_id);
@@ -250,7 +250,7 @@ test "nested struct round-trip" {
     w.popStruct();
 
     var r = ThriftReader.init(w.written());
-    r.pushStruct();
+    try r.pushStruct();
 
     const fh1 = try r.readFieldHeader();
     try std.testing.expectEqual(@as(i16, 1), fh1.field_id);
@@ -259,7 +259,7 @@ test "nested struct round-trip" {
     const fh2 = try r.readFieldHeader();
     try std.testing.expectEqual(@as(i16, 2), fh2.field_id);
     try std.testing.expectEqual(CompactType.@"struct", fh2.field_type);
-    r.pushStruct();
+    try r.pushStruct();
     const inner_fh = try r.readFieldHeader();
     try std.testing.expectEqual(@as(i16, 1), inner_fh.field_id);
     try std.testing.expectEqualStrings("inner", try r.readString());

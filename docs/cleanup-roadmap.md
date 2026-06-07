@@ -126,7 +126,7 @@ comptime hazards).
 - Sub-phase (larger): parquet writer definition levels so nulls survive
   df→parquet (`ColumnData.validity`, OPTIONAL columns).
 
-### Phase 11 — Parquet untrusted-input hardening ⬜ (review Theme 3)
+### Phase 11 — Parquet untrusted-input hardening ✅ (review Theme 3; landed 2026-06-07)
 - Checked narrowing helpers replacing `@intCast` on file-controlled values;
   non-exhaustive enums (or checked `@enumFromInt` wrapper).
 - Bounds-check every length prefix / offset before slicing (def levels,

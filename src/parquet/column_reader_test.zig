@@ -1,5 +1,6 @@
 const std = @import("std");
 const types = @import("types.zig");
+const metadata = @import("metadata.zig");
 const encoding = @import("encoding_reader.zig");
 const column_reader = @import("column_reader.zig");
 const DictionaryStore = column_reader.DictionaryStore;
@@ -268,4 +269,153 @@ test "ValueAccumulator: expandWithNulls byte_array" {
     try std.testing.expectEqual(@as(usize, 0), arrs[0].len); // null → empty
     try std.testing.expectEqualStrings("hi", arrs[1]); // valid
     try std.testing.expectEqual(@as(usize, 0), arrs[2].len); // null → empty
+}
+
+// ============================================================
+// Phase 11 Unit B — malformed-input hardening
+// ============================================================
+
+test "P1: decodeDictionary rejects out-of-range index" {
+    const allocator = std.testing.allocator;
+    var acc = ValueAccumulator.init(allocator, .int32, 0);
+    defer acc.deinit();
+
+    // Dictionary has 2 entries (indices 0,1 are valid).
+    var dict_buf: [8]u8 = undefined;
+    std.mem.writeInt(i32, dict_buf[0..4], 100, .little);
+    std.mem.writeInt(i32, dict_buf[4..8], 200, .little);
+    var dict = try DictionaryStore.init(allocator, &dict_buf, .int32, 0, 2);
+    defer dict.deinit();
+
+    // RLE stream of index value 5 (out of range): RLE run, count=1,
+    // header = (1<<1)|0 = 2, value byte = 5 (bit_width 8 → 1 value byte).
+    const rle_buf = [_]u8{ 0x02, 0x05 };
+    var rle_dec = encoding.RleBitPackedDecoder.init(&rle_buf, 8);
+
+    try std.testing.expectError(
+        error.InvalidDictionaryIndex,
+        acc.decodeDictionary(&rle_dec, &dict, 1, .int32, allocator),
+    );
+}
+
+test "P1: decodeDictionary rejects out-of-range index for byte_array" {
+    const allocator = std.testing.allocator;
+    var acc = ValueAccumulator.init(allocator, .byte_array, 0);
+    defer acc.deinit();
+
+    // Single-entry byte_array dictionary: only index 0 is valid.
+    const dict_buf = [_]u8{ 0x02, 0x00, 0x00, 0x00, 'h', 'i' };
+    var dict = try DictionaryStore.init(allocator, &dict_buf, .byte_array, 0, 1);
+    defer dict.deinit();
+
+    // RLE run of index 3 (out of range).
+    const rle_buf = [_]u8{ 0x02, 0x03 };
+    var rle_dec = encoding.RleBitPackedDecoder.init(&rle_buf, 8);
+
+    try std.testing.expectError(
+        error.InvalidDictionaryIndex,
+        acc.decodeDictionary(&rle_dec, &dict, 1, .byte_array, allocator),
+    );
+}
+
+test "P6: expandWithNulls frees untransferred byte_array tail (no leak)" {
+    // Decode MORE byte_arrays than the validity array marks present. The leftover
+    // accumulator entries must be freed before clearRetainingCapacity, or the
+    // testing allocator reports a leak.
+    const allocator = std.testing.allocator;
+    var acc = ValueAccumulator.init(allocator, .byte_array, 0);
+    defer acc.deinit();
+
+    // Accumulate 3 strings.
+    const buf = [_]u8{
+        0x01, 0x00, 0x00, 0x00, 'a',
+        0x01, 0x00, 0x00, 0x00, 'b',
+        0x01, 0x00, 0x00, 0x00, 'c',
+    };
+    var dec = encoding.PlainDecoder.init(&buf);
+    try acc.decodePlain(&dec, 3, allocator);
+
+    // Validity marks only 1 row present → vi stops at 1, items[1..] (b, c) are
+    // never transferred and must be freed by the fix.
+    const validity = [_]bool{true};
+    var col = types.ParquetColumn.initEmpty(allocator);
+    const name_buf = try allocator.alloc(u8, 1);
+    name_buf[0] = 's';
+    col.name = name_buf;
+
+    var vi: usize = 0;
+    try acc.expandWithNulls(allocator, &validity, 1, &vi, &col);
+    defer col.deinit();
+
+    try std.testing.expect(col.byte_arrays != null);
+    try std.testing.expectEqual(@as(usize, 1), col.byte_arrays.?.len);
+    try std.testing.expectEqualStrings("a", col.byte_arrays.?[0]);
+}
+
+test "P4/P5: readColumnChunk rejects negative num_values" {
+    const allocator = std.testing.allocator;
+    // total_compressed_size 0, but num_values = -1 → CorruptFile before any read.
+    const cmd = metadata.ColumnMetaData{
+        .type_ = .int32,
+        .num_values = -1,
+        .total_compressed_size = 0,
+        .data_page_offset = 4,
+    };
+    const chunk = metadata.ColumnChunk{ .meta_data = cmd };
+    const leaf = column_reader.LeafColumn{
+        .schema_element = .{ .name = "c", .type_ = .int32, .repetition_type = .required },
+        .max_def_level = 0,
+        .max_rep_level = 0,
+        .column_index = 0,
+    };
+    const file_data = [_]u8{ 'P', 'A', 'R', '1', 0, 0, 0, 0 };
+    try std.testing.expectError(
+        error.CorruptFile,
+        column_reader.readColumnChunk(allocator, &file_data, chunk, leaf, 0),
+    );
+}
+
+test "P5: readColumnChunk rejects start_offset beyond file end" {
+    const allocator = std.testing.allocator;
+    // data_page_offset points past the (tiny) file → CorruptFile/OutOfBounds.
+    const cmd = metadata.ColumnMetaData{
+        .type_ = .int32,
+        .num_values = 1,
+        .total_compressed_size = 4,
+        .data_page_offset = 1000, // well past EOF
+    };
+    const chunk = metadata.ColumnChunk{ .meta_data = cmd };
+    const leaf = column_reader.LeafColumn{
+        .schema_element = .{ .name = "c", .type_ = .int32, .repetition_type = .required },
+        .max_def_level = 0,
+        .max_rep_level = 0,
+        .column_index = 0,
+    };
+    const file_data = [_]u8{ 'P', 'A', 'R', '1', 0, 0, 0, 0 };
+    try std.testing.expectError(
+        error.ColumnDataOutOfBounds,
+        column_reader.readColumnChunk(allocator, &file_data, chunk, leaf, 1),
+    );
+}
+
+test "P5: readColumnChunk rejects negative offset" {
+    const allocator = std.testing.allocator;
+    const cmd = metadata.ColumnMetaData{
+        .type_ = .int32,
+        .num_values = 1,
+        .total_compressed_size = 4,
+        .data_page_offset = -5, // negative → cast fails
+    };
+    const chunk = metadata.ColumnChunk{ .meta_data = cmd };
+    const leaf = column_reader.LeafColumn{
+        .schema_element = .{ .name = "c", .type_ = .int32, .repetition_type = .required },
+        .max_def_level = 0,
+        .max_rep_level = 0,
+        .column_index = 0,
+    };
+    const file_data = [_]u8{ 'P', 'A', 'R', '1', 0, 0, 0, 0 };
+    try std.testing.expectError(
+        error.CorruptFile,
+        column_reader.readColumnChunk(allocator, &file_data, chunk, leaf, 1),
+    );
 }
