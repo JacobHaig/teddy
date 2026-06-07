@@ -18,6 +18,8 @@ const fixtures = [_][]const u8{
     "data/decimals.parquet",
     "data/binary_kinds.parquet",
     "data/uuid_f16.parquet",
+    "data/nested_smoke.parquet",
+    "data/nested_kinds.parquet",
 };
 
 fn readFixture(allocator: std.mem.Allocator, path: []const u8) ![]u8 {

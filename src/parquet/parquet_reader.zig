@@ -35,35 +35,50 @@ pub fn readParquet(allocator: Allocator, file_data: []const u8) !types.ParquetRe
     var file_metadata = try metadata.FileMetaData.decode(&thrift_reader, allocator);
     defer file_metadata.deinit(allocator);
 
-    // 4. Resolve schema: find leaf columns
-    const leaves = try resolveSchema(allocator, file_metadata.schema);
-    defer allocator.free(leaves);
+    // 4. Resolve schema: build the owned schema tree and collect every leaf
+    //    (flat + nested) in column-chunk order with correct cumulative levels.
+    var tree = try buildSchemaTree(allocator, file_metadata.schema);
+    errdefer tree.deinit(allocator);
+
+    const leaves = try collectLeaves(allocator, &tree);
+    defer freeLeaves(allocator, leaves);
 
     // file-controlled i64; a negative row count is corrupt, not zero.
     const num_rows: usize = std.math.cast(usize, file_metadata.num_rows) orelse return error.CorruptFile;
 
-    // 5. Read all columns across all row groups
-    const columns = try allocator.alloc(types.ParquetColumn, leaves.len);
-    var cols_initialized: usize = 0;
+    // 5. Read each leaf column, concatenating its chunks across every row
+    //    group, then partition into flat `columns` (parent == root, max_rep 0)
+    //    vs `nested_columns` (everything descending from a nested subtree).
+    //    Flat files therefore behave EXACTLY as before; nested files now read
+    //    their flat siblings at the correct column index instead of
+    //    mis-indexing every column (the latent bug this slice fixes).
+    var flat = std.ArrayList(types.ParquetColumn).empty;
     errdefer {
-        for (0..cols_initialized) |i| {
-            var c = columns[i];
-            c.deinit();
-        }
-        allocator.free(columns);
+        for (flat.items) |*c| c.deinit();
+        flat.deinit(allocator);
+    }
+    var nested = std.ArrayList(types.ParquetColumn).empty;
+    errdefer {
+        for (nested.items) |*c| c.deinit();
+        nested.deinit(allocator);
     }
 
-    // Read each leaf column, concatenating its chunks across every row group.
-    // A single-row-group file is just the length-1 case of this loop.
-    for (leaves, 0..) |leaf, i| {
-        columns[i] = try readLeafConcat(allocator, file_data, file_metadata.row_groups, leaf, num_rows);
-        cols_initialized += 1;
+    for (leaves) |leaf| {
+        var col = try readLeafConcat(allocator, file_data, file_metadata.row_groups, leaf, num_rows);
+        errdefer col.deinit();
+        if (leaf.nested) {
+            try nested.append(allocator, col);
+        } else {
+            try flat.append(allocator, col);
+        }
     }
 
     return .{
-        .columns = columns,
+        .columns = try flat.toOwnedSlice(allocator),
         .num_rows = num_rows,
         .allocator = allocator,
+        .schema_tree = tree,
+        .nested_columns = try nested.toOwnedSlice(allocator),
     };
 }
 
@@ -80,8 +95,10 @@ fn readLeafConcat(
     var col = types.ParquetColumn.initEmpty(allocator);
     errdefer col.deinit();
 
-    const name_copy = try allocator.alloc(u8, leaf.schema_element.name.len);
-    @memcpy(name_copy, leaf.schema_element.name);
+    // Nested leaves surface under their dotted schema path; flat under the bare name.
+    const src_name = leaf.dotted_path orelse leaf.schema_element.name;
+    const name_copy = try allocator.alloc(u8, src_name.len);
+    @memcpy(name_copy, src_name);
     col.name = name_copy;
     col.physical_type = leaf.schema_element.type_ orelse .byte_array;
     col.converted_type = leaf.schema_element.converted_type;
@@ -91,6 +108,8 @@ fn readLeafConcat(
     col.precision = leaf.schema_element.precision;
     col.is_optional = leaf.max_def_level > 0;
     col.num_rows = total_rows;
+    col.nested = leaf.nested;
+    col.root_child_index = leaf.root_child_index;
 
     // Per-type accumulators; only the one matching `physical_type` is filled.
     var booleans = std.ArrayList(bool).empty;
@@ -100,6 +119,11 @@ fn readLeafConcat(
     var doubles = std.ArrayList(f64).empty;
     var byte_arrays = std.ArrayList([]const u8).empty;
     var validity = std.ArrayList(bool).empty;
+    // Raw level streams, accumulated only for nested leaves. The first rep
+    // level of every row group is 0 by definition, so cross-group
+    // concatenation is safe (a new top-level record always starts each chunk).
+    var def_levels = std.ArrayList(u16).empty;
+    var rep_levels = std.ArrayList(u16).empty;
     errdefer {
         booleans.deinit(allocator);
         int32s.deinit(allocator);
@@ -109,6 +133,8 @@ fn readLeafConcat(
         for (byte_arrays.items) |b| allocator.free(b);
         byte_arrays.deinit(allocator);
         validity.deinit(allocator);
+        def_levels.deinit(allocator);
+        rep_levels.deinit(allocator);
     }
 
     for (row_groups) |rg| {
@@ -148,7 +174,11 @@ fn readLeafConcat(
             },
         }
 
-        if (col.is_optional) {
+        if (leaf.nested) {
+            // Concatenate the raw level streams across row groups.
+            if (chunk.def_levels) |d| try def_levels.appendSlice(allocator, d);
+            if (chunk.rep_levels) |r| try rep_levels.appendSlice(allocator, r);
+        } else if (col.is_optional) {
             if (chunk.validity) |cv| {
                 try validity.appendSlice(allocator, cv);
             } else {
@@ -165,48 +195,251 @@ fn readLeafConcat(
         .double => col.doubles = try doubles.toOwnedSlice(allocator),
         .byte_array, .fixed_len_byte_array, .int96 => col.byte_arrays = try byte_arrays.toOwnedSlice(allocator),
     }
-    if (col.is_optional) col.validity = try validity.toOwnedSlice(allocator);
+    if (leaf.nested) {
+        col.def_levels = try def_levels.toOwnedSlice(allocator);
+        col.rep_levels = try rep_levels.toOwnedSlice(allocator);
+    } else if (col.is_optional) {
+        col.validity = try validity.toOwnedSlice(allocator);
+    }
 
     return col;
 }
 
-/// Walk the schema tree to identify leaf (data) columns.
-/// The schema is a flattened tree: the root element has num_children,
-/// and we skip group nodes to find leaves.
-fn resolveSchema(allocator: Allocator, schema: []const metadata.SchemaElement) ![]column_reader.LeafColumn {
+// ============================================================
+// Schema tree (owned SchemaNode) + leaf collection
+// ============================================================
+
+/// Build the owned schema tree from the flattened pre-order SchemaElement list
+/// (root first; each group is followed by exactly its `num_children` subtrees).
+/// Computes per-node cumulative levels via an ancestor walk and assigns each
+/// leaf a `leaf_index` in pre-order (which is exactly parquet's column-chunk
+/// ordering). Names are copied (owned by the tree). Caller owns the result and
+/// must call `deinit`.
+pub fn buildSchemaTree(allocator: Allocator, schema: []const metadata.SchemaElement) !types.SchemaNode {
     if (schema.len == 0) return error.EmptySchema;
 
-    var leaves = std.ArrayList(column_reader.LeafColumn).empty;
-    defer leaves.deinit(allocator);
+    var cursor: usize = 0; // pre-order read position into `schema`
+    var next_leaf: usize = 0; // running leaf index (column-chunk order)
+    // The root's own repetition/levels do not contribute (it is the message
+    // node): start the recursion with parent levels 0/0.
+    const root = try buildNode(allocator, schema, &cursor, &next_leaf, 0, 0);
+    return root;
+}
 
-    // Index 0 is the root (message) node
-    var col_idx: usize = 0;
-    var i: usize = 1; // skip root
-    while (i < schema.len) {
-        const elem = schema[i];
-        if (elem.num_children != null and elem.num_children.? > 0) {
-            // Group node — skip (for now we only support flat schemas)
-            i += 1;
-            continue;
-        }
+/// Recursive descent over the pre-order list. `parent_def`/`parent_rep` are the
+/// cumulative levels of THIS node's parent. Parquet level rules: def level
+/// increments for every node that is optional OR repeated (NOT required); rep
+/// level increments for every repeated node.
+fn buildNode(
+    allocator: Allocator,
+    schema: []const metadata.SchemaElement,
+    cursor: *usize,
+    next_leaf: *usize,
+    parent_def: u8,
+    parent_rep: u8,
+) !types.SchemaNode {
+    if (cursor.* >= schema.len) return error.CorruptFile;
+    const elem = schema[cursor.*];
+    cursor.* += 1;
 
-        // Leaf column
-        const max_def: u8 = if (elem.repetition_type) |rt|
-            (if (rt == .optional) @as(u8, 1) else @as(u8, 0))
-        else
-            0;
+    const rep = elem.repetition_type orelse .required;
+    // The root (cursor was 0) has no repetition contribution; for every other
+    // node, optional/repeated each add one def level, repeated adds one rep.
+    const is_root = (cursor.* == 1);
+    const my_def: u8 = if (is_root) 0 else parent_def + @as(u8, if (rep == .required) 0 else 1);
+    const my_rep: u8 = if (is_root) 0 else parent_rep + @as(u8, if (rep == .repeated) 1 else 0);
 
-        try leaves.append(allocator, .{
-            .schema_element = elem,
-            .max_def_level = max_def,
-            .max_rep_level = 0, // flat schema, no repetition
-            .column_index = col_idx,
-        });
-        col_idx += 1;
-        i += 1;
+    const name_copy = try allocator.alloc(u8, elem.name.len);
+    @memcpy(name_copy, elem.name);
+
+    var node = types.SchemaNode{
+        .name = name_copy,
+        .repetition = rep,
+    };
+    // From here on, node.deinit owns name_copy — no separate errdefer for it
+    // (a standalone free would double-free with node.deinit on error).
+    errdefer node.deinit(allocator);
+
+    const num_children: usize = if (elem.num_children) |nc|
+        (std.math.cast(usize, nc) orelse return error.CorruptFile)
+    else
+        0;
+
+    if (num_children == 0) {
+        // Leaf: carry the physical/annotation payload and cumulative levels.
+        node.physical = elem.type_;
+        node.converted = elem.converted_type;
+        node.logical = elem.logical_type;
+        node.type_length = elem.type_length;
+        node.scale = elem.scale;
+        node.precision = elem.precision;
+        node.max_def = my_def;
+        node.max_rep = my_rep;
+        node.leaf_index = next_leaf.*;
+        next_leaf.* += 1;
+        return node;
     }
 
+    // Group node: recurse into exactly num_children subtrees.
+    const children = try allocator.alloc(types.SchemaNode, num_children);
+    var built: usize = 0;
+    errdefer {
+        for (0..built) |i| children[i].deinit(allocator);
+        allocator.free(children);
+    }
+    for (0..num_children) |i| {
+        children[i] = try buildNode(allocator, schema, cursor, next_leaf, my_def, my_rep);
+        built += 1;
+    }
+    node.children = children;
+    node.max_def = my_def;
+    node.max_rep = my_rep;
+    return node;
+}
+
+/// Collect every leaf of the schema tree (flat + nested) in leaf_index order,
+/// producing LeafColumns ready for `readColumnChunk`. A leaf is "flat" iff it
+/// is a direct child of the root AND max_rep == 0; everything else is "nested"
+/// (descends from a LIST/MAP/STRUCT subtree). Nested leaves carry an owned
+/// dotted path (e.g. "l.list.element") and the index of the root child they
+/// descend from. Caller must free via `freeLeaves`.
+fn collectLeaves(allocator: Allocator, tree: *const types.SchemaNode) ![]column_reader.LeafColumn {
+    var leaves = std.ArrayList(column_reader.LeafColumn).empty;
+    errdefer {
+        for (leaves.items) |*l| if (l.dotted_path) |p| allocator.free(p);
+        leaves.deinit(allocator);
+    }
+
+    // Pre-build a slot array indexed by leaf_index so we surface leaves in
+    // exact column-chunk order regardless of recursion order.
+    for (tree.children, 0..) |*child, root_child| {
+        try collectFromNode(allocator, child, root_child, child, &leaves);
+    }
+
+    // Sort by leaf_index (pre-order already yields this, but be explicit).
+    std.sort.pdq(column_reader.LeafColumn, leaves.items, {}, struct {
+        fn lt(_: void, a: column_reader.LeafColumn, b: column_reader.LeafColumn) bool {
+            return a.column_index < b.column_index;
+        }
+    }.lt);
+
     return try leaves.toOwnedSlice(allocator);
+}
+
+fn collectFromNode(
+    allocator: Allocator,
+    node: *const types.SchemaNode,
+    root_child: usize,
+    root_child_node: *const types.SchemaNode,
+    leaves: *std.ArrayList(column_reader.LeafColumn),
+) !void {
+    if (node.isLeaf()) {
+        // Flat iff the leaf IS the root child itself (parent == root) and
+        // never repeats. Otherwise it descends from a nested subtree.
+        const is_flat = (node == root_child_node) and node.max_rep == 0;
+        var dotted: ?[]const u8 = null;
+        if (!is_flat) {
+            dotted = try buildDottedPath(allocator, root_child_node, node);
+        }
+        errdefer if (dotted) |p| allocator.free(p);
+        try leaves.append(allocator, .{
+            .schema_element = .{
+                .type_ = node.physical,
+                .type_length = node.type_length,
+                .repetition_type = node.repetition,
+                .name = node.name,
+                .converted_type = node.converted,
+                .scale = node.scale,
+                .precision = node.precision,
+                .logical_type = node.logical,
+            },
+            .max_def_level = node.max_def,
+            .max_rep_level = node.max_rep,
+            .column_index = node.leaf_index.?,
+            .nested = !is_flat,
+            .root_child_index = root_child,
+            .dotted_path = dotted,
+        });
+        return;
+    }
+    for (node.children) |*child| {
+        try collectFromNode(allocator, child, root_child, root_child_node, leaves);
+    }
+}
+
+/// Build the dotted path from a root child down to a leaf, e.g.
+/// "l.list.element". Walks the subtree rooted at `root_child_node` to find
+/// `target` (the tree is small; a path search is fine).
+fn buildDottedPath(
+    allocator: Allocator,
+    root_child_node: *const types.SchemaNode,
+    target: *const types.SchemaNode,
+) ![]const u8 {
+    var parts = std.ArrayList([]const u8).empty;
+    defer parts.deinit(allocator);
+    if (!findPath(root_child_node, target, allocator, &parts)) {
+        return error.CorruptFile;
+    }
+    // parts is leaf-first; join in root→leaf order.
+    var buf = std.ArrayList(u8).empty;
+    errdefer buf.deinit(allocator);
+    var i: usize = parts.items.len;
+    while (i > 0) {
+        i -= 1;
+        if (buf.items.len > 0) try buf.append(allocator, '.');
+        try buf.appendSlice(allocator, parts.items[i]);
+    }
+    return try buf.toOwnedSlice(allocator);
+}
+
+/// Depth-first search for `target`; on success `parts` holds the names from
+/// `target` up to (and including) `node`, leaf-first.
+fn findPath(
+    node: *const types.SchemaNode,
+    target: *const types.SchemaNode,
+    allocator: Allocator,
+    parts: *std.ArrayList([]const u8),
+) bool {
+    if (node == target) {
+        parts.append(allocator, node.name) catch return false;
+        return true;
+    }
+    for (node.children) |*child| {
+        if (findPath(child, target, allocator, parts)) {
+            parts.append(allocator, node.name) catch return false;
+            return true;
+        }
+    }
+    return false;
+}
+
+/// Free the owned dotted paths and the leaf slice returned by `collectLeaves`.
+fn freeLeaves(allocator: Allocator, leaves: []column_reader.LeafColumn) void {
+    for (leaves) |*l| if (l.dotted_path) |p| allocator.free(p);
+    allocator.free(leaves);
+}
+
+/// Owned (tree, leaves) pair returned by `resolveSchema`. The leaves reference
+/// names inside `tree`, so the tree must outlive them. `deinit` frees both.
+const ResolvedSchema = struct {
+    tree: types.SchemaNode,
+    leaves: []column_reader.LeafColumn,
+    allocator: Allocator,
+
+    fn deinit(self: *ResolvedSchema) void {
+        freeLeaves(self.allocator, self.leaves);
+        self.tree.deinit(self.allocator);
+    }
+};
+
+/// Build the schema tree and collect its leaves together. Used by unit tests;
+/// production `readParquet` builds + partitions the pieces inline so it can
+/// keep the tree in the result.
+fn resolveSchema(allocator: Allocator, schema: []const metadata.SchemaElement) !ResolvedSchema {
+    var tree = try buildSchemaTree(allocator, schema);
+    errdefer tree.deinit(allocator);
+    const leaves = try collectLeaves(allocator, &tree);
+    return .{ .tree = tree, .leaves = leaves, .allocator = allocator };
 }
 
 // ============================================================
@@ -410,8 +643,9 @@ test "resolveSchema: flat schema" {
         .{ .name = "col_a", .type_ = .int32, .repetition_type = .required },
         .{ .name = "col_b", .type_ = .byte_array, .repetition_type = .optional },
     };
-    const leaves = try resolveSchema(allocator, &schema);
-    defer allocator.free(leaves);
+    var resolved = try resolveSchema(allocator, &schema);
+    defer resolved.deinit();
+    const leaves = resolved.leaves;
 
     try std.testing.expectEqual(@as(usize, 2), leaves.len);
     try std.testing.expectEqualStrings("col_a", leaves[0].schema_element.name);
@@ -434,8 +668,9 @@ test "resolveSchema: all required columns" {
         .{ .name = "value", .type_ = .double, .repetition_type = .required },
         .{ .name = "flag", .type_ = .boolean, .repetition_type = .required },
     };
-    const leaves = try resolveSchema(allocator, &schema);
-    defer allocator.free(leaves);
+    var resolved = try resolveSchema(allocator, &schema);
+    defer resolved.deinit();
+    const leaves = resolved.leaves;
 
     try std.testing.expectEqual(@as(usize, 3), leaves.len);
     for (leaves) |leaf| {
@@ -453,8 +688,9 @@ test "resolveSchema: all optional columns" {
         .{ .name = "a", .type_ = .int32, .repetition_type = .optional },
         .{ .name = "b", .type_ = .byte_array, .repetition_type = .optional },
     };
-    const leaves = try resolveSchema(allocator, &schema);
-    defer allocator.free(leaves);
+    var resolved = try resolveSchema(allocator, &schema);
+    defer resolved.deinit();
+    const leaves = resolved.leaves;
 
     try std.testing.expectEqual(@as(usize, 2), leaves.len);
     try std.testing.expectEqual(@as(u8, 1), leaves[0].max_def_level);
@@ -467,11 +703,193 @@ test "resolveSchema: single column" {
         .{ .name = "root", .num_children = 1 },
         .{ .name = "only_col", .type_ = .float, .repetition_type = .required },
     };
-    const leaves = try resolveSchema(allocator, &schema);
-    defer allocator.free(leaves);
+    var resolved = try resolveSchema(allocator, &schema);
+    defer resolved.deinit();
+    const leaves = resolved.leaves;
 
     try std.testing.expectEqual(@as(usize, 1), leaves.len);
     try std.testing.expectEqualStrings("only_col", leaves[0].schema_element.name);
+}
+
+// ============================================================
+// Phase 6d-2b.0 — schema tree + level streams (nested groundwork)
+// ============================================================
+
+test "buildSchemaTree: flat schema → levels 0/1, max_rep 0, leaf_index order" {
+    const allocator = std.testing.allocator;
+    const schema = [_]metadata.SchemaElement{
+        .{ .name = "root", .num_children = 2 },
+        .{ .name = "col_a", .type_ = .int32, .repetition_type = .required },
+        .{ .name = "col_b", .type_ = .byte_array, .repetition_type = .optional },
+    };
+    var tree = try buildSchemaTree(allocator, &schema);
+    defer tree.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), tree.children.len);
+    // col_a: required → max_def 0; col_b: optional → max_def 1; both flat.
+    const a = tree.children[0];
+    const b = tree.children[1];
+    try std.testing.expect(a.isLeaf() and b.isLeaf());
+    try std.testing.expectEqual(@as(u8, 0), a.max_def);
+    try std.testing.expectEqual(@as(u8, 0), a.max_rep);
+    try std.testing.expectEqual(@as(?usize, 0), a.leaf_index);
+    try std.testing.expectEqual(@as(u8, 1), b.max_def);
+    try std.testing.expectEqual(@as(u8, 0), b.max_rep);
+    try std.testing.expectEqual(@as(?usize, 1), b.leaf_index);
+    // fieldIndex lookup
+    try std.testing.expectEqual(@as(?usize, 1), tree.fieldIndex("col_b"));
+    try std.testing.expectEqual(@as(?usize, null), tree.fieldIndex("nope"));
+}
+
+test "buildSchemaTree: 3-level LIST → element max_def 3, max_rep 1" {
+    const allocator = std.testing.allocator;
+    // root → optional group l { repeated group list { optional int64 element } }
+    const schema = [_]metadata.SchemaElement{
+        .{ .name = "root", .num_children = 1 },
+        .{ .name = "l", .repetition_type = .optional, .num_children = 1, .converted_type = .list },
+        .{ .name = "list", .repetition_type = .repeated, .num_children = 1 },
+        .{ .name = "element", .type_ = .int64, .repetition_type = .optional },
+    };
+    var tree = try buildSchemaTree(allocator, &schema);
+    defer tree.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), tree.children.len);
+    const l = tree.children[0];
+    try std.testing.expect(!l.isLeaf());
+    try std.testing.expectEqual(@as(u8, 1), l.max_def); // optional group
+    try std.testing.expectEqual(@as(u8, 0), l.max_rep);
+    const list = l.children[0];
+    try std.testing.expectEqual(@as(u8, 2), list.max_def); // optional + repeated
+    try std.testing.expectEqual(@as(u8, 1), list.max_rep); // repeated
+    const element = list.children[0];
+    try std.testing.expect(element.isLeaf());
+    // def: l(optional)+1, list(repeated)+1, element(optional)+1 = 3.
+    try std.testing.expectEqual(@as(u8, 3), element.max_def);
+    // rep: only list is repeated = 1.
+    try std.testing.expectEqual(@as(u8, 1), element.max_rep);
+    try std.testing.expectEqual(@as(?usize, 0), element.leaf_index);
+}
+
+test "buildSchemaTree: STRUCT → a max_def 1, b max_def 2, both max_rep 0" {
+    const allocator = std.testing.allocator;
+    // root → optional group s { required int64 a; optional byte_array b }
+    const schema = [_]metadata.SchemaElement{
+        .{ .name = "root", .num_children = 1 },
+        .{ .name = "s", .repetition_type = .optional, .num_children = 2 },
+        .{ .name = "a", .type_ = .int64, .repetition_type = .required },
+        .{ .name = "b", .type_ = .byte_array, .repetition_type = .optional },
+    };
+    var tree = try buildSchemaTree(allocator, &schema);
+    defer tree.deinit(allocator);
+
+    const s = tree.children[0];
+    try std.testing.expect(!s.isLeaf());
+    const a = s.children[0];
+    const b = s.children[1];
+    // a: s(optional)+1, a(required)+0 = 1.
+    try std.testing.expectEqual(@as(u8, 1), a.max_def);
+    try std.testing.expectEqual(@as(u8, 0), a.max_rep);
+    // b: s(optional)+1, b(optional)+1 = 2.
+    try std.testing.expectEqual(@as(u8, 2), b.max_def);
+    try std.testing.expectEqual(@as(u8, 0), b.max_rep);
+    try std.testing.expectEqual(@as(?usize, 0), a.leaf_index);
+    try std.testing.expectEqual(@as(?usize, 1), b.leaf_index);
+    try std.testing.expectEqual(@as(?usize, 1), s.fieldIndex("b"));
+}
+
+test "buildSchemaTree: num_children overrun → CorruptFile" {
+    const allocator = std.testing.allocator;
+    // root claims 2 children but only 1 follows.
+    const schema = [_]metadata.SchemaElement{
+        .{ .name = "root", .num_children = 2 },
+        .{ .name = "only", .type_ = .int32, .repetition_type = .required },
+    };
+    try std.testing.expectError(error.CorruptFile, buildSchemaTree(allocator, &schema));
+}
+
+test "readParquet: nested_smoke.parquet — flat siblings read correctly, nested leaves carry level streams" {
+    const allocator = std.testing.allocator;
+    const cwd = std.Io.Dir.cwd();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const file_data = try cwd.readFileAlloc(io, "data/nested_smoke.parquet", allocator, .unlimited);
+    defer allocator.free(file_data);
+
+    var result = try readParquet(allocator, file_data);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), result.num_rows);
+
+    // --- Flat columns: ONLY flat_before + flat_after, at the CORRECT indices.
+    // This is the latent-bug regression: previously a file mixing nested and
+    // flat columns mis-assigned column_index; now flat siblings decode right.
+    try std.testing.expectEqual(@as(usize, 2), result.columns.len);
+    try std.testing.expectEqualStrings("flat_before", result.columns[0].name);
+    try std.testing.expectEqualStrings("flat_after", result.columns[1].name);
+    try std.testing.expectEqualSlices(i64, &.{ 1, 2, 3 }, result.columns[0].int64s.?);
+    const fa = result.columns[1].byte_arrays.?;
+    try std.testing.expectEqual(@as(usize, 3), fa.len);
+    try std.testing.expectEqualStrings("p", fa[0]);
+    try std.testing.expectEqualStrings("q", fa[1]);
+    try std.testing.expectEqualStrings("r", fa[2]);
+
+    // --- Schema tree: 4 top-level children with the right kinds.
+    const tree = result.schema_tree.?;
+    try std.testing.expectEqual(@as(usize, 4), tree.children.len);
+    try std.testing.expectEqualStrings("flat_before", tree.children[0].name);
+    try std.testing.expect(tree.children[0].isLeaf());
+    try std.testing.expectEqualStrings("l", tree.children[1].name);
+    try std.testing.expect(!tree.children[1].isLeaf()); // LIST group
+    try std.testing.expectEqualStrings("s", tree.children[2].name);
+    try std.testing.expect(!tree.children[2].isLeaf()); // STRUCT group
+    try std.testing.expectEqual(@as(usize, 2), tree.children[2].children.len);
+    try std.testing.expectEqualStrings("flat_after", tree.children[3].name);
+    try std.testing.expect(tree.children[3].isLeaf());
+
+    // --- Nested columns: the list/struct leaves, with raw def/rep streams.
+    try std.testing.expectEqual(@as(usize, 3), result.nested_columns.len);
+
+    // Locate by dotted name (collection order follows leaf_index).
+    var el: ?types.ParquetColumn = null;
+    var sa: ?types.ParquetColumn = null;
+    var sb: ?types.ParquetColumn = null;
+    for (result.nested_columns) |c| {
+        if (std.mem.eql(u8, c.name, "l.list.element")) el = c;
+        if (std.mem.eql(u8, c.name, "s.a")) sa = c;
+        if (std.mem.eql(u8, c.name, "s.b")) sb = c;
+    }
+
+    // l.list.element — max_def 3, max_rep 1, root_child 1.
+    // Rows: [1,2], None, [].  Pinned against pyarrow's actual streams:
+    //   row0 [1,2]: elem0 rep0 def3 (new record, fully defined),
+    //               elem1 rep1 def3 (same list, defined)            → {3,3}/{0,1}
+    //   row1 None : null list → def0 rep0                            → {0}/{0}
+    //   row2 []   : empty list, l present → def1 rep0                → {1}/{0}
+    //   concatenated: def {3,3,0,1}, rep {0,1,0,0}; present (def==3)=2.
+    const e = el.?;
+    try std.testing.expectEqual(@as(usize, 1), e.root_child_index);
+    try std.testing.expectEqualSlices(u16, &.{ 3, 3, 0, 1 }, e.def_levels.?);
+    try std.testing.expectEqualSlices(u16, &.{ 0, 1, 0, 0 }, e.rep_levels.?);
+    try std.testing.expectEqualSlices(i64, &.{ 1, 2 }, e.int64s.?);
+
+    // s.a — max_def 2, max_rep 0, root_child 2.
+    //   {a:1},{a:2},None → s present/a present=2, s present/a present=2, s null=0
+    //   def {2,2,0}; rep stream empty (max_rep 0); present (def==2)=2.
+    const a = sa.?;
+    try std.testing.expectEqual(@as(usize, 2), a.root_child_index);
+    try std.testing.expectEqualSlices(u16, &.{ 2, 2, 0 }, a.def_levels.?);
+    try std.testing.expectEqual(@as(usize, 0), a.rep_levels.?.len);
+    try std.testing.expectEqualSlices(i64, &.{ 1, 2 }, a.int64s.?);
+
+    // s.b — max_def 2, max_rep 0, root_child 2.
+    //   b="x", b=None(s present), None(s null) → 2, 1, 0
+    //   def {2,1,0}; present (def==2)=1 → only "x".
+    const b = sb.?;
+    try std.testing.expectEqual(@as(usize, 2), b.root_child_index);
+    try std.testing.expectEqualSlices(u16, &.{ 2, 1, 0 }, b.def_levels.?);
+    try std.testing.expectEqual(@as(usize, 0), b.rep_levels.?.len);
+    const bvals = b.byte_arrays.?;
+    try std.testing.expectEqual(@as(usize, 1), bvals.len);
+    try std.testing.expectEqualStrings("x", bvals[0]);
 }
 
 test "FileMetaData: logical_annotations.parquet parses LogicalType (field 10)" {

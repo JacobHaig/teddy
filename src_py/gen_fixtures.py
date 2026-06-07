@@ -148,6 +148,49 @@ def uuid_f16():
     print(f"  parquet schema: {pq_schema}")
 
 
+def nested_smoke():
+    # Mixed nested + flat: exercises schema-tree leaf indexing. Nested columns
+    # are excluded from flat reads until 6d-2b.2 assembles them.
+    tbl = pa.table({
+        "flat_before": pa.array([1, 2, 3], type=pa.int64()),
+        "l": pa.array([[1, 2], None, []], type=pa.list_(pa.int64())),
+        "s": pa.array([{"a": 1, "b": "x"}, {"a": 2, "b": None}, None],
+                       type=pa.struct([("a", pa.int64()), ("b", pa.string())])),
+        "flat_after": pa.array(["p", "q", "r"], type=pa.string()),
+    })
+    pq.write_table(tbl, "data/nested_smoke.parquet", compression=None)
+    print("data/nested_smoke.parquet: flat+list+struct+flat, 3 rows")
+
+
+def nested_kinds():
+    # All nested kinds + nesting combinations, with null/empty/null-element
+    # variation in every column. 4 rows, uncompressed. Ground truth for the
+    # Dremel record-assembly tests (6d-2b.2).
+    struct_ab = pa.struct([("a", pa.int64()), ("b", pa.string())])
+    tbl = pa.table({
+        # list<int64>: [[1,2], None, [], [3]]
+        "l":  pa.array([[1, 2], None, [], [3]], type=pa.list_(pa.int64())),
+        # list<struct{a,b}>: [[{1,"x"},{2,None}], [], None, [{3,"z"}]]
+        "ls": pa.array(
+            [[{"a": 1, "b": "x"}, {"a": 2, "b": None}], [], None, [{"a": 3, "b": "z"}]],
+            type=pa.list_(struct_ab)),
+        # struct{v: list<int64>, w: string}: [{[1],"p"}, {None,"q"}, {[],"r"}, None]
+        "sl": pa.array(
+            [{"v": [1], "w": "p"}, {"v": None, "w": "q"}, {"v": [], "w": "r"}, None],
+            type=pa.struct([("v", pa.list_(pa.int64())), ("w", pa.string())])),
+        # list<list<int64>>: [[[1],[2,3]], [[]], None, [[4]]]
+        "ll": pa.array(
+            [[[1], [2, 3]], [[]], None, [[4]]],
+            type=pa.list_(pa.list_(pa.int64()))),
+        # map<string,int64>: [{"a":1,"b":2}, {}, None, {"c":None}]
+        "m":  pa.array(
+            [[("a", 1), ("b", 2)], [], None, [("c", None)]],
+            type=pa.map_(pa.string(), pa.int64())),
+    })
+    pq.write_table(tbl, "data/nested_kinds.parquet", compression=None)
+    print("data/nested_kinds.parquet: list/list<struct>/struct<list>/list<list>/map, 4 rows")
+
+
 if __name__ == "__main__":
     multi_rowgroup()
     fixed_len_byte_array()
@@ -158,3 +201,5 @@ if __name__ == "__main__":
     decimals()
     binary_kinds()
     uuid_f16()
+    nested_smoke()
+    nested_kinds()

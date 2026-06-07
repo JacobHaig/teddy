@@ -41,7 +41,7 @@ phase at a time with review + commit at each checkpoint.
 
 ## Build Track (design pass, then code)
 
-### Phase 6 — Parquet reader: read (almost) anything 🟡 in progress
+### Phase 6 — Parquet reader: read (almost) anything ✅ COMPLETE (2026-06-07)
 Sub-phases:
 - **6a — Research ✅** — full Parquet type system → Zig mapping documented in
   `docs/parquet-type-mapping.md` (deep-research, primary sources verified).
@@ -78,11 +78,18 @@ Sub-phases:
   capability convention (hasMethod/ColumnMeta), comptime-safe BoxedSeries
   guards, `Raw` fallback type — INT96 + VARIANT/GEO now read end-to-end and
   round-trip bit-faithfully.
-- **6d-2b — Nested types ⬜ (separate spec)** — LIST/MAP/STRUCT (+ VARIANT/GEO):
-  repetition-level record assembly + a nested column model. Its own design effort;
-  reads as `Raw` until built.
-- **6e — Nested schemas ⬜** — MAP/LIST/STRUCT (currently flat-only,
-  `parquet_reader.zig:127`); biggest, may split out.
+- **6d-2b — Nested types ✅ (2026-06-07; this work IS former item 6e)** —
+  LIST/MAP/STRUCT read end-to-end: owned `SchemaNode` trees with correct
+  cumulative def/rep levels (fixed the group-skip leaf mis-indexing bug AND a
+  latent RLE bit-width bug), Dremel record assembly into the recursive
+  `Nested` value type (`Series(Nested)` columns with JSON rendering,
+  accessors, deep eql/order/hash), fixtures covering list/struct/map and
+  their nestings, fuzz battery through the assembly path. Spec:
+  `docs/superpowers/specs/2026-06-07-parquet-nested-types-design.md`.
+  Scope decision (locked): READ-side only — nested WRITE returns
+  `error.UnsupportedNestedWrite` and is its own backlog item below;
+  VARIANT/GEO stay `Raw` (bit-faithful round-trip) until a variant-format
+  spec.
 
 The design note's §5 open decisions are all **resolved** by the approved 6d-2a
 spec: Decimal = i256 (precision ≤ 76); INT96 decodes to Timestamp(nanos) with
@@ -104,6 +111,15 @@ spec (6d-2b).
 - Expand the pandas helper into fixture-generation + parity-checking basis.
 - `data/` fixtures stay as-is (intentional test inputs).
 - Break into sub-phases when reached.
+
+### Phase 13 — Nested parquet WRITE (new, from 6d-2b scope decision) ⬜
+- def/rep level generation from `Nested` row trees + nested schema emission
+  (tree-shaped SchemaElements with num_children) + per-leaf chunk writing.
+  Comparable in size to the 6d-2b read work. Until then nested columns write
+  as a clean `error.UnsupportedNestedWrite`.
+- Also from the 6d-2b review: columnar nested representation if perf ever
+  matters; file-order column interleaving for mixed nested+flat reads
+  (nested columns currently surface after flat ones).
 
 ---
 

@@ -9,6 +9,7 @@ const Binary = @import("binary.zig").Binary;
 const FixedBytes = @import("fixed_bytes.zig").FixedBytes;
 const Uuid = @import("uuid.zig").Uuid;
 const Interval = @import("interval.zig").Interval;
+const Nested = @import("nested.zig").Nested;
 
 const BoxedSeries = @import("boxed_series.zig").BoxedSeries;
 const GroupBy = @import("group.zig").GroupBy;
@@ -42,6 +43,25 @@ pub fn hasMethod(comptime T: type, comptime name: []const u8) bool {
 pub fn ColumnMetaFor(comptime T: type) type {
     if (hasMethod(T, "ColumnMeta")) return T.ColumnMeta;
     return struct {};
+}
+
+/// Optional ColumnMeta lifecycle hooks (Phase 6d-2b decision 3). When the meta
+/// type declares `deinit`/`clone`, owned metas (e.g. an owned parquet schema
+/// tree) are freed on Series.deinit and deep-copied — not bit-copied — by the
+/// meta-propagating ops (deepCopy/filterByIndices/fillNull/shift). Zero-size or
+/// POD metas declare neither, so these are no-ops / plain copies: existing
+/// behavior is unchanged.
+fn metaDeinit(comptime T: type, meta: *ColumnMetaFor(T)) void {
+    if (comptime hasMethod(ColumnMetaFor(T), "deinit")) {
+        meta.deinit();
+    }
+}
+
+fn metaClone(comptime T: type, meta: ColumnMetaFor(T)) !ColumnMetaFor(T) {
+    if (comptime hasMethod(ColumnMetaFor(T), "clone")) {
+        return try meta.clone();
+    }
+    return meta;
 }
 
 // Series struct for holding a single column of data of type T
@@ -111,6 +131,8 @@ pub fn Series(comptime T: type) type {
                     item.deinit();
                 }
             }
+            // Free owned column metadata (no-op for POD/zero-size metas).
+            metaDeinit(T, &self.meta);
             if (self.validity) |*v| v.deinit(self.allocator);
             self.name.deinit();
             self.values.deinit(self.allocator);
@@ -375,7 +397,7 @@ pub fn Series(comptime T: type) type {
             errdefer new_series.deinit();
 
             try new_series.rename(self.name.toSlice());
-            new_series.meta = self.meta;
+            new_series.meta = try metaClone(T, self.meta);
             try new_series.values.ensureTotalCapacity(self.allocator, self.values.items.len);
             // Copy validity bitmap if present
             if (self.validity) |v| {
@@ -458,6 +480,7 @@ pub fn Series(comptime T: type) type {
                 FixedBytes => BoxedSeries{ .fixed_bytes = self },
                 Uuid => BoxedSeries{ .uuid = self },
                 Interval => BoxedSeries{ .interval = self },
+                Nested => BoxedSeries{ .nested = self },
                 // Add other types as needed
                 else => @compileError("Unsupported type " ++ @typeName(T) ++ " for SeriesType conversion"),
             };
@@ -469,7 +492,7 @@ pub fn Series(comptime T: type) type {
             const new_series = try Self.initWithCapacity(self.allocator, indices.len);
             errdefer new_series.deinit();
             try new_series.rename(self.name.toSlice());
-            new_series.meta = self.meta;
+            new_series.meta = try metaClone(T, self.meta);
             // Copy validity bitmap if present
             if (self.validity != null) {
                 new_series.validity = try std.ArrayList(bool).initCapacity(self.allocator, indices.len);
@@ -631,7 +654,7 @@ pub fn Series(comptime T: type) type {
             const result = try Self.init(self.allocator);
             errdefer result.deinit();
             try result.rename(self.name.toSlice());
-            result.meta = self.meta;
+            result.meta = try metaClone(T, self.meta);
             for (self.values.items, 0..) |v, i| {
                 if (self.isNull(i)) {
                     if (comptime hasMethod(T, "clone")) {
@@ -971,7 +994,7 @@ pub fn Series(comptime T: type) type {
             const result = try Self.init(self.allocator);
             errdefer result.deinit();
             try result.rename(self.name.toSlice());
-            result.meta = self.meta;
+            result.meta = try metaClone(T, self.meta);
             const slen = self.values.items.len;
             if (n >= 0) {
                 const sn: usize = @min(@as(usize, @intCast(n)), slen);

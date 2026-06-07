@@ -112,6 +112,10 @@ fn isStringSeries(series: *BoxedSeries) bool {
         .uuid => true,
         // Interval renders as human-readable text — must be quoted.
         .interval => true,
+        // Nested.format emits REAL JSON (objects/arrays/numbers/null) plus
+        // already-quoted scalars (strings/dates/etc.) — it must NOT be wrapped
+        // in extra quotes. Route through asStringAt raw (false), unquoted.
+        .nested => false,
         else => false,
     };
 }

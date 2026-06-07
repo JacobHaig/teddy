@@ -22,7 +22,11 @@ pub fn GroupByContext(comptime T: type) type {
         const Self = @This();
 
         pub fn hash(_: Self, key: T) u64 {
-            if (comptime hasMethod(T, "toSlice")) {
+            if (comptime hasMethod(T, "hash")) {
+                // Types with eql but no toSlice (Nested) provide a deep hash;
+                // the else-arm's asBytes would hash union pointers (wrong).
+                return key.hash();
+            } else if (comptime hasMethod(T, "toSlice")) {
                 return std.hash.Wyhash.hash(0, key.toSlice());
             } else if (comptime T == f16) {
                 const bits: u16 = @bitCast(key);

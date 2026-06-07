@@ -9,6 +9,7 @@ const Timestamp = @import("timestamp.zig").Timestamp;
 const Decimal = @import("decimal.zig").Decimal;
 const Uuid = @import("uuid.zig").Uuid;
 const Interval = @import("interval.zig").Interval;
+const BoxedSeries = @import("boxed_series.zig").BoxedSeries;
 
 test "resolveKind: precedence logical -> converted -> physical" {
     // NOTE: `col` is mutated across cases and fields CARRY OVER — when adding
@@ -1190,4 +1191,168 @@ test "nulls: multi_rowgroup opt column write round-trip preserves nulls (10b)" {
     }
     try std.testing.expectEqual(@as(i64, 10), opt.int64.values.items[0]);
     try std.testing.expectEqual(@as(i64, 60), opt.int64.values.items[5]);
+}
+
+// ============================================================
+// Nested columns (Phase 6d-2b.2): df-level surfacing + assembly.
+// ============================================================
+
+/// Render row `i` of a nested column to a stack buffer for assertion.
+fn nestedRowString(boxed: *BoxedSeries, i: usize, buf: []u8) ![]u8 {
+    var s = try boxed.asStringAt(i);
+    defer s.deinit();
+    @memcpy(buf[0..s.toSlice().len], s.toSlice());
+    return buf[0..s.toSlice().len];
+}
+
+test "nested: nested_smoke.parquet surfaces l + s as Nested columns" {
+    const allocator = std.testing.allocator;
+    const cwd = std.Io.Dir.cwd();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const file_data = try cwd.readFileAlloc(io, "data/nested_smoke.parquet", allocator, .unlimited);
+    defer allocator.free(file_data);
+
+    var result = try parquet.readParquet(allocator, file_data);
+    defer result.deinit();
+    var df = try adapter.toDataframe(allocator, &result);
+    defer df.deinit();
+
+    // 4 columns: flat_before, flat_after (flat), then l, s (nested, appended).
+    try std.testing.expectEqual(@as(usize, 4), df.width());
+
+    const l = df.getSeries("l") orelse return error.ColumnNotFound;
+    const s = df.getSeries("s") orelse return error.ColumnNotFound;
+
+    var buf: [128]u8 = undefined;
+    // l: [[1,2], None, []]
+    try std.testing.expectEqualStrings("[1, 2]", try nestedRowString(l, 0, &buf));
+    try std.testing.expect(l.isNull(1)); // null list -> appendNull
+    try std.testing.expectEqualStrings("[]", try nestedRowString(l, 2, &buf));
+    // s: [{1,"x"}, {2,null}, None]
+    try std.testing.expectEqualStrings("{1, \"x\"}", try nestedRowString(s, 0, &buf));
+    try std.testing.expectEqualStrings("{2, null}", try nestedRowString(s, 1, &buf));
+    try std.testing.expect(s.isNull(2)); // null struct -> appendNull
+}
+
+test "nested: nested_kinds.parquet per-row rendering + accessors" {
+    const allocator = std.testing.allocator;
+    const cwd = std.Io.Dir.cwd();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const file_data = try cwd.readFileAlloc(io, "data/nested_kinds.parquet", allocator, .unlimited);
+    defer allocator.free(file_data);
+
+    var result = try parquet.readParquet(allocator, file_data);
+    defer result.deinit();
+    var df = try adapter.toDataframe(allocator, &result);
+    defer df.deinit();
+
+    // 5 nested columns: l, ls, sl, ll, m.
+    try std.testing.expectEqual(@as(usize, 5), df.width());
+
+    var buf: [256]u8 = undefined;
+
+    // l  list<int64>: [[1,2], None, [], [3]]
+    const l = df.getSeries("l") orelse return error.ColumnNotFound;
+    try std.testing.expectEqualStrings("[1, 2]", try nestedRowString(l, 0, &buf));
+    try std.testing.expect(l.isNull(1));
+    try std.testing.expectEqualStrings("[]", try nestedRowString(l, 2, &buf));
+    try std.testing.expectEqualStrings("[3]", try nestedRowString(l, 3, &buf));
+
+    // ls list<struct{a,b}>: [[{1,"x"},{2,None}], [], None, [{3,"z"}]]
+    const ls = df.getSeries("ls") orelse return error.ColumnNotFound;
+    try std.testing.expectEqualStrings("[{1, \"x\"}, {2, null}]", try nestedRowString(ls, 0, &buf));
+    try std.testing.expectEqualStrings("[]", try nestedRowString(ls, 1, &buf));
+    try std.testing.expect(ls.isNull(2));
+    try std.testing.expectEqualStrings("[{3, \"z\"}]", try nestedRowString(ls, 3, &buf));
+    // accessors: row0 listLen 2, structAt(0).a == 1
+    const ls0 = &ls.nested.values.items[0];
+    try std.testing.expectEqual(@as(usize, 2), try ls0.listLen());
+    const ls0_s0 = try ls0.listAt(0);
+    try std.testing.expectEqual(@as(i64, 1), (try ls0_s0.structAt(0)).int);
+
+    // sl struct{v:list<int64>, w:string}: [{[1],"p"}, {None,"q"}, {[],"r"}, None]
+    const sl = df.getSeries("sl") orelse return error.ColumnNotFound;
+    try std.testing.expectEqualStrings("{[1], \"p\"}", try nestedRowString(sl, 0, &buf));
+    try std.testing.expectEqualStrings("{null, \"q\"}", try nestedRowString(sl, 1, &buf));
+    try std.testing.expectEqualStrings("{[], \"r\"}", try nestedRowString(sl, 2, &buf));
+    try std.testing.expect(sl.isNull(3));
+
+    // ll list<list<int64>>: [[[1],[2,3]], [[]], None, [[4]]]
+    const ll = df.getSeries("ll") orelse return error.ColumnNotFound;
+    try std.testing.expectEqualStrings("[[1], [2, 3]]", try nestedRowString(ll, 0, &buf));
+    try std.testing.expectEqualStrings("[[]]", try nestedRowString(ll, 1, &buf));
+    try std.testing.expect(ll.isNull(2));
+    try std.testing.expectEqualStrings("[[4]]", try nestedRowString(ll, 3, &buf));
+    // accessors: row0 listAt(1).listLen == 2
+    const ll0 = &ll.nested.values.items[0];
+    const ll0_1 = try ll0.listAt(1);
+    try std.testing.expectEqual(@as(usize, 2), try ll0_1.listLen());
+
+    // m  map<string,int64>: [{"a":1,"b":2}, {}, None, {"c":None}]
+    const m = df.getSeries("m") orelse return error.ColumnNotFound;
+    try std.testing.expectEqualStrings("{\"a\": 1, \"b\": 2}", try nestedRowString(m, 0, &buf));
+    try std.testing.expectEqualStrings("{}", try nestedRowString(m, 1, &buf));
+    try std.testing.expect(m.isNull(2));
+    try std.testing.expectEqualStrings("{\"c\": null}", try nestedRowString(m, 3, &buf));
+    // accessors: row0 mapLen 2, mapAt(0) key "a" value 1
+    const m0 = &m.nested.values.items[0];
+    try std.testing.expectEqual(@as(usize, 2), try m0.mapLen());
+    const e0 = try m0.mapAt(0);
+    try std.testing.expectEqualStrings("a", e0.key.string.toSlice());
+    try std.testing.expectEqual(@as(i64, 1), e0.value.int);
+}
+
+test "nested: writing a nested df returns error.UnsupportedNestedWrite" {
+    const allocator = std.testing.allocator;
+    const cwd = std.Io.Dir.cwd();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const file_data = try cwd.readFileAlloc(io, "data/nested_kinds.parquet", allocator, .unlimited);
+    defer allocator.free(file_data);
+
+    var result = try parquet.readParquet(allocator, file_data);
+    defer result.deinit();
+    var df = try adapter.toDataframe(allocator, &result);
+    defer df.deinit();
+
+    try std.testing.expectError(error.UnsupportedNestedWrite, adapter.fromDataframe(allocator, df, .{}));
+}
+
+/// Read → toDataframe on possibly-corrupt bytes; both outcomes are acceptable
+/// (clean error or a valid df). Must never panic, never leak. The malformed
+/// battery in src/parquet/ is reader-only; this extends coverage through the
+/// dataframe adapter (nested assembly) for the nested fixtures, which the
+/// parquet module cannot import (dataframe → parquet, not the reverse).
+fn expectNoPanicNested(allocator: std.mem.Allocator, data: []const u8) void {
+    var result = parquet.readParquet(allocator, data) catch return;
+    defer result.deinit();
+    var df = adapter.toDataframe(allocator, &result) catch return;
+    df.deinit();
+}
+
+test "malformed: nested assembly never panics over corrupted nested fixtures" {
+    const allocator = std.testing.allocator;
+    const cwd = std.Io.Dir.cwd();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const paths = [_][]const u8{ "data/nested_smoke.parquet", "data/nested_kinds.parquet" };
+    for (paths) |path| {
+        const data = try cwd.readFileAlloc(io, path, allocator, .unlimited);
+        defer allocator.free(data);
+
+        // Truncation sweep: ~16 strides.
+        const stride = @max(1, data.len / 16);
+        var n: usize = 0;
+        while (n < data.len) : (n += stride) {
+            expectNoPanicNested(allocator, data[0..n]);
+        }
+
+        // Single-byte bit-flip sweep: ~16 strides.
+        const mutable = try allocator.dupe(u8, data);
+        defer allocator.free(mutable);
+        var off: usize = 0;
+        while (off < data.len) : (off += stride) {
+            mutable[off] ^= 0xFF;
+            expectNoPanicNested(allocator, mutable);
+            mutable[off] = data[off]; // restore
+        }
+    }
 }

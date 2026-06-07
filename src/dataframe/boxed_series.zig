@@ -11,6 +11,7 @@ const Binary = @import("binary.zig").Binary;
 const FixedBytes = @import("fixed_bytes.zig").FixedBytes;
 const Uuid = @import("uuid.zig").Uuid;
 const Interval = @import("interval.zig").Interval;
+const Nested = @import("nested.zig").Nested;
 const GroupBy = @import("group.zig").GroupBy;
 const BoxedGroupBy = @import("boxed_groupby.zig").BoxedGroupBy;
 const Dataframe = @import("dataframe.zig").Dataframe;
@@ -46,6 +47,7 @@ pub const BoxedSeries = union(enum) {
     fixed_bytes: *Series(FixedBytes),
     uuid: *Series(Uuid),
     interval: *Series(Interval),
+    nested: *Series(Nested),
 
     /// Deallocates the contained Series. After this call, the BoxedSeries is invalid.
     pub fn deinit(self: *Self) void {
@@ -552,6 +554,7 @@ pub const BoxedSeries = union(enum) {
             .fixed_bytes => "FixedBytes",
             .uuid => "Uuid",
             .interval => "Interval",
+            .nested => "Nested",
         };
     }
 
@@ -585,6 +588,7 @@ pub const BoxedSeries = union(enum) {
             .fixed_bytes => return FixedBytes,
             .uuid => return Uuid,
             .interval => return Interval,
+            .nested => return Nested,
         }
     }
 };

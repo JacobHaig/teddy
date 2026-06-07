@@ -120,6 +120,50 @@ pub const BoundaryOrder = enum(u8) {
 };
 
 // ============================================================
+// Owned Parquet Schema Tree (nested columns)
+// ============================================================
+
+/// Owned parquet schema subtree (nested columns). Allocated by
+/// buildSchemaTree; freed via deinit. Names are owned copies.
+pub const SchemaNode = struct {
+    name: []u8,
+    /// required/optional/repeated of THIS node.
+    repetition: FieldRepetitionType,
+    /// Leaf payload (null for group nodes).
+    physical: ?PhysicalType = null,
+    converted: ?ConvertedType = null,
+    logical: ?LogicalType = null,
+    type_length: ?i32 = null,
+    scale: ?i32 = null,
+    precision: ?i32 = null,
+    /// For leaves: cumulative levels (ancestor walk).
+    max_def: u8 = 0,
+    max_rep: u8 = 0,
+    /// For leaves: index into the row group's column-chunk order.
+    leaf_index: ?usize = null,
+    children: []SchemaNode = &.{},
+
+    pub fn deinit(self: *SchemaNode, allocator: Allocator) void {
+        for (self.children) |*child| child.deinit(allocator);
+        if (self.children.len > 0) allocator.free(self.children);
+        allocator.free(self.name);
+    }
+
+    pub fn isLeaf(self: *const SchemaNode) bool {
+        return self.children.len == 0 and self.physical != null;
+    }
+
+    /// Index of the immediate child named `name`, or null. Used by slice .2 /
+    /// accessors to resolve struct field names positionally.
+    pub fn fieldIndex(self: *const SchemaNode, name: []const u8) ?usize {
+        for (self.children, 0..) |*child, i| {
+            if (std.mem.eql(u8, child.name, name)) return i;
+        }
+        return null;
+    }
+};
+
+// ============================================================
 // Output Types — what the Parquet reader produces
 // ============================================================
 
@@ -149,6 +193,20 @@ pub const ParquetColumn = struct {
     num_rows: usize,
     allocator: Allocator,
 
+    /// True for leaf columns derived from a nested subtree (LIST/MAP/STRUCT).
+    /// Such columns are surfaced via ParquetResult.nested_columns, never in
+    /// `columns`, and carry raw level streams for record assembly (slice .2).
+    nested: bool = false,
+    /// Which top-level child of the schema root this leaf descends from. Lets
+    /// slice .2 group sibling leaves back into one nested root. 0 for flat
+    /// columns whose direct parent is the root.
+    root_child_index: usize = 0,
+    /// Raw per-leaf level streams, populated only for nested leaves
+    /// (max_rep > 0 or def depth > 1). Lengths equal the leaf's total value
+    /// count (incl. nulls); values arrays hold only present values.
+    def_levels: ?[]u16 = null,
+    rep_levels: ?[]u16 = null,
+
     pub fn deinit(self: *ParquetColumn) void {
         self.allocator.free(self.name);
 
@@ -164,6 +222,8 @@ pub const ParquetColumn = struct {
             self.allocator.free(arrays);
         }
         if (self.validity) |v| self.allocator.free(v);
+        if (self.def_levels) |d| self.allocator.free(d);
+        if (self.rep_levels) |r| self.allocator.free(r);
     }
 
     pub fn initEmpty(allocator: Allocator) ParquetColumn {
@@ -185,21 +245,38 @@ pub const ParquetColumn = struct {
             .validity = null,
             .num_rows = 0,
             .allocator = allocator,
+            .nested = false,
+            .root_child_index = 0,
+            .def_levels = null,
+            .rep_levels = null,
         };
     }
 };
 
 /// Result of reading a complete Parquet file.
 pub const ParquetResult = struct {
-    columns: []ParquetColumn, // allocator-owned array
+    columns: []ParquetColumn, // allocator-owned array; FLAT leaves only
     num_rows: usize,
     allocator: Allocator,
+
+    /// Owned schema tree (root node + descendants). Always set on success.
+    /// Slice .2 walks this to assemble nested records.
+    schema_tree: ?SchemaNode = null,
+    /// Leaf columns derived from nested subtrees (LIST/MAP/STRUCT), excluded
+    /// from `columns` so the flat dataframe adapter never sees them. Each
+    /// carries raw def/rep streams. Owned; freed here.
+    nested_columns: []ParquetColumn = &.{},
 
     pub fn deinit(self: *ParquetResult) void {
         for (self.columns) |*col| {
             col.deinit();
         }
         self.allocator.free(self.columns);
+        for (self.nested_columns) |*col| {
+            col.deinit();
+        }
+        if (self.nested_columns.len > 0) self.allocator.free(self.nested_columns);
+        if (self.schema_tree) |*tree| tree.deinit(self.allocator);
     }
 };
 

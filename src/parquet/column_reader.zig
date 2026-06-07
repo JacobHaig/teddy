@@ -10,12 +10,34 @@ const ThriftReader = @import("thrift_reader.zig").ThriftReader;
 // Column Chunk Reader
 // ============================================================
 
+/// RLE/bit-packed bit width for a level stream whose maximum value is
+/// `max_level`: ceil(log2(max_level + 1)). For max_level 0 → 0, 1 → 1
+/// (so flat columns are byte-for-byte unchanged), 2/3 → 2, etc. The parquet
+/// spec uses exactly this width for def/rep level encoding.
+fn levelBitWidth(max_level: u8) u8 {
+    if (max_level == 0) return 0;
+    return @intCast(@as(u8, 8) - @as(u8, @clz(max_level)));
+}
+
 /// Information about a leaf column resolved from the schema.
 pub const LeafColumn = struct {
     schema_element: metadata.SchemaElement,
     max_def_level: u8,
     max_rep_level: u8,
     column_index: usize,
+    /// True if this leaf descends from a nested subtree (LIST/MAP/STRUCT):
+    /// either it is repeated (max_rep > 0) or its definition depth exceeds the
+    /// single optional level a genuinely-flat column would have. When set,
+    /// readColumnChunk preserves raw def/rep streams instead of expanding
+    /// placeholder nulls (which assumes one value slot per row — wrong when
+    /// values can repeat).
+    nested: bool = false,
+    /// Which top-level child of the schema root this leaf descends from.
+    root_child_index: usize = 0,
+    /// Dotted schema path (e.g. "l.list.element"), allocator-owned by the
+    /// caller; used as the surfaced column name for nested leaves. When null,
+    /// the leaf's own schema_element.name is used (flat columns).
+    dotted_path: ?[]const u8 = null,
 };
 
 /// Read all pages for a single column chunk and produce a ParquetColumn.
@@ -56,6 +78,11 @@ pub fn readColumnChunk(
 
     var all_def_levels = std.ArrayList(u32).empty;
     defer all_def_levels.deinit(allocator);
+
+    // Repetition levels are only decoded+retained for nested leaves
+    // (max_rep_level > 0). Flat columns never populate this.
+    var all_rep_levels = std.ArrayList(u32).empty;
+    defer all_rep_levels.deinit(allocator);
 
     // Dictionary (populated if we encounter a dictionary page)
     var dict: ?DictionaryStore = null;
@@ -103,17 +130,26 @@ pub fn readColumnChunk(
 
                 var data_pos: usize = 0;
 
-                // Read repetition levels (skip for flat schema: max_rep_level == 0).
+                // Read repetition levels. For flat schema (max_rep_level == 0)
+                // there is no rep-level region at all. For nested leaves we now
+                // DECODE them (was previously skipped in the flat-only reader).
                 // P2: the 4-byte length prefix and the levels region it describes are
                 // file-controlled; validate both before slicing or a malformed page
                 // would panic on an out-of-bounds slice.
                 if (leaf.max_rep_level > 0) {
                     if (decompressed.len < data_pos + 4) return error.CorruptPageData;
                     const rep_len: usize = std.mem.readInt(u32, decompressed[data_pos..][0..4], .little);
+                    const rep_start = data_pos + 4;
                     // data_pos + 4 + rep_len could overflow / exceed the page.
-                    const rep_end = std.math.add(usize, data_pos + 4, rep_len) catch return error.CorruptPageData;
+                    const rep_end = std.math.add(usize, rep_start, rep_len) catch return error.CorruptPageData;
                     if (rep_end > decompressed.len) return error.CorruptPageData;
+                    const rep_data = decompressed[rep_start..rep_end];
                     data_pos = rep_end;
+
+                    var rep_dec = encoding.RleBitPackedDecoder.init(rep_data, levelBitWidth(leaf.max_rep_level));
+                    const rep_levels = try rep_dec.readBatch(num_values_in_page, allocator);
+                    defer allocator.free(rep_levels);
+                    try all_rep_levels.appendSlice(allocator, rep_levels);
                 }
 
                 // Read definition levels (P2: same length-prefix validation).
@@ -126,7 +162,7 @@ pub fn readColumnChunk(
                     const def_data = decompressed[def_start..def_end];
                     data_pos = def_end;
 
-                    var rle_dec = encoding.RleBitPackedDecoder.init(def_data, leaf.max_def_level);
+                    var rle_dec = encoding.RleBitPackedDecoder.init(def_data, levelBitWidth(leaf.max_def_level));
                     const levels = try rle_dec.readBatch(num_values_in_page, allocator);
                     defer allocator.free(levels);
                     try all_def_levels.appendSlice(allocator, levels);
@@ -174,7 +210,7 @@ pub fn readColumnChunk(
                     const def_data = page_data[data_pos .. data_pos + def_len];
                     data_pos += def_len;
 
-                    var rle_dec = encoding.RleBitPackedDecoder.init(def_data, leaf.max_def_level);
+                    var rle_dec = encoding.RleBitPackedDecoder.init(def_data, levelBitWidth(leaf.max_def_level));
                     const levels = try rle_dec.readBatch(num_values_in_page, allocator);
                     defer allocator.free(levels);
                     try all_def_levels.appendSlice(allocator, levels);
@@ -220,7 +256,7 @@ pub fn readColumnChunk(
     }
 
     // Build the ParquetColumn
-    return buildColumn(allocator, &all_values, all_def_levels.items, leaf, num_rows);
+    return buildColumn(allocator, &all_values, all_def_levels.items, all_rep_levels.items, leaf, num_rows);
 }
 
 // ============================================================
@@ -263,20 +299,23 @@ fn decodeValues(
     }
 }
 
-/// Build the final ParquetColumn from accumulated values + definition levels.
+/// Build the final ParquetColumn from accumulated values + def/rep levels.
 fn buildColumn(
     allocator: Allocator,
     acc: *ValueAccumulator,
     def_levels: []const u32,
+    rep_levels: []const u32,
     leaf: LeafColumn,
     num_rows: usize,
 ) !types.ParquetColumn {
     var col = types.ParquetColumn.initEmpty(allocator);
     errdefer col.deinit();
 
-    // Copy the column name
-    const name_copy = try allocator.alloc(u8, leaf.schema_element.name.len);
-    @memcpy(name_copy, leaf.schema_element.name);
+    // Copy the column name. Nested leaves use the dotted schema path so flat
+    // consumers can at least identify them; flat leaves use the bare name.
+    const src_name = leaf.dotted_path orelse leaf.schema_element.name;
+    const name_copy = try allocator.alloc(u8, src_name.len);
+    @memcpy(name_copy, src_name);
     col.name = name_copy;
 
     col.physical_type = leaf.schema_element.type_ orelse .byte_array;
@@ -287,6 +326,28 @@ fn buildColumn(
     col.precision = leaf.schema_element.precision;
     col.is_optional = leaf.max_def_level > 0;
     col.num_rows = num_rows;
+    col.nested = leaf.nested;
+    col.root_child_index = leaf.root_child_index;
+
+    if (leaf.nested) {
+        // Nested leaf: do NOT expand to one value-per-row (values can repeat
+        // or be absent). Move the present values verbatim and attach the raw
+        // def/rep streams; slice .2's Dremel pass assembles records from these.
+        // num_rows stays the ROW count from metadata.
+        acc.moveInto(&col);
+
+        const def_copy = try allocator.alloc(u16, def_levels.len);
+        errdefer allocator.free(def_copy);
+        for (def_levels, 0..) |d, i| def_copy[i] = @intCast(d);
+        col.def_levels = def_copy;
+
+        const rep_copy = try allocator.alloc(u16, rep_levels.len);
+        errdefer allocator.free(rep_copy);
+        for (rep_levels, 0..) |r, i| rep_copy[i] = @intCast(r);
+        col.rep_levels = rep_copy;
+
+        return col;
+    }
 
     if (leaf.max_def_level > 0) {
         // Build validity array and expand values with nulls

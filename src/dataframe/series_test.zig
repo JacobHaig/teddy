@@ -5,6 +5,90 @@ const String = strings.String;
 const Dataframe = @import("dataframe.zig").Dataframe;
 const json_writer = @import("json_writer.zig");
 
+// --- ColumnMeta lifecycle capability (Phase 6d-2b.0) ---
+
+/// A test element type whose ColumnMeta OWNS heap memory and declares
+/// deinit/clone. The testing allocator turns any missed free / double free /
+/// shallow-copy-then-double-free into a hard test failure, so these tests prove
+/// the Series meta lifecycle hooks fire on deinit and on the meta-propagating
+/// ops (deepCopy / filterByIndices / fillNull / shift).
+const MetaElem = struct {
+    v: i64 = 0,
+
+    pub const ColumnMeta = struct {
+        allocator: ?std.mem.Allocator = null,
+        tag: []u8 = &.{},
+
+        pub fn make(allocator: std.mem.Allocator, tag: []const u8) !ColumnMeta {
+            const buf = try allocator.alloc(u8, tag.len);
+            @memcpy(buf, tag);
+            return .{ .allocator = allocator, .tag = buf };
+        }
+        pub fn deinit(self: *ColumnMeta) void {
+            if (self.allocator) |a| {
+                a.free(self.tag);
+                self.tag = &.{};
+                self.allocator = null;
+            }
+        }
+        pub fn clone(self: *const ColumnMeta) !ColumnMeta {
+            const a = self.allocator orelse return .{};
+            const buf = try a.alloc(u8, self.tag.len);
+            @memcpy(buf, self.tag);
+            return .{ .allocator = a, .tag = buf };
+        }
+    };
+};
+
+test "Series ColumnMeta: deinit frees owned meta (no leak)" {
+    const allocator = std.testing.allocator;
+    var s = try Series(MetaElem).init(allocator);
+    defer s.deinit();
+    s.meta = try MetaElem.ColumnMeta.make(allocator, "hello");
+    try s.append(.{ .v = 1 });
+    // deinit must free s.meta.tag — testing allocator asserts no leak.
+}
+
+test "Series ColumnMeta: deepCopy clones meta independently" {
+    const allocator = std.testing.allocator;
+    var s = try Series(MetaElem).init(allocator);
+    defer s.deinit();
+    s.meta = try MetaElem.ColumnMeta.make(allocator, "abc");
+    try s.append(.{ .v = 1 });
+
+    var copy = try s.deepCopy();
+    defer copy.deinit();
+    // Independent allocation (not an aliased pointer) and equal content.
+    try std.testing.expect(copy.meta.tag.ptr != s.meta.tag.ptr);
+    try std.testing.expectEqualStrings("abc", copy.meta.tag);
+    // Both deinit without double-free → testing allocator validates.
+}
+
+test "Series ColumnMeta: filterByIndices/fillNull/shift each clone meta" {
+    const allocator = std.testing.allocator;
+    var s = try Series(MetaElem).init(allocator);
+    defer s.deinit();
+    s.meta = try MetaElem.ColumnMeta.make(allocator, "tag");
+    try s.append(.{ .v = 10 });
+    try s.appendNull();
+    try s.append(.{ .v = 30 });
+
+    var filtered = try s.filterByIndices(&[_]usize{ 0, 2 });
+    defer filtered.deinit();
+    try std.testing.expect(filtered.meta.tag.ptr != s.meta.tag.ptr);
+    try std.testing.expectEqualStrings("tag", filtered.meta.tag);
+
+    var filled = try s.fillNull(.{ .v = 99 });
+    defer filled.deinit();
+    try std.testing.expect(filled.meta.tag.ptr != s.meta.tag.ptr);
+    try std.testing.expectEqualStrings("tag", filled.meta.tag);
+
+    var shifted = try s.shift(1);
+    defer shifted.deinit();
+    try std.testing.expect(shifted.meta.tag.ptr != s.meta.tag.ptr);
+    try std.testing.expectEqualStrings("tag", shifted.meta.tag);
+}
+
 // --- filterByIndices Tests ---
 
 test "Series: filterByIndices basic subset" {

@@ -149,6 +149,8 @@ classDiagram
 │  Uuid        │  .uuid        │  FLBA(16)+UUID│  Uuid          │
 │  Interval    │  .interval    │  FLBA(12)+INTV│  Interval      │
 │  f16         │  .float16     │  FLBA(2)+F16  │  Float16       │
+│  Nested      │  .nested      │  LIST/MAP/    │  Nested        │
+│              │               │  STRUCT(read) │                │
 │  Raw         │  .raw         │  (preserved)* │  Raw           │
 └──────────────┴───────────────┴───────────────┴────────────────┘
 

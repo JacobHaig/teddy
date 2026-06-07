@@ -20,5 +20,7 @@ comptime {
     _ = @import("fixed_bytes.zig");
     _ = @import("uuid.zig");
     _ = @import("interval.zig");
+    _ = @import("nested.zig");
+    _ = @import("nested_assembly.zig");
     _ = @import("parquet_test.zig");
 }

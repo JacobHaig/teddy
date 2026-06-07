@@ -13,6 +13,9 @@ const FixedBytes = @import("fixed_bytes.zig").FixedBytes;
 const Uuid = @import("uuid.zig").Uuid;
 const Interval = @import("interval.zig").Interval;
 const BoxedSeries = @import("boxed_series.zig").BoxedSeries;
+const Nested = @import("nested.zig").Nested;
+const Series = series_mod.Series;
+const assembly = @import("nested_assembly.zig");
 const parquet = @import("parquet");
 
 // ============================================================
@@ -30,7 +33,80 @@ pub fn toDataframe(allocator: Allocator, result: *parquet.ParquetResult) !*dataf
         try addColumn(allocator, df, col);
     }
 
+    // Nested columns (LIST/MAP/STRUCT) are surfaced AFTER the flat ones, so the
+    // dataframe column order for mixed files differs from the file's schema
+    // order. Preserving file order would require interleaving bookkeeping; left
+    // as polish. Each nested top-level child becomes one Series(Nested).
+    if (result.schema_tree) |*tree| {
+        if (result.nested_columns.len > 0) {
+            try addNestedColumns(allocator, df, tree, result.nested_columns, result.num_rows);
+        }
+    }
+
     return df;
+}
+
+/// Group `nested_columns` by `root_child_index` and assemble each group into a
+/// Series(Nested) named by the schema child. Leaves are passed in leaf_index
+/// order (nested_columns already follow that order from the reader).
+fn addNestedColumns(
+    allocator: Allocator,
+    df: *dataframe.Dataframe,
+    tree: *const parquet.types.SchemaNode,
+    nested_columns: []parquet.ParquetColumn,
+    num_rows: usize,
+) !void {
+    // Walk the schema root's children; for each nested top-level child, gather
+    // the leaves whose root_child_index points at it.
+    for (tree.children, 0..) |*child, child_idx| {
+        // Skip flat children (a direct leaf child of the root with max_rep 0).
+        if (child.isLeaf() and child.max_rep == 0) continue;
+
+        // Collect this child's leaves (leaf_index order is preserved because
+        // nested_columns are stored in that order).
+        var leaf_list = std.ArrayList(*const parquet.ParquetColumn).empty;
+        defer leaf_list.deinit(allocator);
+        for (nested_columns) |*col| {
+            if (col.root_child_index == child_idx) {
+                try leaf_list.append(allocator, col);
+            }
+        }
+        if (leaf_list.items.len == 0) continue;
+
+        const rows = try assembly.assembleColumn(allocator, child, leaf_list.items, num_rows);
+        // On any failure past this point, free the assembled rows.
+        var rows_owned = true;
+        defer if (rows_owned) {
+            for (rows) |*r| r.deinit();
+            allocator.free(rows);
+        };
+
+        var s = try df.createSeries(Nested);
+        try s.rename(child.name);
+
+        // Clone the child subtree into owned ColumnMeta.
+        const meta_node = try allocator.create(parquet.types.SchemaNode);
+        errdefer allocator.destroy(meta_node);
+        meta_node.* = try Nested.cloneNode(allocator, child);
+        s.meta = .{ .schema = meta_node, .allocator = allocator };
+
+        // Move each assembled row into the series. A null top-level value uses
+        // appendNull (validity), consistent with scalar columns — NOT a .null_
+        // stored value.
+        for (rows) |*r| {
+            if (r.* == .null_) {
+                try s.appendNull();
+            } else {
+                try s.append(r.*);
+            }
+        }
+        // Series now owns the non-null values; free only the slice + any nulls.
+        for (rows) |*r| {
+            if (r.* == .null_) r.deinit();
+        }
+        allocator.free(rows);
+        rows_owned = false;
+    }
 }
 
 /// Dataframe-side type a parquet column resolves to.
@@ -674,6 +750,13 @@ fn boxedToColumnData(scratch: Allocator, boxed: *BoxedSeries, opts: AdapterWrite
         .usize => |s| blk: {
             _ = s;
             break :blk error.UnsupportedType;
+        },
+        // Nested columns are READ-side only: writing requires nested schema
+        // emission + def/rep level generation, which is a separate roadmap
+        // item. This error is permanent until nested write lands.
+        .nested => |s| blk: {
+            _ = s;
+            break :blk error.UnsupportedNestedWrite;
         },
         .date => |s| blk: {
             // DATE re-emits as INT32 + both annotations (modern field 10 and

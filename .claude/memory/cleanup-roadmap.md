@@ -24,10 +24,13 @@ variant; Raw remains only for VARIANT/GEO/nested/unknown
 [[parquet-type-mapping]]). **Hardening track COMPLETE 2026-06-07**: Phase 10
 (null correctness end-to-end incl. parquet definition levels), Phase 11
 (malformed-file hardening + battery), Phase 12 (bug batch incl.
-groupByMultiple double-free). Remaining: 6d-2b nested types (needs its own
-brainstorm/spec — repetition-level record assembly), Phase 7 JSON fixes
-(partly absorbed by Phase 12 B2), Phase 8 native serialization format,
-Phase 9 Python↔Zig regression framework.
+groupByMultiple double-free). **PHASE 6 COMPLETE 2026-06-07**: 6d-2b nested
+types landed (read-side LIST/MAP/STRUCT via SchemaNode trees + Dremel
+assembly into the recursive Nested value type; spec
+docs/superpowers/specs/2026-06-07-parquet-nested-types-design.md; nested
+WRITE deferred to new Phase 13). Remaining: Phase 7 JSON fixes (partly
+absorbed by Phase 12 B2), Phase 8 native serialization format, Phase 9
+Python↔Zig regression framework, Phase 13 nested write.
 
 **Why:** owner wants the codebase "up to snuff" — remove template cruft, finish
 half-implemented IO, add validation.
