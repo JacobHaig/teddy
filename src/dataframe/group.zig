@@ -54,6 +54,10 @@ fn GroupMap(comptime T: type) type {
 /// T is the type of the group key (e.g., String, i32, etc.)
 /// The Hash map maps from group key (T) to a list of row indices (usize)
 ///
+/// Null-key policy: rows where the key series is null are DROPPED (pandas
+/// dropna=True semantics). SQL-style "nulls form one group" can become an
+/// option (dropna=false) in a future phase.
+///
 /// Usage:
 /// var group_by = try GroupBy(String).init(allocator, &dataframe);
 /// defer group_by.deinit();
@@ -96,6 +100,9 @@ pub fn GroupBy(comptime T: type) type {
         fn setupGroups(self: *Self) !void {
             const series_len = self.series.len();
             for (0..series_len) |i| {
+                // Null-key rows are dropped (pandas dropna=True semantics).
+                // SQL-style "nulls form one group" can become an option later.
+                if (self.series.isNull(i)) continue;
                 const key = self.series.values.items[i];
 
                 const list_ptr = self.groups.getPtr(key);
@@ -199,6 +206,7 @@ pub fn GroupBy(comptime T: type) type {
                 try appendKey(key_series, entry.key_ptr.*);
                 var sum_val: ValType = 0;
                 for (entry.value_ptr.items) |idx| {
+                    if (series.isNull(idx)) continue;
                     sum_val += series.values.items[idx];
                 }
                 try val_series.append(sum_val);
@@ -241,14 +249,18 @@ pub fn GroupBy(comptime T: type) type {
             while (it.next()) |entry| {
                 try appendKey(key_series, entry.key_ptr.*);
                 var sum_val: f64 = 0.0;
+                var non_null_count: usize = 0;
                 for (entry.value_ptr.items) |idx| {
+                    if (series.isNull(idx)) continue;
                     const val = series.values.items[idx];
                     sum_val += @as(f64, if (ValType == f16 or ValType == f32 or ValType == f64)
                         val
                     else
                         @floatFromInt(val));
+                    non_null_count += 1;
                 }
-                const mean_val = sum_val / @as(f64, @floatFromInt(entry.value_ptr.items.len));
+                // Empty (all-null) group: produce 0.0 (consistent with zero-count group).
+                const mean_val = if (non_null_count == 0) 0.0 else sum_val / @as(f64, @floatFromInt(non_null_count));
                 try val_series.append(mean_val);
             }
         }
@@ -315,16 +327,20 @@ pub fn GroupBy(comptime T: type) type {
             var it = self.groups.iterator();
             while (it.next()) |entry| {
                 try appendKey(key_series, entry.key_ptr.*);
-                var result_val = series.values.items[entry.value_ptr.items[0]];
-                for (entry.value_ptr.items[1..]) |idx| {
+                // Find the first non-null value as the seed.
+                var result_val: ?ValType = null;
+                for (entry.value_ptr.items) |idx| {
+                    if (series.isNull(idx)) continue;
                     const val = series.values.items[idx];
-                    if (is_min) {
-                        if (val < result_val) result_val = val;
+                    if (result_val == null) {
+                        result_val = val;
+                    } else if (is_min) {
+                        if (val < result_val.?) result_val = val;
                     } else {
-                        if (val > result_val) result_val = val;
+                        if (val > result_val.?) result_val = val;
                     }
                 }
-                try val_series.append(result_val);
+                if (result_val) |v| try val_series.append(v) else try val_series.appendNull();
             }
         }
 
@@ -363,15 +379,24 @@ pub fn GroupBy(comptime T: type) type {
             var it = self.groups.iterator();
             while (it.next()) |entry| {
                 try appendKey(key_series, entry.key_ptr.*);
-                const n: f64 = @floatFromInt(entry.value_ptr.items.len);
                 var sum_val: f64 = 0.0;
+                var non_null_count: usize = 0;
                 for (entry.value_ptr.items) |idx| {
+                    if (series.isNull(idx)) continue;
                     const val = series.values.items[idx];
                     sum_val += @as(f64, if (ValType == f16 or ValType == f32 or ValType == f64) val else @floatFromInt(val));
+                    non_null_count += 1;
                 }
+                // Empty (all-null) group: produce 0.0 (consistent with zero-count group).
+                if (non_null_count == 0) {
+                    try val_series.append(0.0);
+                    continue;
+                }
+                const n: f64 = @floatFromInt(non_null_count);
                 const mean_val = sum_val / n;
                 var sq_sum: f64 = 0.0;
                 for (entry.value_ptr.items) |idx| {
+                    if (series.isNull(idx)) continue;
                     const val = series.values.items[idx];
                     const fval: f64 = @as(f64, if (ValType == f16 or ValType == f32 or ValType == f64) val else @floatFromInt(val));
                     const diff = fval - mean_val;
@@ -899,4 +924,131 @@ test "GroupBy: nunique counts distinct values per group" {
     const a = col.usize.values.items[0];
     const b = col.usize.values.items[1];
     try std.testing.expect((a == 1 and b == 1));
+}
+
+test "GroupBy: null keys are dropped" {
+    // Key series {1, null, 1, null} → only one group (key=1) with 2 rows.
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var keys = try df.createSeries(i32);
+    try keys.rename("key");
+    try keys.append(1);
+    try keys.appendNull();
+    try keys.append(1);
+    try keys.appendNull();
+
+    var vals = try df.createSeries(i64);
+    try vals.rename("val");
+    try vals.append(10);
+    try vals.append(99); // value at a null-key row — should be excluded from all groups
+    try vals.append(20);
+    try vals.append(99);
+
+    var gb = try df.groupBy("key");
+    defer gb.deinit();
+
+    var counts = try gb.count();
+    defer counts.deinit();
+
+    // Only one group (key=1, count=2); null-key rows are dropped entirely.
+    try std.testing.expectEqual(@as(usize, 1), counts.height());
+    const count_col = counts.getSeries("count") orelse return error.DoesNotExist;
+    try std.testing.expectEqual(@as(usize, 2), count_col.usize.values.items[0]);
+}
+
+test "GroupBy: sum/mean/min skip null values" {
+    // Key {1,1,1}, vals {10, null, 20}.
+    // sum must be 30 (not 30+placeholder), mean must be 15.0 (not 10.0).
+    // Also: min with a null that would otherwise win — vals {5, null, 10},
+    //   placeholder 0 would win without isNull guard; min must be 5.
+    const allocator = std.testing.allocator;
+
+    // --- sum and mean ---
+    {
+        var df = try Dataframe.init(allocator);
+        defer df.deinit();
+
+        var keys = try df.createSeries(i32);
+        try keys.rename("key");
+        try keys.append(1);
+        try keys.append(1);
+        try keys.append(1);
+
+        var vals = try df.createSeries(i64);
+        try vals.rename("val");
+        try vals.append(10);
+        try vals.appendNull();
+        try vals.append(20);
+
+        var gb = try df.groupBy("key");
+        defer gb.deinit();
+
+        var sum_result = try gb.sum("val");
+        defer sum_result.deinit();
+        const sum_col = sum_result.getSeries("val") orelse return error.DoesNotExist;
+        try std.testing.expectEqual(@as(i64, 30), sum_col.int64.values.items[0]);
+
+        var mean_result = try gb.mean("val");
+        defer mean_result.deinit();
+        const mean_col = mean_result.getSeries("val") orelse return error.DoesNotExist;
+        // mean of [10, 20] (skipping null) = 15.0
+        try std.testing.expectEqual(@as(f64, 15.0), mean_col.float64.values.items[0]);
+    }
+
+    // --- min: null placeholder (0) must not win ---
+    {
+        var df = try Dataframe.init(allocator);
+        defer df.deinit();
+
+        var keys = try df.createSeries(i32);
+        try keys.rename("key");
+        try keys.append(1);
+        try keys.append(1);
+        try keys.append(1);
+
+        var vals = try df.createSeries(i64);
+        try vals.rename("val");
+        try vals.append(5);
+        try vals.appendNull(); // placeholder stored as 0, which is < 5 — must be skipped
+        try vals.append(10);
+
+        var gb = try df.groupBy("key");
+        defer gb.deinit();
+
+        var min_result = try gb.min("val");
+        defer min_result.deinit();
+        const min_col = min_result.getSeries("val") orelse return error.DoesNotExist;
+        try std.testing.expectEqual(@as(i64, 5), min_col.int64.values.items[0]);
+    }
+}
+
+test "GroupBy: stdDev skips nulls" {
+    // Key {1,1,1}, vals {10, null, 10} → stdDev 0.0.
+    // Without isNull guard, placeholder 0 would produce a non-zero stdDev.
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var keys = try df.createSeries(i32);
+    try keys.rename("key");
+    try keys.append(1);
+    try keys.append(1);
+    try keys.append(1);
+
+    var vals = try df.createSeries(i64);
+    try vals.rename("val");
+    try vals.append(10);
+    try vals.appendNull();
+    try vals.append(10);
+
+    var gb = try df.groupBy("key");
+    defer gb.deinit();
+
+    var std_result = try gb.stdDev("val");
+    defer std_result.deinit();
+    const std_col = std_result.getSeries("val") orelse return error.DoesNotExist;
+    // stdDev of [10, 10] (skipping null) = 0.0
+    try std.testing.expectEqual(@as(f64, 0.0), std_col.float64.values.items[0]);
 }

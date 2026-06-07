@@ -473,6 +473,9 @@ pub const BoxedSeries = union(enum) {
                 if (comptime *Series(T) == @TypeOf(s)) {
                     var indices = std.ArrayList(usize).empty;
                     for (s.values.items, 0..) |item, i| {
+                        // SQL semantics: null compares false to everything,
+                        // including eq — placeholders must never match.
+                        if (s.isNull(i)) continue;
                         const match = if (comptime hasMethod(T, "order")) blk: {
                             const o = item.order(&value);
                             break :blk switch (op) {

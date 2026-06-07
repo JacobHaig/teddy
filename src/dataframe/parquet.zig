@@ -162,7 +162,11 @@ fn addColumn(allocator: Allocator, df: *dataframe.Dataframe, col: *const parquet
             const vals = col.booleans orelse return;
             for (0..col.num_rows) |i| {
                 const valid = if (col.validity) |v| v[i] else true;
-                try s.append(if (valid and i < vals.len) vals[i] else false);
+                if (valid and i < vals.len) {
+                    try s.append(vals[i]);
+                } else {
+                    try s.appendNull();
+                }
             }
         },
         .int8_ => return addNarrowIntColumn(i8, allocator, df, col),
@@ -179,7 +183,11 @@ fn addColumn(allocator: Allocator, df: *dataframe.Dataframe, col: *const parquet
             const vals = col.int32s orelse return;
             for (0..col.num_rows) |i| {
                 const valid = if (col.validity) |v| v[i] else true;
-                try s.append(if (valid and i < vals.len) vals[i] else 0);
+                if (valid and i < vals.len) {
+                    try s.append(vals[i]);
+                } else {
+                    try s.appendNull();
+                }
             }
         },
         .int64_ => {
@@ -188,7 +196,11 @@ fn addColumn(allocator: Allocator, df: *dataframe.Dataframe, col: *const parquet
             const vals = col.int64s orelse return;
             for (0..col.num_rows) |i| {
                 const valid = if (col.validity) |v| v[i] else true;
-                try s.append(if (valid and i < vals.len) vals[i] else 0);
+                if (valid and i < vals.len) {
+                    try s.append(vals[i]);
+                } else {
+                    try s.appendNull();
+                }
             }
         },
         .float32_ => {
@@ -197,7 +209,11 @@ fn addColumn(allocator: Allocator, df: *dataframe.Dataframe, col: *const parquet
             const vals = col.floats orelse return;
             for (0..col.num_rows) |i| {
                 const valid = if (col.validity) |v| v[i] else true;
-                try s.append(if (valid and i < vals.len) vals[i] else 0);
+                if (valid and i < vals.len) {
+                    try s.append(vals[i]);
+                } else {
+                    try s.appendNull();
+                }
             }
         },
         .float64_ => {
@@ -206,7 +222,11 @@ fn addColumn(allocator: Allocator, df: *dataframe.Dataframe, col: *const parquet
             const vals = col.doubles orelse return;
             for (0..col.num_rows) |i| {
                 const valid = if (col.validity) |v| v[i] else true;
-                try s.append(if (valid and i < vals.len) vals[i] else 0);
+                if (valid and i < vals.len) {
+                    try s.append(vals[i]);
+                } else {
+                    try s.appendNull();
+                }
             }
         },
         .string => {
@@ -221,7 +241,7 @@ fn addColumn(allocator: Allocator, df: *dataframe.Dataframe, col: *const parquet
                 if (valid and i < vals.len) {
                     try s.append(try String.fromSlice(allocator, vals[i]));
                 } else {
-                    try s.append(try String.fromSlice(allocator, ""));
+                    try s.appendNull();
                 }
             }
         },
@@ -232,7 +252,11 @@ fn addColumn(allocator: Allocator, df: *dataframe.Dataframe, col: *const parquet
             const vals = col.int32s orelse return error.UnexpectedPhysicalType;
             for (0..col.num_rows) |i| {
                 const valid = if (col.validity) |v| v[i] else true;
-                try s.append(.{ .days = if (valid and i < vals.len) vals[i] else 0 });
+                if (valid and i < vals.len) {
+                    try s.append(.{ .days = vals[i] });
+                } else {
+                    try s.appendNull();
+                }
             }
         },
         .time_ => {
@@ -251,12 +275,20 @@ fn addColumn(allocator: Allocator, df: *dataframe.Dataframe, col: *const parquet
             if (col.int32s) |vals| { // TIME(MILLIS) is INT32-backed
                 for (0..col.num_rows) |i| {
                     const valid = if (col.validity) |v| v[i] else true;
-                    try s.append(.{ .value = if (valid and i < vals.len) vals[i] else 0, .unit = unit, .utc = utc });
+                    if (valid and i < vals.len) {
+                        try s.append(.{ .value = vals[i], .unit = unit, .utc = utc });
+                    } else {
+                        try s.appendNull();
+                    }
                 }
             } else if (col.int64s) |vals| {
                 for (0..col.num_rows) |i| {
                     const valid = if (col.validity) |v| v[i] else true;
-                    try s.append(.{ .value = if (valid and i < vals.len) vals[i] else 0, .unit = unit, .utc = utc });
+                    if (valid and i < vals.len) {
+                        try s.append(.{ .value = vals[i], .unit = unit, .utc = utc });
+                    } else {
+                        try s.appendNull();
+                    }
                 }
             } else return error.UnexpectedPhysicalType;
         },
@@ -273,7 +305,7 @@ fn addColumn(allocator: Allocator, df: *dataframe.Dataframe, col: *const parquet
                         const bytes_ptr: *const [12]u8 = vals[i][0..12];
                         try s.append(try Timestamp.fromInt96Bytes(bytes_ptr));
                     } else {
-                        try s.append(.{ .value = 0, .unit = .nanos, .utc = false, .origin = .int96 });
+                        try s.appendNull();
                     }
                 }
             } else {
@@ -288,7 +320,11 @@ fn addColumn(allocator: Allocator, df: *dataframe.Dataframe, col: *const parquet
                 const vals = col.int64s orelse return error.UnexpectedPhysicalType;
                 for (0..col.num_rows) |i| {
                     const valid = if (col.validity) |v| v[i] else true;
-                    try s.append(.{ .value = if (valid and i < vals.len) vals[i] else 0, .unit = unit, .utc = utc, .origin = .int64 });
+                    if (valid and i < vals.len) {
+                        try s.append(.{ .value = vals[i], .unit = unit, .utc = utc, .origin = .int64 });
+                    } else {
+                        try s.appendNull();
+                    }
                 }
             }
         },
@@ -310,12 +346,20 @@ fn addColumn(allocator: Allocator, df: *dataframe.Dataframe, col: *const parquet
             if (col.int32s) |vals| {
                 for (0..col.num_rows) |i| {
                     const valid = if (col.validity) |v| v[i] else true;
-                    try s.append(.{ .unscaled = if (valid and i < vals.len) @as(i256, vals[i]) else 0, .precision = precision, .scale = scale });
+                    if (valid and i < vals.len) {
+                        try s.append(.{ .unscaled = @as(i256, vals[i]), .precision = precision, .scale = scale });
+                    } else {
+                        try s.appendNull();
+                    }
                 }
             } else if (col.int64s) |vals| {
                 for (0..col.num_rows) |i| {
                     const valid = if (col.validity) |v| v[i] else true;
-                    try s.append(.{ .unscaled = if (valid and i < vals.len) @as(i256, vals[i]) else 0, .precision = precision, .scale = scale });
+                    if (valid and i < vals.len) {
+                        try s.append(.{ .unscaled = @as(i256, vals[i]), .precision = precision, .scale = scale });
+                    } else {
+                        try s.appendNull();
+                    }
                 }
             } else if (col.byte_arrays) |vals| {
                 // FLBA / BYTE_ARRAY: two's-complement big-endian unscaled.
@@ -324,7 +368,7 @@ fn addColumn(allocator: Allocator, df: *dataframe.Dataframe, col: *const parquet
                     if (valid and i < vals.len) {
                         try s.append(.{ .unscaled = try Decimal.fromBeBytes(vals[i]), .precision = precision, .scale = scale });
                     } else {
-                        try s.append(.{ .unscaled = 0, .precision = precision, .scale = scale });
+                        try s.appendNull();
                     }
                 }
             } else return error.UnexpectedPhysicalType;
@@ -345,7 +389,7 @@ fn addColumn(allocator: Allocator, df: *dataframe.Dataframe, col: *const parquet
                 if (valid and i < vals.len) {
                     try s.append(try Binary.fromSlice(allocator, vals[i]));
                 } else {
-                    try s.append(try Binary.fromSlice(allocator, ""));
+                    try s.appendNull();
                 }
             }
         },
@@ -359,10 +403,7 @@ fn addColumn(allocator: Allocator, df: *dataframe.Dataframe, col: *const parquet
                 if (valid and i < vals.len) {
                     try s.append(try FixedBytes.fromSlice(allocator, vals[i]));
                 } else {
-                    // Null-row placeholder: empty slice (width-mismatched).
-                    // Null fidelity is a Phase 10 concern; write would error
-                    // FixedLengthMismatch for these rows, which is acceptable.
-                    try s.append(try FixedBytes.fromSlice(allocator, ""));
+                    try s.appendNull();
                 }
             }
         },
@@ -377,7 +418,7 @@ fn addColumn(allocator: Allocator, df: *dataframe.Dataframe, col: *const parquet
                     const bytes_ptr: *const [16]u8 = vals[i][0..16];
                     try s.append(Uuid.fromBytes(bytes_ptr.*));
                 } else {
-                    try s.append(Uuid.fromBytes(.{0} ** 16));
+                    try s.appendNull();
                 }
             }
         },
@@ -392,7 +433,7 @@ fn addColumn(allocator: Allocator, df: *dataframe.Dataframe, col: *const parquet
                     const bytes_ptr: *const [12]u8 = vals[i][0..12];
                     try s.append(Interval.fromLeBytes(bytes_ptr));
                 } else {
-                    try s.append(.{ .months = 0, .days = 0, .millis = 0 });
+                    try s.appendNull();
                 }
             }
         },
@@ -407,7 +448,7 @@ fn addColumn(allocator: Allocator, df: *dataframe.Dataframe, col: *const parquet
                     const bytes_ptr: *const [2]u8 = vals[i][0..2];
                     try s.append(@bitCast(std.mem.readInt(u16, bytes_ptr, .little)));
                 } else {
-                    try s.append(0);
+                    try s.appendNull();
                 }
             }
         },
@@ -416,8 +457,7 @@ fn addColumn(allocator: Allocator, df: *dataframe.Dataframe, col: *const parquet
 }
 
 /// Fallback: preserve undecoded bytes + column metadata so the column can be
-/// re-emitted bit-faithfully. Mirrors the String arm's null handling (invalid
-/// rows become empty values — the adapter does not carry validity yet).
+/// re-emitted bit-faithfully. Invalid rows become real nulls (appendNull).
 fn addRawColumn(allocator: Allocator, df: *dataframe.Dataframe, col: *const parquet.ParquetColumn) !void {
     var s = try df.createSeries(Raw);
     try s.rename(col.name);
@@ -435,7 +475,7 @@ fn addRawColumn(allocator: Allocator, df: *dataframe.Dataframe, col: *const parq
         if (valid and i < vals.len) {
             try s.append(try Raw.fromSlice(allocator, vals[i]));
         } else {
-            try s.append(try Raw.fromSlice(allocator, ""));
+            try s.appendNull();
         }
     }
 }
@@ -481,6 +521,8 @@ pub fn fromDataframe(allocator: Allocator, df: *dataframe.Dataframe, opts: Adapt
 // Convert a BoxedSeries to ColumnData for Parquet writing. All scratch
 // allocations (slice arrays, numeric buffers) come from the passed arena
 // allocator; the arena owns them and frees them on DataframeColumns.deinit().
+// Phase 10b boundary: validity is not yet emitted — null slots are written as
+// their placeholder values (definition levels land in Phase 10b).
 fn boxedToColumnData(scratch: Allocator, boxed: *BoxedSeries, opts: AdapterWriteOptions) !ColumnData {
     return switch (boxed.*) {
         .int32 => |s| .{
@@ -855,8 +897,11 @@ fn addNarrowIntColumn(comptime T: type, allocator: Allocator, df: *dataframe.Dat
     const vals = col.int32s orelse return;
     for (0..col.num_rows) |i| {
         const valid = if (col.validity) |v| v[i] else true;
-        const val: T = if (valid and i < vals.len) @intCast(vals[i]) else 0;
-        try s.append(val);
+        if (valid and i < vals.len) {
+            try s.append(@intCast(vals[i]));
+        } else {
+            try s.appendNull();
+        }
     }
 }
 
@@ -870,7 +915,11 @@ fn addUintColumn(comptime U: type, comptime I: type, df: *dataframe.Dataframe, c
     const vals = source orelse return;
     for (0..col.num_rows) |i| {
         const valid = if (col.validity) |v| v[i] else true;
-        const val: U = if (valid and i < vals.len) @bitCast(vals[i]) else 0;
-        try s.append(val);
+        if (valid and i < vals.len) {
+            const val: U = @bitCast(vals[i]);
+            try s.append(val);
+        } else {
+            try s.appendNull();
+        }
     }
 }

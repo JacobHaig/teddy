@@ -55,10 +55,33 @@ test "json_reader: float values" {
 }
 
 test "json_reader: null values" {
+    // Phase 10a Unit B: JSON null now reads as a real null (was placeholder 0).
     const allocator = std.testing.allocator;
     var df = try json_reader.parse(allocator, "[{\"x\":1},{\"x\":null}]", .{});
     defer df.deinit();
     try std.testing.expectEqual(@as(usize, 2), df.height());
+
+    const x = df.getSeries("x") orelse return error.ColumnNotFound;
+    try std.testing.expect(x.* == .int64);
+    try std.testing.expect(!x.isNull(0));
+    try std.testing.expect(x.isNull(1));
+    try std.testing.expectEqual(@as(i64, 1), x.int64.values.items[0]);
+}
+
+test "json_reader: round-trip preserves null as bare null" {
+    // Phase 10a Unit B: null -> appendNull -> writes back as bare `null`.
+    const allocator = std.testing.allocator;
+    const json_writer = @import("json_writer.zig");
+    const input = "[{\"x\":1},{\"x\":null}]";
+    var df = try json_reader.parse(allocator, input, .{});
+    defer df.deinit();
+
+    const x = df.getSeries("x") orelse return error.ColumnNotFound;
+    try std.testing.expect(x.isNull(1));
+
+    const out = try json_writer.writeToString(allocator, df, .rows);
+    defer allocator.free(out);
+    try std.testing.expectEqualStrings(input, out);
 }
 
 test "json_reader: empty array" {

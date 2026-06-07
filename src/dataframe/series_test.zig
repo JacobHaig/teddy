@@ -1409,3 +1409,56 @@ test "json_writer: f16 column writes unquoted numbers" {
     try std.testing.expect(std.mem.indexOf(u8, output, ":1.5") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "\"1.5\"") == null);
 }
+
+test "nulls: indicesWhere never matches null rows" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.rename("x");
+    try s.append(0);
+    try s.appendNull(); // index 1: null
+    try s.append(5);
+
+    var boxed = s.toBoxedSeries();
+
+    // eq 0 matches index 0 only — null at index 1 must not match even though placeholder is 0
+    var idx_eq = try boxed.indicesWhere(i32, allocator, .eq, 0);
+    defer idx_eq.deinit(allocator);
+    try std.testing.expectEqualSlices(usize, &[_]usize{0}, idx_eq.items);
+
+    // neq 0 matches index 2 only — null matches NOTHING, not even neq
+    var idx_neq = try boxed.indicesWhere(i32, allocator, .neq, 0);
+    defer idx_neq.deinit(allocator);
+    try std.testing.expectEqualSlices(usize, &[_]usize{2}, idx_neq.items);
+
+    // lt 10 matches indices 0 and 2
+    var idx_lt = try boxed.indicesWhere(i32, allocator, .lt, 10);
+    defer idx_lt.deinit(allocator);
+    try std.testing.expectEqualSlices(usize, &[_]usize{ 0, 2 }, idx_lt.items);
+}
+
+test "nulls: applyInplace skips null slots" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.rename("x");
+    try s.append(1);
+    try s.appendNull(); // index 1: null with placeholder 0
+    try s.append(3);
+
+    const add_one = struct {
+        fn f(x: i32) i32 {
+            return x + 1;
+        }
+    }.f;
+
+    s.applyInplace(add_one);
+
+    // index 0: 1 -> 2
+    try std.testing.expectEqual(@as(i32, 2), s.values.items[0]);
+    // index 1: null slot — still null, placeholder still 0
+    try std.testing.expect(s.isNull(1));
+    try std.testing.expectEqual(@as(i32, 0), s.values.items[1]);
+    // index 2: 3 -> 4
+    try std.testing.expectEqual(@as(i32, 4), s.values.items[2]);
+}

@@ -1027,3 +1027,35 @@ test "adapter: Interval hand-built teddy-to-teddy round-trip" {
     try std.testing.expectEqual(@as(u32, 0), iv1.days);
     try std.testing.expectEqual(@as(u32, 1), iv1.millis);
 }
+
+test "adapter: multi_rowgroup OPTIONAL column reads nulls (Phase 10a Unit B)" {
+    // The "opt" column (int64, OPTIONAL) has nulls at rows 1,3,6. Before 10a
+    // the reader materialized those slots as 0; now validity[i]==false ->
+    // appendNull, so isNull reflects the def levels and non-null values are
+    // exact (10/30/50/60).
+    const allocator = std.testing.allocator;
+    const cwd = std.Io.Dir.cwd();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const file_data = try cwd.readFileAlloc(io, "data/multi_rowgroup.parquet", allocator, .unlimited);
+    defer allocator.free(file_data);
+
+    var result = try parquet.readParquet(allocator, file_data);
+    defer result.deinit();
+    var df = try adapter.toDataframe(allocator, &result);
+    defer df.deinit();
+
+    const opt = df.getSeries("opt") orelse return error.ColumnNotFound;
+    try std.testing.expect(opt.* == .int64);
+    try std.testing.expectEqual(@as(usize, 7), opt.len());
+
+    // isNull pattern {f,t,f,t,f,f,t}
+    const expected_null = [_]bool{ false, true, false, true, false, false, true };
+    for (expected_null, 0..) |want, i| {
+        try std.testing.expectEqual(want, opt.isNull(i));
+    }
+    // Non-null values are exact.
+    try std.testing.expectEqual(@as(i64, 10), opt.int64.values.items[0]);
+    try std.testing.expectEqual(@as(i64, 30), opt.int64.values.items[2]);
+    try std.testing.expectEqual(@as(i64, 50), opt.int64.values.items[4]);
+    try std.testing.expectEqual(@as(i64, 60), opt.int64.values.items[5]);
+}

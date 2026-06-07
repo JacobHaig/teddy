@@ -339,3 +339,75 @@ test "json_writer: round-trip multi-column columns" {
 
     try std.testing.expect(try df.compareDataframe(df2));
 }
+
+test "nulls: rows format writes bare null" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var icol = try series_mod.Series(i32).init(allocator);
+    try icol.rename("x");
+    try icol.append(1);
+    try icol.appendNull();
+    try df.addSeries(icol.toBoxedSeries());
+
+    var scol = try series_mod.Series(String).init(allocator);
+    try scol.rename("y");
+    const s_a = try String.fromSlice(allocator, "a");
+    try scol.append(s_a);
+    try scol.appendNull();
+    try df.addSeries(scol.toBoxedSeries());
+
+    const output = try json_writer.writeToString(allocator, df, .rows);
+    defer allocator.free(output);
+
+    try std.testing.expectEqualStrings("[{\"x\":1,\"y\":\"a\"},{\"x\":null,\"y\":null}]", output);
+}
+
+test "nulls: columns format writes bare null" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var icol = try series_mod.Series(i32).init(allocator);
+    try icol.rename("x");
+    try icol.append(1);
+    try icol.appendNull();
+    try df.addSeries(icol.toBoxedSeries());
+
+    var scol = try series_mod.Series(String).init(allocator);
+    try scol.rename("y");
+    const s_a = try String.fromSlice(allocator, "a");
+    try scol.append(s_a);
+    try scol.appendNull();
+    try df.addSeries(scol.toBoxedSeries());
+
+    const output = try json_writer.writeToString(allocator, df, .columns);
+    defer allocator.free(output);
+
+    try std.testing.expectEqualStrings("{\"x\":[1,null],\"y\":[\"a\",null]}", output);
+}
+
+test "nulls: ndjson format writes bare null" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var icol = try series_mod.Series(i32).init(allocator);
+    try icol.rename("x");
+    try icol.append(1);
+    try icol.appendNull();
+    try df.addSeries(icol.toBoxedSeries());
+
+    var scol = try series_mod.Series(String).init(allocator);
+    try scol.rename("y");
+    const s_a = try String.fromSlice(allocator, "a");
+    try scol.append(s_a);
+    try scol.appendNull();
+    try df.addSeries(scol.toBoxedSeries());
+
+    const output = try json_writer.writeToString(allocator, df, .ndjson);
+    defer allocator.free(output);
+
+    try std.testing.expectEqualStrings("{\"x\":1,\"y\":\"a\"}\n{\"x\":null,\"y\":null}", output);
+}

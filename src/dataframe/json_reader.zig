@@ -268,11 +268,12 @@ fn buildDataframe(allocator: Allocator, col_names: []const []const u8, all_value
                 var s = try Series(i64).init(allocator);
                 try s.rename(name);
                 for (values) |v| {
-                    try s.append(switch (v) {
-                        .integer => |n| n,
-                        .float => |f| @as(i64, @trunc(f)),
-                        else => 0,
-                    });
+                    switch (v) {
+                        .null => try s.appendNull(),
+                        .integer => |n| try s.append(n),
+                        .float => |f| try s.append(@as(i64, @trunc(f))),
+                        else => try s.append(0),
+                    }
                 }
                 try df.addSeries(s.toBoxedSeries());
             },
@@ -280,11 +281,12 @@ fn buildDataframe(allocator: Allocator, col_names: []const []const u8, all_value
                 var s = try Series(f64).init(allocator);
                 try s.rename(name);
                 for (values) |v| {
-                    try s.append(switch (v) {
-                        .float => |f| f,
-                        .integer => |n| @as(f64, @floatFromInt(n)),
-                        else => 0.0,
-                    });
+                    switch (v) {
+                        .null => try s.appendNull(),
+                        .float => |f| try s.append(f),
+                        .integer => |n| try s.append(@as(f64, @floatFromInt(n))),
+                        else => try s.append(0.0),
+                    }
                 }
                 try df.addSeries(s.toBoxedSeries());
             },
@@ -292,10 +294,11 @@ fn buildDataframe(allocator: Allocator, col_names: []const []const u8, all_value
                 var s = try Series(bool).init(allocator);
                 try s.rename(name);
                 for (values) |v| {
-                    try s.append(switch (v) {
-                        .boolean => |b| b,
-                        else => false,
-                    });
+                    switch (v) {
+                        .null => try s.appendNull(),
+                        .boolean => |b| try s.append(b),
+                        else => try s.append(false),
+                    }
                 }
                 try df.addSeries(s.toBoxedSeries());
             },
@@ -303,15 +306,11 @@ fn buildDataframe(allocator: Allocator, col_names: []const []const u8, all_value
                 var s = try Series(String).init(allocator);
                 try s.rename(name);
                 for (values) |v| {
-                    const slice: []const u8 = switch (v) {
-                        .string => |str| str,
-                        .integer => |n| blk: {
-                            _ = n;
-                            break :blk "";
-                        },
-                        else => "",
-                    };
-                    try s.append(try String.fromSlice(allocator, slice));
+                    switch (v) {
+                        .null => try s.appendNull(),
+                        .string => |str| try s.append(try String.fromSlice(allocator, str)),
+                        else => try s.append(try String.fromSlice(allocator, "")),
+                    }
                 }
                 try df.addSeries(s.toBoxedSeries());
             },

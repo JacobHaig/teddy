@@ -296,7 +296,11 @@ const Table = struct {
                     if (header) |h| try s.rename(h.toSlice());
                     for (data_start..height) |row_i| {
                         const raw = self.rows.items[row_i].items[col].text();
-                        try s.append(if (raw.len == 0) 0 else try std.fmt.parseInt(i64, raw, 10));
+                        if (raw.len == 0) {
+                            try s.appendNull();
+                        } else {
+                            try s.append(try std.fmt.parseInt(i64, raw, 10));
+                        }
                     }
                 },
                 .float64 => {
@@ -304,13 +308,19 @@ const Table = struct {
                     if (header) |h| try s.rename(h.toSlice());
                     for (data_start..height) |row_i| {
                         const raw = self.rows.items[row_i].items[col].text();
-                        try s.append(if (raw.len == 0) 0.0 else try std.fmt.parseFloat(f64, raw));
+                        if (raw.len == 0) {
+                            try s.appendNull();
+                        } else {
+                            try s.append(try std.fmt.parseFloat(f64, raw));
+                        }
                     }
                 },
                 .string => {
                     var s = try df.createSeries(String);
                     if (header) |h| try s.rename(h.toSlice());
                     for (data_start..height) |row_i| {
+                        // CSV cannot distinguish an empty string from a null cell,
+                        // so empty cells in String columns stay empty strings.
                         try s.append(try self.rows.items[row_i].items[col].createString(allocator));
                     }
                 },
@@ -546,7 +556,9 @@ test "parse: single column, single row" {
     try std.testing.expectEqual(@as(i64, 42), s.int64.values.items[0]);
 }
 
-test "parse: empty cells among numbers default to zero" {
+test "parse: empty cells among numbers become null" {
+    // Phase 10a Unit B: empty cells in numeric columns now read as nulls
+    // (previously defaulted to zero).
     const allocator = std.testing.allocator;
     const content = "key,val\na,10\nb,\nc,30\n";
     const df = try parse(allocator, content, .{});
@@ -555,8 +567,28 @@ test "parse: empty cells among numbers default to zero" {
     const s = df.getSeries("val") orelse return error.ColumnNotFound;
     try std.testing.expect(s.* == .int64);
     try std.testing.expectEqual(@as(i64, 10), s.int64.values.items[0]);
-    try std.testing.expectEqual(@as(i64, 0), s.int64.values.items[1]);
+    try std.testing.expect(!s.isNull(0));
+    try std.testing.expect(s.isNull(1));
     try std.testing.expectEqual(@as(i64, 30), s.int64.values.items[2]);
+    try std.testing.expect(!s.isNull(2));
+}
+
+test "parse: CSV round-trip preserves empty numeric cell as empty field" {
+    // Phase 10a Unit B: empty numeric cell -> null -> writes back as empty field.
+    const allocator = std.testing.allocator;
+    const csv_writer = @import("csv_writer.zig");
+    const content = "x,y\n1,a\n,b\n";
+    const df = try parse(allocator, content, .{});
+    defer df.deinit();
+
+    const x = df.getSeries("x") orelse return error.ColumnNotFound;
+    try std.testing.expect(x.* == .int64);
+    try std.testing.expect(!x.isNull(0));
+    try std.testing.expect(x.isNull(1));
+
+    const out = try csv_writer.writeToString(allocator, df, .{});
+    defer allocator.free(out);
+    try std.testing.expectEqualStrings(content, out);
 }
 
 test "parse: negative integers are detected" {

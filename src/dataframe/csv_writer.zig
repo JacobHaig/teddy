@@ -28,6 +28,7 @@ pub fn writeToString(allocator: Allocator, df: *Dataframe, options: WriteOptions
     for (0..h) |row| {
         for (0..w) |col| {
             if (col > 0) try buf.append(allocator, options.delimiter);
+            if (df.series.items[col].isNull(row)) continue; // null -> empty field
             var str = try df.series.items[col].asStringAt(row);
             defer str.deinit();
             try appendCsvField(&buf, allocator, str.toSlice(), options.delimiter);

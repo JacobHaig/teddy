@@ -4,7 +4,6 @@ const Allocator = std.mem.Allocator;
 const Dataframe = @import("dataframe.zig").Dataframe;
 const BoxedSeries = @import("boxed_series.zig").BoxedSeries;
 const Series = @import("series.zig").Series;
-const String = @import("strings.zig").String;
 const GroupByContext = @import("group.zig").GroupByContext;
 const hasMethod = @import("series.zig").hasMethod;
 
@@ -59,6 +58,9 @@ fn joinTyped(
     }
 
     for (right_key.values.items, 0..) |key, i| {
+        // SQL semantics: a null key matches nothing (not even another null) —
+        // it participates only as an unmatched row for right/outer joins.
+        if (right_key.isNull(i)) continue;
         const gop = try right_map.getOrPut(key);
         if (!gop.found_existing) {
             gop.value_ptr.* = std.ArrayList(usize).empty;
@@ -81,6 +83,13 @@ fn joinTyped(
 
     // Probe left keys against right map
     for (left_key.values.items, 0..) |key, left_idx| {
+        if (left_key.isNull(left_idx)) {
+            // Null left key: unmatched by definition (SQL NULL ≠ anything).
+            if (join_type == .left or join_type == .outer) {
+                try pairs.append(allocator, .{ .left = left_idx, .right = null });
+            }
+            continue;
+        }
         if (right_map.get(key)) |right_indices| {
             for (right_indices.items) |right_idx| {
                 try pairs.append(allocator, .{ .left = left_idx, .right = right_idx });
@@ -138,7 +147,9 @@ fn addJoinedColumn(
             for (pairs.items) |pair| {
                 const idx = if (is_left) pair.left else pair.right;
                 if (idx) |i| {
-                    if (comptime hasMethod(ValType, "clone")) {
+                    if (s.isNull(i)) {
+                        try new_series.appendNull();
+                    } else if (comptime hasMethod(ValType, "clone")) {
                         var cloned = try s.values.items[i].clone();
                         errdefer cloned.deinit();
                         try new_series.values.append(allocator, cloned);
@@ -146,17 +157,9 @@ fn addJoinedColumn(
                         try new_series.values.append(allocator, s.values.items[i]);
                     }
                 } else {
-                    // Null/unmatched row: synthesizes a placeholder (empty value
-                    // for owning types, 0/false for scalars) instead of a real
-                    // null — known null-fidelity gap, tracked as roadmap Phase 10.
-                    if (comptime hasMethod(ValType, "init")) {
-                        var empty = try ValType.init(allocator);
-                        errdefer empty.deinit();
-                        try new_series.values.append(allocator, empty);
-                    } else {
-                        const default_val: ValType = std.mem.zeroes(ValType);
-                        try new_series.values.append(allocator, default_val);
-                    }
+                    // Unmatched row: a real null (validity-tracked), not a
+                    // fabricated placeholder.
+                    try new_series.appendNull();
                 }
             }
 

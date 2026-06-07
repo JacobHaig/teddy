@@ -78,6 +78,11 @@ fn writeNdjson(buf: *std.ArrayList(u8), allocator: Allocator, df: *Dataframe) !v
 }
 
 fn appendJsonValue(buf: *std.ArrayList(u8), allocator: Allocator, series: *BoxedSeries, row: usize) !void {
+    if (series.isNull(row)) {
+        // JSON null is bare for every column type — never the quoted string "null".
+        try buf.appendSlice(allocator, "null");
+        return;
+    }
     if (isStringSeries(series)) {
         var str = try series.asStringAt(row);
         defer str.deinit();

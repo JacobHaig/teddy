@@ -160,3 +160,27 @@ test "csv_writer: no header option" {
 
     try std.testing.expectEqualStrings("42\n", output);
 }
+
+test "nulls: null cells write as empty fields" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var icol = try series_mod.Series(i32).init(allocator);
+    try icol.rename("x");
+    try icol.append(1);
+    try icol.appendNull();
+    try df.addSeries(icol.toBoxedSeries());
+
+    var scol = try series_mod.Series(String).init(allocator);
+    try scol.rename("y");
+    const s_a = try String.fromSlice(allocator, "a");
+    try scol.append(s_a);
+    try scol.appendNull();
+    try df.addSeries(scol.toBoxedSeries());
+
+    const output = try csv_writer.writeToString(allocator, df, .{});
+    defer allocator.free(output);
+
+    try std.testing.expectEqualStrings("x,y\n1,a\n,\n", output);
+}

@@ -349,7 +349,8 @@ pub fn Series(comptime T: type) type {
         }
 
         pub fn applyInplace(self: *Self, comptime func: fn (x: T) T) void {
-            for (self.values.items) |*value| {
+            for (self.values.items, 0..) |*value, i| {
+                if (self.isNull(i)) continue; // placeholders stay untouched
                 value.* = func(value.*);
             }
         }

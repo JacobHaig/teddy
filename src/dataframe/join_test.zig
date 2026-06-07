@@ -151,10 +151,10 @@ test "join: Raw value column is deep-copied (no double-free)" {
     try std.testing.expect(joined_raw.values.items[0].bytes.ptr != payload.values.items[0].bytes.ptr);
 }
 
-test "join: Date value column compiles and unmatched row gets epoch (days=0)" {
+test "join: Date value column compiles and unmatched row is null" {
     // Left df: key=i32, right df: key=i32 + when=Date.
     // Left join on key — row k=2 (left) has no right match, so the right's
-    // Date cell must be synthesized as zeroes(Date) = {.days=0} = epoch.
+    // Date cell must be a real null (not a fabricated epoch placeholder).
     const Date = @import("date.zig").Date;
     const allocator = std.testing.allocator;
 
@@ -189,6 +189,135 @@ test "join: Date value column compiles and unmatched row gets epoch (days=0)" {
     try std.testing.expectEqual(@as(u8, 1), c0.month);
     try std.testing.expectEqual(@as(u8, 1), c0.day);
 
-    // Row 1 (k=2): no right match → synthesized epoch (days=0)
-    try std.testing.expectEqual(@as(i32, 0), when_s.values.items[1].days);
+    // Row 1 (k=2): no right match → real null (not epoch placeholder)
+    try std.testing.expect(when_s.isNull(1));
+}
+
+test "join: null keys never match" {
+    // left k={1, null}, right k={null, 1} v={100, 200}
+    // INNER join: only k=1 matches; the two nulls do NOT pair.
+    const allocator = std.testing.allocator;
+
+    var left = try Dataframe.init(allocator);
+    defer left.deinit();
+    var lk = try left.createSeries(i32);
+    try lk.rename("k");
+    try lk.append(1);
+    try lk.appendNull();
+
+    var right = try Dataframe.init(allocator);
+    defer right.deinit();
+    var rk = try right.createSeries(i32);
+    try rk.rename("k");
+    try rk.appendNull();
+    try rk.append(1);
+    var v = try right.createSeries(i64);
+    try v.rename("v");
+    try v.append(100);
+    try v.append(200);
+
+    var result = try join(allocator, left, right, "k", .inner);
+    defer result.deinit();
+
+    // Only k=1 matches → height 1
+    try std.testing.expectEqual(@as(usize, 1), result.height());
+    const v_col = result.getSeries("v") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(i64, 200), v_col.int64.values.items[0]);
+}
+
+test "join: null key kept as unmatched in left join" {
+    // left k={1, null} name={"a","b"}, right k={1} v={10}
+    // LEFT join → height 2; null-key row has v isNull; name "b" survives.
+    const allocator = std.testing.allocator;
+
+    var left = try Dataframe.init(allocator);
+    defer left.deinit();
+    var lk = try left.createSeries(i32);
+    try lk.rename("k");
+    try lk.append(1);
+    try lk.appendNull();
+    var lname = try left.createSeries(String);
+    try lname.rename("name");
+    try lname.tryAppend("a");
+    try lname.tryAppend("b");
+
+    var right = try Dataframe.init(allocator);
+    defer right.deinit();
+    var rk = try right.createSeries(i32);
+    try rk.rename("k");
+    try rk.append(1);
+    var rv = try right.createSeries(i64);
+    try rv.rename("v");
+    try rv.append(10);
+
+    var result = try join(allocator, left, right, "k", .left);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), result.height());
+
+    // Row 1: null-key row — v must be null
+    const v_col = result.getSeries("v") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(v_col.int64.isNull(1));
+
+    // name "b" must survive in the result
+    const name_col = result.getSeries("name") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("b", name_col.string.values.items[1].toSlice());
+}
+
+test "join: null never matches placeholder zero" {
+    // left k={null}, right k={0} v={7}
+    // INNER join → height 0 (null must not match the 0 placeholder)
+    const allocator = std.testing.allocator;
+
+    var left = try Dataframe.init(allocator);
+    defer left.deinit();
+    var lk = try left.createSeries(i32);
+    try lk.rename("k");
+    try lk.appendNull();
+
+    var right = try Dataframe.init(allocator);
+    defer right.deinit();
+    var rk = try right.createSeries(i32);
+    try rk.rename("k");
+    try rk.append(0);
+    var rv = try right.createSeries(i64);
+    try rv.rename("v");
+    try rv.append(7);
+
+    var result = try join(allocator, left, right, "k", .inner);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), result.height());
+}
+
+test "join: matched row with null value cell stays null" {
+    // left k={1,2}, right k={1,2} v={10, null}
+    // INNER join → v[0]==10, v[1] isNull
+    const allocator = std.testing.allocator;
+
+    var left = try Dataframe.init(allocator);
+    defer left.deinit();
+    var lk = try left.createSeries(i32);
+    try lk.rename("k");
+    try lk.append(1);
+    try lk.append(2);
+
+    var right = try Dataframe.init(allocator);
+    defer right.deinit();
+    var rk = try right.createSeries(i32);
+    try rk.rename("k");
+    try rk.append(1);
+    try rk.append(2);
+    var rv = try right.createSeries(i64);
+    try rv.rename("v");
+    try rv.append(10);
+    try rv.appendNull();
+
+    var result = try join(allocator, left, right, "k", .inner);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), result.height());
+    const v_col = result.getSeries("v") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(i64, 10), v_col.int64.values.items[0]);
+    try std.testing.expect(v_col.int64.isNull(1));
 }
