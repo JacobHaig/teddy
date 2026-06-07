@@ -35,9 +35,13 @@ Python↔Zig regression framework, Phase 13 nested write.
 **Why:** owner wants the codebase "up to snuff" — remove template cruft, finish
 half-implemented IO, add validation.
 
-**How to apply:** work one phase at a time. As of 2026-06-05 (after 6d-2a.0)
-the review cadence changed: Claude commits each slice on green tests WITHOUT a
-per-slice user gate; the user reviews in larger sections afterwards. Keep
-commits per-slice and well-described so bulk review stays easy. Pushing to
-origin still requires an explicit user request. Update the ⬜/✅ markers in
-docs/cleanup-roadmap.md as phases land.
+**How to apply:** work one phase at a time. Commit/review/push rules
+(clarified 2026-06-07 after Claude committed 6d-2b ahead of a requested
+review):
+- DEFAULT: commit freely on green tests — commits are version-control
+  checkpoints, no user gate needed. Keep them per-slice and well-described.
+- EXCEPTION: if the user says they want to review ("then I'll review",
+  "before I review", etc.), STOP BEFORE COMMITTING — leave the work in the
+  working tree until they approve.
+- PUSH: only ever on an explicit user request.
+Update the ⬜/✅ markers in docs/cleanup-roadmap.md as phases land.
