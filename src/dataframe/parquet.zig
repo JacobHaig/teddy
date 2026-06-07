@@ -518,11 +518,36 @@ pub fn fromDataframe(allocator: Allocator, df: *dataframe.Dataframe, opts: Adapt
     return .{ .columns = cols, .arena = arena };
 }
 
+/// True when index `i` of a series capture is null. Reads the validity bitmap
+/// directly (the by-value union capture is const, so the *Self isNull method
+/// is not callable on it).
+fn capIsNull(s: anytype, i: usize) bool {
+    if (s.validity) |v| return !v.items[i];
+    return false;
+}
+
+/// Index of the first non-null value in `s`, or null if the series is empty or
+/// all-null. Used by first-value-wins arms (time/timestamp/decimal/fixed_bytes)
+/// so a null PLACEHOLDER at index 0 — zeroed (unit=.millis, precision=0) or an
+/// empty FixedBytes — cannot hijack the column's unit/utc/precision/scale/width.
+fn firstValid(s: anytype) ?usize {
+    for (0..s.values.items.len) |i| {
+        if (!capIsNull(s, i)) return i;
+    }
+    return null;
+}
+
 // Convert a BoxedSeries to ColumnData for Parquet writing. All scratch
 // allocations (slice arrays, numeric buffers) come from the passed arena
 // allocator; the arena owns them and frees them on DataframeColumns.deinit().
-// Phase 10b boundary: validity is not yet emitted — null slots are written as
-// their placeholder values (definition levels land in Phase 10b).
+// Validity flows through: each arm passes `s.validity` items as the ColumnData
+// `validity` (borrowed — the Series outlives the write, same lifetime contract
+// as the borrowed byte slices). When validity is present the column writes as
+// OPTIONAL with definition levels and only non-null values are encoded; the
+// scratch-buffer arms still build a full-length buffer (null placeholders emit
+// a harmless dummy entry that writeColumn drops), so first-value-wins metadata
+// is derived from the first NON-NULL value (firstValid) to avoid placeholder
+// hijack.
 fn boxedToColumnData(scratch: Allocator, boxed: *BoxedSeries, opts: AdapterWriteOptions) !ColumnData {
     return switch (boxed.*) {
         .int32 => |s| .{
@@ -530,24 +555,28 @@ fn boxedToColumnData(scratch: Allocator, boxed: *BoxedSeries, opts: AdapterWrite
             .physical_type = .int32,
             .int32s = s.values.items,
             .num_values = s.values.items.len,
+            .validity = if (s.validity) |v| v.items else null,
         },
         .int64 => |s| .{
             .name = s.name.toSlice(),
             .physical_type = .int64,
             .int64s = s.values.items,
             .num_values = s.values.items.len,
+            .validity = if (s.validity) |v| v.items else null,
         },
         .float32 => |s| .{
             .name = s.name.toSlice(),
             .physical_type = .float,
             .floats = s.values.items,
             .num_values = s.values.items.len,
+            .validity = if (s.validity) |v| v.items else null,
         },
         .float64 => |s| .{
             .name = s.name.toSlice(),
             .physical_type = .double,
             .doubles = s.values.items,
             .num_values = s.values.items.len,
+            .validity = if (s.validity) |v| v.items else null,
         },
         .float16 => |s| blk: {
             const n = s.values.items.len;
@@ -564,6 +593,7 @@ fn boxedToColumnData(scratch: Allocator, boxed: *BoxedSeries, opts: AdapterWrite
                 .logical_type = .float16,
                 .byte_arrays = slices,
                 .num_values = n,
+                .validity = if (s.validity) |v| v.items else null,
             };
         },
         .bool => |s| .{
@@ -571,6 +601,7 @@ fn boxedToColumnData(scratch: Allocator, boxed: *BoxedSeries, opts: AdapterWrite
             .physical_type = .boolean,
             .booleans = s.values.items,
             .num_values = s.values.items.len,
+            .validity = if (s.validity) |v| v.items else null,
         },
         .string => |s| blk: {
             // Convert String values to []const u8 slices; arena owns the array.
@@ -584,6 +615,7 @@ fn boxedToColumnData(scratch: Allocator, boxed: *BoxedSeries, opts: AdapterWrite
                 .converted_type = .utf8,
                 .byte_arrays = slices,
                 .num_values = s.values.items.len,
+                .validity = if (s.validity) |v| v.items else null,
             };
         },
         .raw => |s| blk: {
@@ -600,6 +632,7 @@ fn boxedToColumnData(scratch: Allocator, boxed: *BoxedSeries, opts: AdapterWrite
                 .type_length = s.meta.type_length,
                 .byte_arrays = slices,
                 .num_values = s.values.items.len,
+                .validity = if (s.validity) |v| v.items else null,
             };
         },
         .isize => |s| blk: {
@@ -656,6 +689,7 @@ fn boxedToColumnData(scratch: Allocator, boxed: *BoxedSeries, opts: AdapterWrite
                 .logical_type = .date,
                 .int32s = days,
                 .num_values = s.values.items.len,
+                .validity = if (s.validity) |v| v.items else null,
             };
         },
         .time => |s| blk: {
@@ -663,17 +697,24 @@ fn boxedToColumnData(scratch: Allocator, boxed: *BoxedSeries, opts: AdapterWrite
             // TIME(MILLIS) is INT32-backed; micros/nanos are INT64. Legacy
             // converted_type exists only for millis/micros.
             // Column metadata contract (first-value-wins): unit/utc come from
-            // values[0] — uniform by construction when read from parquet. For
-            // hand-built mixed columns: values that re-express losslessly in
-            // values[0]'s unit are silently normalized; precision loss errors
-            // (LossyTimeUnit); a mixed utc flag is silently coerced to
-            // values[0]'s. Revisit if hand-built mixing becomes a use case.
-            const unit: parquet.TimeUnit = if (n > 0) s.values.items[0].unit else .millis;
-            const utc: bool = if (n > 0) s.values.items[0].utc else true;
+            // the first NON-NULL value (firstValid) — a null placeholder must
+            // not hijack the unit. Uniform by construction when read from
+            // parquet. For hand-built mixed columns: values that re-express
+            // losslessly in that unit are silently normalized; precision loss
+            // errors (LossyTimeUnit); a mixed utc flag is silently coerced.
+            // Null slots emit a dummy 0 (writeColumn drops it via def levels).
+            const validity = if (s.validity) |v| v.items else null;
+            const fv = firstValid(s);
+            const unit: parquet.TimeUnit = if (fv) |idx| s.values.items[idx].unit else .millis;
+            const utc: bool = if (fv) |idx| s.values.items[idx].utc else true;
             const lt: parquet.LogicalType = .{ .time = .{ .is_adjusted_to_utc = utc, .unit = unit } };
             if (unit == .millis) {
                 const buf = try scratch.alloc(i32, n);
                 for (s.values.items, 0..) |t, j| {
+                    if (capIsNull(s, j)) {
+                        buf[j] = 0;
+                        continue;
+                    }
                     const nanos = t.toNanos();
                     const per: i128 = 1_000_000;
                     if (@rem(nanos, per) != 0) return error.LossyTimeUnit;
@@ -686,11 +727,16 @@ fn boxedToColumnData(scratch: Allocator, boxed: *BoxedSeries, opts: AdapterWrite
                     .logical_type = lt,
                     .int32s = buf,
                     .num_values = n,
+                    .validity = validity,
                 };
             }
             const buf = try scratch.alloc(i64, n);
             const per: i128 = if (unit == .micros) 1_000 else 1;
             for (s.values.items, 0..) |t, j| {
+                if (capIsNull(s, j)) {
+                    buf[j] = 0;
+                    continue;
+                }
                 const nanos = t.toNanos();
                 if (@rem(nanos, per) != 0) return error.LossyTimeUnit;
                 buf[j] = std.math.cast(i64, @divTrunc(nanos, per)) orelse return error.Overflow;
@@ -702,18 +748,24 @@ fn boxedToColumnData(scratch: Allocator, boxed: *BoxedSeries, opts: AdapterWrite
                 .logical_type = lt,
                 .int64s = buf,
                 .num_values = n,
+                .validity = validity,
             };
         },
         .timestamp => |s| blk: {
             const n = s.values.items.len;
-            // Same first-value-wins unit/utc contract as the .time arm above.
-            const unit: parquet.TimeUnit = if (n > 0) s.values.items[0].unit else .millis;
-            const utc: bool = if (n > 0) s.values.items[0].utc else true;
-            // INT96 re-emit: opt-in AND every value must carry int96 origin —
-            // any non-int96 value (or an empty column) forces the modern
-            // INT64 path.
-            var all_int96 = n > 0;
-            for (s.values.items) |t| {
+            // Same first-value-wins unit/utc contract as the .time arm: derive
+            // from the first NON-NULL value so a zeroed placeholder (unit=.millis)
+            // at index 0 cannot hijack the column unit. Null slots emit a dummy 0.
+            const validity = if (s.validity) |v| v.items else null;
+            const fv = firstValid(s);
+            const unit: parquet.TimeUnit = if (fv) |idx| s.values.items[idx].unit else .millis;
+            const utc: bool = if (fv) |idx| s.values.items[idx].utc else true;
+            // INT96 re-emit: opt-in AND every NON-NULL value must carry int96
+            // origin — any non-int96 value (or an all-null/empty column) forces
+            // the modern INT64 path. Null placeholders are ignored here.
+            var all_int96 = fv != null;
+            for (s.values.items, 0..) |t, j| {
+                if (capIsNull(s, j)) continue;
                 if (t.origin != .int96) {
                     all_int96 = false;
                     break;
@@ -723,8 +775,12 @@ fn boxedToColumnData(scratch: Allocator, boxed: *BoxedSeries, opts: AdapterWrite
                 const slices = try scratch.alloc([]const u8, n);
                 for (s.values.items, 0..) |t, j| {
                     const bytes = try scratch.alloc(u8, 12);
-                    const encoded = try t.toInt96Bytes();
-                    @memcpy(bytes, &encoded);
+                    if (capIsNull(s, j)) {
+                        @memset(bytes, 0);
+                    } else {
+                        const encoded = try t.toInt96Bytes();
+                        @memcpy(bytes, &encoded);
+                    }
                     slices[j] = bytes;
                 }
                 break :blk .{
@@ -732,6 +788,7 @@ fn boxedToColumnData(scratch: Allocator, boxed: *BoxedSeries, opts: AdapterWrite
                     .physical_type = .int96,
                     .byte_arrays = slices,
                     .num_values = n,
+                    .validity = validity,
                 };
             }
             // Modern default: INT64 + TIMESTAMP(unit, utc); legacy converted
@@ -743,6 +800,10 @@ fn boxedToColumnData(scratch: Allocator, boxed: *BoxedSeries, opts: AdapterWrite
                 .nanos => 1,
             };
             for (s.values.items, 0..) |t, j| {
+                if (capIsNull(s, j)) {
+                    buf[j] = 0;
+                    continue;
+                }
                 const nanos = t.toNanos();
                 if (@rem(nanos, per) != 0) return error.LossyTimeUnit;
                 buf[j] = std.math.cast(i64, @divTrunc(nanos, per)) orelse return error.Overflow;
@@ -758,6 +819,7 @@ fn boxedToColumnData(scratch: Allocator, boxed: *BoxedSeries, opts: AdapterWrite
                 .logical_type = .{ .timestamp = .{ .is_adjusted_to_utc = utc, .unit = unit } },
                 .int64s = buf,
                 .num_values = n,
+                .validity = validity,
             };
         },
         .binary => |s| blk: {
@@ -775,13 +837,18 @@ fn boxedToColumnData(scratch: Allocator, boxed: *BoxedSeries, opts: AdapterWrite
                 .logical_type = s.meta.logical_type,
                 .byte_arrays = slices,
                 .num_values = s.values.items.len,
+                .validity = if (s.validity) |v| v.items else null,
             };
         },
         .fixed_bytes => |s| blk: {
             const n = s.values.items.len;
-            // Width: column meta wins; else derive from the first value.
+            // Width: column meta wins; else derive from the FIRST NON-NULL value
+            // (a null placeholder is an empty FixedBytes — deriving width from it
+            // would yield 0 → InvalidTypeLength). Null slots keep their empty
+            // placeholder slice; writeColumn skips them before width validation.
+            const fv = firstValid(s);
             const width: i32 = s.meta.width orelse
-                (if (n > 0) std.math.cast(i32, s.values.items[0].bytes.len) orelse return error.InvalidTypeLength else return error.MissingTypeLength);
+                (if (fv) |idx| std.math.cast(i32, s.values.items[idx].bytes.len) orelse return error.InvalidTypeLength else return error.MissingTypeLength);
             const slices = try scratch.alloc([]const u8, n);
             for (s.values.items, 0..) |*fb, j| {
                 slices[j] = fb.toSlice();
@@ -792,19 +859,27 @@ fn boxedToColumnData(scratch: Allocator, boxed: *BoxedSeries, opts: AdapterWrite
                 .type_length = width,
                 .byte_arrays = slices,
                 .num_values = n,
+                .validity = if (s.validity) |v| v.items else null,
             };
         },
         .decimal => |s| blk: {
             const n = s.values.items.len;
-            // First-value-wins precision/scale contract (same convention as
-            // the .time arm); mixed precision/scale in a hand-built column is
-            // not supported and writes the first value's parameters.
-            const precision: u8 = if (n > 0) s.values.items[0].precision else 38;
-            const scale: i8 = if (n > 0) s.values.items[0].scale else 0;
+            // First-value-wins precision/scale contract, taken from the first
+            // NON-NULL value (a zeroed placeholder has precision=0/scale=0 and
+            // would mis-select the physical path). Null slots emit a dummy 0
+            // entry; writeColumn drops them.
+            const validity = if (s.validity) |v| v.items else null;
+            const fv = firstValid(s);
+            const precision: u8 = if (fv) |idx| s.values.items[idx].precision else 38;
+            const scale: i8 = if (fv) |idx| s.values.items[idx].scale else 0;
             const lt: parquet.LogicalType = .{ .decimal = .{ .scale = @as(i32, scale), .precision = @as(i32, precision) } };
             if (precision <= 9) {
                 const buf = try scratch.alloc(i32, n);
                 for (s.values.items, 0..) |d, j| {
+                    if (capIsNull(s, j)) {
+                        buf[j] = 0;
+                        continue;
+                    }
                     buf[j] = std.math.cast(i32, d.unscaled) orelse return error.DecimalOverflow;
                 }
                 break :blk .{
@@ -816,10 +891,15 @@ fn boxedToColumnData(scratch: Allocator, boxed: *BoxedSeries, opts: AdapterWrite
                     .precision = @as(i32, precision),
                     .int32s = buf,
                     .num_values = n,
+                    .validity = validity,
                 };
             } else if (precision <= 18) {
                 const buf = try scratch.alloc(i64, n);
                 for (s.values.items, 0..) |d, j| {
+                    if (capIsNull(s, j)) {
+                        buf[j] = 0;
+                        continue;
+                    }
                     buf[j] = std.math.cast(i64, d.unscaled) orelse return error.DecimalOverflow;
                 }
                 break :blk .{
@@ -831,13 +911,18 @@ fn boxedToColumnData(scratch: Allocator, boxed: *BoxedSeries, opts: AdapterWrite
                     .precision = @as(i32, precision),
                     .int64s = buf,
                     .num_values = n,
+                    .validity = validity,
                 };
             }
             const width = Decimal.minBytesForPrecision(precision);
             const slices = try scratch.alloc([]const u8, n);
             for (s.values.items, 0..) |d, j| {
                 const bytes = try scratch.alloc(u8, width);
-                try Decimal.toBeBytes(d.unscaled, bytes);
+                if (capIsNull(s, j)) {
+                    @memset(bytes, 0);
+                } else {
+                    try Decimal.toBeBytes(d.unscaled, bytes);
+                }
                 slices[j] = bytes;
             }
             break :blk .{
@@ -850,6 +935,7 @@ fn boxedToColumnData(scratch: Allocator, boxed: *BoxedSeries, opts: AdapterWrite
                 .precision = @as(i32, precision),
                 .byte_arrays = slices,
                 .num_values = n,
+                .validity = validity,
             };
         },
         .uuid => |s| blk: {
@@ -867,6 +953,7 @@ fn boxedToColumnData(scratch: Allocator, boxed: *BoxedSeries, opts: AdapterWrite
                 .logical_type = .uuid,
                 .byte_arrays = slices,
                 .num_values = n,
+                .validity = if (s.validity) |v| v.items else null,
             };
         },
         .interval => |s| blk: {
@@ -885,6 +972,7 @@ fn boxedToColumnData(scratch: Allocator, boxed: *BoxedSeries, opts: AdapterWrite
                 .converted_type = .interval,
                 .byte_arrays = slices,
                 .num_values = n,
+                .validity = if (s.validity) |v| v.items else null,
             };
         },
     };

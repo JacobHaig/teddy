@@ -52,7 +52,10 @@ pub fn writeParquet(allocator: Allocator, columns: []const ColumnData, options: 
         schema[i + 1] = .{
             .type_ = col.physical_type,
             .type_length = col.type_length,
-            .repetition_type = .required,
+            // OPTIONAL exactly when def levels are written (validity present);
+            // the reader gates def-level reads on max_def_level > 0, which is
+            // derived from repetition_type == .optional in resolveSchema.
+            .repetition_type = if (col.validity != null) .optional else .required,
             .name = col.name,
             .converted_type = col.converted_type,
             .scale = col.scale,
@@ -306,6 +309,105 @@ test "writeParquet: INT96 value width mismatch errors" {
     const vals = [_][]const u8{&v};
     const cols = [_]ColumnData{.{ .name = "t", .physical_type = .int96, .byte_arrays = &vals, .num_values = 1 }};
     try std.testing.expectError(error.FixedLengthMismatch, writeParquet(allocator, &cols, .{}));
+}
+
+test "writeParquet: optional int64 column with nulls round-trips" {
+    const allocator = std.testing.allocator;
+    // Values buffer holds a placeholder at the null slot; validity marks it.
+    const vals = [_]i64{ 10, 0, 30 };
+    const valid = [_]bool{ true, false, true };
+    const cols = [_]ColumnData{.{
+        .name = "x",
+        .physical_type = .int64,
+        .int64s = &vals,
+        .num_values = 3,
+        .validity = &valid,
+    }};
+    const output = try writeParquet(allocator, &cols, .{});
+    defer allocator.free(output);
+
+    var result = try reader_mod.readParquet(allocator, output);
+    defer result.deinit();
+    try std.testing.expectEqual(@as(usize, 3), result.num_rows);
+    const col = result.columns[0];
+    try std.testing.expect(col.validity != null);
+    try std.testing.expectEqual(true, col.validity.?[0]);
+    try std.testing.expectEqual(false, col.validity.?[1]);
+    try std.testing.expectEqual(true, col.validity.?[2]);
+    // Reader re-expands to full row count (placeholder at the null slot).
+    try std.testing.expectEqual(@as(usize, 3), col.int64s.?.len);
+    try std.testing.expectEqual(@as(i64, 10), col.int64s.?[0]);
+    try std.testing.expectEqual(@as(i64, 30), col.int64s.?[2]);
+}
+
+test "writeParquet: optional column round-trips with snappy compression" {
+    const allocator = std.testing.allocator;
+    const vals = [_]i32{ 1, 0, 0, 4 };
+    const valid = [_]bool{ true, false, false, true };
+    const cols = [_]ColumnData{.{
+        .name = "v",
+        .physical_type = .int32,
+        .int32s = &vals,
+        .num_values = 4,
+        .validity = &valid,
+    }};
+    const output = try writeParquet(allocator, &cols, .{ .compression = .snappy });
+    defer allocator.free(output);
+
+    var result = try reader_mod.readParquet(allocator, output);
+    defer result.deinit();
+    const col = result.columns[0];
+    try std.testing.expect(col.validity != null);
+    try std.testing.expectEqualSlices(bool, &valid, col.validity.?);
+    try std.testing.expectEqual(@as(usize, 4), col.int32s.?.len);
+    try std.testing.expectEqual(@as(i32, 1), col.int32s.?[0]);
+    try std.testing.expectEqual(@as(i32, 4), col.int32s.?[3]);
+}
+
+test "writeParquet: optional FLBA with a null placeholder does not trip width check" {
+    const allocator = std.testing.allocator;
+    // Null slot is an empty slice — would fail FixedLengthMismatch if not skipped.
+    const vals = [_][]const u8{ "abcd", "", "efgh" };
+    const valid = [_]bool{ true, false, true };
+    const cols = [_]ColumnData{.{
+        .name = "fb",
+        .physical_type = .fixed_len_byte_array,
+        .type_length = 4,
+        .byte_arrays = &vals,
+        .num_values = 3,
+        .validity = &valid,
+    }};
+    const output = try writeParquet(allocator, &cols, .{});
+    defer allocator.free(output);
+
+    var result = try reader_mod.readParquet(allocator, output);
+    defer result.deinit();
+    const col = result.columns[0];
+    try std.testing.expectEqualSlices(bool, &valid, col.validity.?);
+    try std.testing.expectEqual(@as(usize, 3), col.byte_arrays.?.len);
+    try std.testing.expectEqualStrings("abcd", col.byte_arrays.?[0]);
+    try std.testing.expectEqualStrings("efgh", col.byte_arrays.?[2]);
+}
+
+test "writeParquet: required column (no validity) byte layout is unchanged" {
+    const allocator = std.testing.allocator;
+    const vals = [_]i32{ 10, 20, 30 };
+    const required = [_]ColumnData{.{ .name = "x", .physical_type = .int32, .int32s = &vals, .num_values = 3 }};
+    const opt_valid = [_]bool{ true, true, true };
+    const optional = [_]ColumnData{.{ .name = "x", .physical_type = .int32, .int32s = &vals, .num_values = 3, .validity = &opt_valid }};
+
+    const req_out = try writeParquet(allocator, &required, .{});
+    defer allocator.free(req_out);
+    const opt_out = try writeParquet(allocator, &optional, .{});
+    defer allocator.free(opt_out);
+
+    // Optional adds the def-level section + OPTIONAL schema bit, so it must be
+    // strictly larger; the required path stays byte-for-byte as before.
+    try std.testing.expect(opt_out.len > req_out.len);
+
+    var result = try reader_mod.readParquet(allocator, req_out);
+    defer result.deinit();
+    try std.testing.expect(result.columns[0].validity == null);
 }
 
 test "writeParquet: logical_type lands in the schema and reads back" {

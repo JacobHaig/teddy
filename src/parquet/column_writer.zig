@@ -3,7 +3,9 @@ const Allocator = std.mem.Allocator;
 const types = @import("types.zig");
 const metadata = @import("metadata.zig");
 const ThriftWriter = @import("thrift_writer.zig").ThriftWriter;
-const PlainEncoder = @import("encoding_writer.zig").PlainEncoder;
+const encoding_writer = @import("encoding_writer.zig");
+const PlainEncoder = encoding_writer.PlainEncoder;
+const encodeRleLevels = encoding_writer.encodeRleLevels;
 const snappy = @import("snappy.zig");
 
 // ============================================================
@@ -38,7 +40,18 @@ pub const ColumnData = struct {
     byte_arrays: ?[]const []const u8 = null,
     booleans: ?[]const bool = null,
     num_values: usize = 0,
+    /// Optional validity bitmap (true = present, false = null), one entry per
+    /// row. When non-null the column is OPTIONAL: the page gets a definition-
+    /// level section and only present values are encoded. Same convention as
+    /// ParquetColumn.validity and Series.validity. Length must equal num_values.
+    validity: ?[]const bool = null,
 };
+
+/// Index i is present (true) when there is no validity bitmap or validity[i].
+inline fn isValid(col: ColumnData, i: usize) bool {
+    if (col.validity) |v| return v[i];
+    return true;
+}
 
 /// Write a single column as a complete Parquet column chunk (page header + page data).
 pub fn writeColumn(allocator: Allocator, col: ColumnData, codec: types.CompressionCodec) !ColumnWriteResult {
@@ -46,35 +59,65 @@ pub fn writeColumn(allocator: Allocator, col: ColumnData, codec: types.Compressi
     var encoder = PlainEncoder.init(allocator);
     defer encoder.deinit();
 
+    // For OPTIONAL columns, null indices are SKIPPED before any width
+    // validation: null placeholders (e.g. empty FLBA/INT96 slices) must not
+    // trip FixedLengthMismatch. Only present values are PLAIN-encoded.
     switch (col.physical_type) {
         .int32 => {
             if (col.int32s) |vals| {
-                for (vals) |v| try encoder.writeInt32(v);
+                for (vals, 0..) |v, i| {
+                    if (!isValid(col, i)) continue;
+                    try encoder.writeInt32(v);
+                }
             }
         },
         .int64 => {
             if (col.int64s) |vals| {
-                for (vals) |v| try encoder.writeInt64(v);
+                for (vals, 0..) |v, i| {
+                    if (!isValid(col, i)) continue;
+                    try encoder.writeInt64(v);
+                }
             }
         },
         .float => {
             if (col.floats) |vals| {
-                for (vals) |v| try encoder.writeFloat(v);
+                for (vals, 0..) |v, i| {
+                    if (!isValid(col, i)) continue;
+                    try encoder.writeFloat(v);
+                }
             }
         },
         .double => {
             if (col.doubles) |vals| {
-                for (vals) |v| try encoder.writeDouble(v);
+                for (vals, 0..) |v, i| {
+                    if (!isValid(col, i)) continue;
+                    try encoder.writeDouble(v);
+                }
             }
         },
         .byte_array => {
             if (col.byte_arrays) |vals| {
-                for (vals) |v| try encoder.writeByteArray(v);
+                for (vals, 0..) |v, i| {
+                    if (!isValid(col, i)) continue;
+                    try encoder.writeByteArray(v);
+                }
             }
         },
         .boolean => {
             if (col.booleans) |vals| {
-                try encoder.writeBooleans(vals);
+                if (col.validity == null) {
+                    try encoder.writeBooleans(vals);
+                } else {
+                    // writeBooleans takes a whole slice; build a present-only
+                    // bool slice (freed locally — the encoder copies the bits).
+                    var present = try std.ArrayList(bool).initCapacity(allocator, vals.len);
+                    defer present.deinit(allocator);
+                    for (vals, 0..) |v, i| {
+                        if (!isValid(col, i)) continue;
+                        present.appendAssumeCapacity(v);
+                    }
+                    try encoder.writeBooleans(present.items);
+                }
             }
         },
         .fixed_len_byte_array => {
@@ -84,7 +127,8 @@ pub fn writeColumn(allocator: Allocator, col: ColumnData, codec: types.Compressi
             if (tl <= 0) return error.InvalidTypeLength;
             const width: usize = @intCast(tl);
             if (col.byte_arrays) |vals| {
-                for (vals) |v| {
+                for (vals, 0..) |v, i| {
+                    if (!isValid(col, i)) continue;
                     if (v.len != width) return error.FixedLengthMismatch;
                     try encoder.writeFixedByteArray(v);
                 }
@@ -92,7 +136,8 @@ pub fn writeColumn(allocator: Allocator, col: ColumnData, codec: types.Compressi
         },
         .int96 => {
             if (col.byte_arrays) |vals| {
-                for (vals) |v| {
+                for (vals, 0..) |v, i| {
+                    if (!isValid(col, i)) continue;
                     if (v.len != 12) return error.FixedLengthMismatch;
                     try encoder.writeFixedByteArray(v);
                 }
@@ -100,7 +145,33 @@ pub fn writeColumn(allocator: Allocator, col: ColumnData, codec: types.Compressi
         },
     }
 
-    const uncompressed_data = encoder.written();
+    // Build the uncompressed page body. For OPTIONAL columns prepend the
+    // definition-level section: [4-byte LE byte length][RLE-encoded levels],
+    // levels[i] = 1 present / 0 null (max_def_level == 1). REQUIRED columns
+    // (validity == null) emit no def-level section (reader skips when
+    // max_def_level == 0). The whole body — def levels + values — is what gets
+    // compressed for v1 data pages (the reader decompresses the entire page
+    // and only then reads the def-level length prefix).
+    var body = std.ArrayList(u8).empty;
+    defer body.deinit(allocator);
+
+    if (col.validity) |valid| {
+        var levels = try allocator.alloc(u1, valid.len);
+        defer allocator.free(levels);
+        for (valid, 0..) |present, i| levels[i] = @intFromBool(present);
+
+        var level_bytes = std.ArrayList(u8).empty;
+        defer level_bytes.deinit(allocator);
+        try encodeRleLevels(allocator, levels, &level_bytes);
+
+        var len_prefix: [4]u8 = undefined;
+        std.mem.writeInt(u32, &len_prefix, @intCast(level_bytes.items.len), .little);
+        try body.appendSlice(allocator, &len_prefix);
+        try body.appendSlice(allocator, level_bytes.items);
+    }
+    try body.appendSlice(allocator, encoder.written());
+
+    const uncompressed_data = body.items;
     const uncompressed_size: i32 = @intCast(uncompressed_data.len);
 
     // Step 2: Optionally compress

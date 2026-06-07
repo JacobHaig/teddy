@@ -114,7 +114,7 @@ Findings, file:line detail, and rationale live in
 6d-2a slices (the 6d-2a.0 infra commit already fixes the review's Theme-2
 comptime hazards).
 
-### Phase 10 — Null-correctness pass ⬜ (review Theme 1)
+### Phase 10 — Null-correctness pass ✅ (review Theme 1; landed 2026-06-07 as 10a+10b)
 - Readers (parquet/JSON/CSV adapters): call `appendNull` instead of
   materializing placeholders; round-trip tests asserting `isNull`.
 - Writers (CSV/JSON): check `isNull` explicitly (empty CSV field, bare JSON

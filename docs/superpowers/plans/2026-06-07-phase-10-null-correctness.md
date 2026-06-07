@@ -97,6 +97,12 @@ main.zig demo output may show `null`.
 
 → Commit 10b: `feat(parquet): write definition levels — nulls survive df->parquet (Phase 10b)`.
 
+As-built notes (10b review): emit_int96 with null INT96 timestamps writes a
+zeroed placeholder for null slots (handled in code, no dedicated round-trip
+test — add one if legacy-INT96-with-nulls becomes a real input); an all-null
+FixedBytes column without `meta.width` errors MissingTypeLength by design
+(width cannot be inferred from zero non-null values).
+
 ## Out of scope
 SQL-style null GROUP BY option; CSV quoted-empty vs bare-empty distinction;
 DataPageV2; null-aware sort ordering (argSort currently sorts placeholder

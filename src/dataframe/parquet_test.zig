@@ -1059,3 +1059,135 @@ test "adapter: multi_rowgroup OPTIONAL column reads nulls (Phase 10a Unit B)" {
     try std.testing.expectEqual(@as(i64, 50), opt.int64.values.items[4]);
     try std.testing.expectEqual(@as(i64, 60), opt.int64.values.items[5]);
 }
+
+test "nulls: df round-trips through parquet with definition levels (10b)" {
+    // Six column types (incl. an owning type, two scratch-buffer types, and
+    // a Timestamp) with a null in row 1 — write must emit OPTIONAL columns
+    // with RLE definition levels, read must restore the exact isNull pattern.
+    const dataframe_mod = @import("dataframe.zig");
+    const Date = @import("date.zig").Date;
+    const allocator = std.testing.allocator;
+
+    var df = try dataframe_mod.Dataframe.init(allocator);
+    defer df.deinit();
+
+    var c_i64 = try df.createSeries(i64);
+    try c_i64.rename("n");
+    try c_i64.append(1);
+    try c_i64.appendNull();
+
+    var c_str = try df.createSeries(@import("strings.zig").String);
+    try c_str.rename("s");
+    try c_str.append(try @import("strings.zig").String.fromSlice(allocator, "a"));
+    try c_str.appendNull();
+
+    var c_date = try df.createSeries(Date);
+    try c_date.rename("d");
+    try c_date.append(Date.fromCivil(.{ .year = 2020, .month = 1, .day = 1 }));
+    try c_date.appendNull();
+
+    var c_dec = try df.createSeries(Decimal);
+    try c_dec.rename("dec");
+    try c_dec.append(.{ .unscaled = 123, .precision = 9, .scale = 2 });
+    try c_dec.appendNull();
+
+    var c_bin = try df.createSeries(Binary);
+    try c_bin.rename("b");
+    try c_bin.append(try Binary.fromSlice(allocator, "ab"));
+    try c_bin.appendNull();
+
+    var c_ts = try df.createSeries(Timestamp);
+    try c_ts.rename("ts");
+    try c_ts.append(.{ .value = 1_000_000, .unit = .micros, .utc = true, .origin = .int64 });
+    try c_ts.appendNull();
+
+    var cols = try adapter.fromDataframe(allocator, df, .{});
+    defer cols.deinit();
+    const output = try parquet.writeParquet(allocator, cols.columns, .{});
+    defer allocator.free(output);
+
+    var result = try parquet.readParquet(allocator, output);
+    defer result.deinit();
+    var df2 = try adapter.toDataframe(allocator, &result);
+    defer df2.deinit();
+
+    const names = [_][]const u8{ "n", "s", "d", "dec", "b", "ts" };
+    const types = [_][]const u8{ "i64", "String", "Date", "Decimal", "Binary", "Timestamp" };
+    for (names, types, 0..) |name, tn, k| {
+        const col = &df2.series.items[k];
+        try std.testing.expectEqualStrings(name, col.name());
+        try std.testing.expectEqualStrings(tn, col.typeName());
+        try std.testing.expect(!col.isNull(0));
+        try std.testing.expect(col.isNull(1));
+    }
+    // Spot-check the non-null values survived.
+    try std.testing.expectEqual(@as(i64, 1), df2.series.items[0].int64.values.items[0]);
+    try std.testing.expectEqualStrings("a", df2.series.items[1].string.values.items[0].toSlice());
+    try std.testing.expectEqual(@as(i32, 18262), df2.series.items[2].date.values.items[0].days);
+    try std.testing.expectEqual(@as(i256, 123), df2.series.items[3].decimal.values.items[0].unscaled);
+    try std.testing.expectEqualStrings("ab", df2.series.items[4].binary.values.items[0].toSlice());
+    try std.testing.expectEqual(@as(i64, 1_000_000), df2.series.items[5].timestamp.values.items[0].value);
+}
+
+test "nulls: all-null column round-trips through parquet (10b)" {
+    // Degenerate OPTIONAL column: every def level is 0, zero values follow.
+    const dataframe_mod = @import("dataframe.zig");
+    const allocator = std.testing.allocator;
+
+    var df = try dataframe_mod.Dataframe.init(allocator);
+    defer df.deinit();
+    var c = try df.createSeries(i64);
+    try c.rename("all_null");
+    try c.appendNull();
+    try c.appendNull();
+    try c.appendNull();
+
+    var cols = try adapter.fromDataframe(allocator, df, .{});
+    defer cols.deinit();
+    const output = try parquet.writeParquet(allocator, cols.columns, .{});
+    defer allocator.free(output);
+
+    var result = try parquet.readParquet(allocator, output);
+    defer result.deinit();
+    var df2 = try adapter.toDataframe(allocator, &result);
+    defer df2.deinit();
+
+    const col = &df2.series.items[0];
+    try std.testing.expectEqual(@as(usize, 3), col.len());
+    for (0..3) |i| {
+        try std.testing.expect(col.isNull(i));
+    }
+}
+
+test "nulls: multi_rowgroup opt column write round-trip preserves nulls (10b)" {
+    // Fixture nulls -> df -> teddy write -> re-read: the isNull pattern must
+    // survive the full circle now that definition levels are written.
+    const allocator = std.testing.allocator;
+    const cwd = std.Io.Dir.cwd();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const file_data = try cwd.readFileAlloc(io, "data/multi_rowgroup.parquet", allocator, .unlimited);
+    defer allocator.free(file_data);
+
+    var result = try parquet.readParquet(allocator, file_data);
+    defer result.deinit();
+    var df = try adapter.toDataframe(allocator, &result);
+    defer df.deinit();
+
+    var cols = try adapter.fromDataframe(allocator, df, .{});
+    defer cols.deinit();
+    const output = try parquet.writeParquet(allocator, cols.columns, .{});
+    defer allocator.free(output);
+
+    var result2 = try parquet.readParquet(allocator, output);
+    defer result2.deinit();
+    var df2 = try adapter.toDataframe(allocator, &result2);
+    defer df2.deinit();
+
+    const opt = df2.getSeries("opt") orelse return error.ColumnNotFound;
+    const expected_null = [_]bool{ false, true, false, true, false, false, true };
+    for (expected_null, 0..) |want, i| {
+        try std.testing.expectEqual(want, opt.isNull(i));
+    }
+    try std.testing.expectEqual(@as(i64, 10), opt.int64.values.items[0]);
+    try std.testing.expectEqual(@as(i64, 60), opt.int64.values.items[5]);
+}
