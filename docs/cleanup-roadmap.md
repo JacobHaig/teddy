@@ -134,7 +134,7 @@ comptime hazards).
 - Fix `expandWithNulls` byte-array leak on malformed def-levels.
 - Malformed-file test suite: "garbage bytes error, never panic".
 
-### Phase 12 — Bug-fix batch ⬜ (review Theme 4)
+### Phase 12 — Bug-fix batch ✅ (review Theme 4; landed 2026-06-07 — hardening track complete)
 - `groupByMultiple` double-free + non-transactional `_group_key` mutation.
 - Latent compile errors: `json_reader` `@trunc` int arm; `tryAppend[Slice]`
   missing allocator; JSON mixed-type columns silently becoming `""`.

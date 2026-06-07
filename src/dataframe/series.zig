@@ -178,12 +178,20 @@ pub fn Series(comptime T: type) type {
                 try string.appendSlice(owned);
                 return string;
             }
+            // String / []const u8 values are unbounded — append the bytes
+            // directly rather than routing through the fixed buffer below
+            // (long values would otherwise error.NoSpaceLeft).
+            if (comptime T == strings.String) {
+                try string.appendSlice(self.values.items[n].toSlice());
+                return string;
+            }
+            if (comptime T == []const u8) {
+                try string.appendSlice(self.values.items[n]);
+                return string;
+            }
+            // Numeric / other scalar types have bounded textual length.
             var buf: [128]u8 = undefined;
-            const slice = if (comptime T == strings.String)
-                try std.fmt.bufPrint(&buf, "{s}", .{self.values.items[n].toSlice()})
-            else if (comptime T == []const u8)
-                try std.fmt.bufPrint(&buf, "{s}", .{self.values.items[n]})
-            else if (comptime T == f16 or T == f32 or T == f64)
+            const slice = if (comptime T == f16 or T == f32 or T == f64)
                 try std.fmt.bufPrint(&buf, "{d}", .{self.values.items[n]})
             else
                 try std.fmt.bufPrint(&buf, "{}", .{self.values.items[n]});
@@ -259,19 +267,25 @@ pub fn Series(comptime T: type) type {
         // tryAppend takes a value of any type and appends it to the series.
         // It checks the type at compile time and ensures it matches the series type.
         // If the type is not compatible, it raises a compile-time error.
+        //
+        // VALIDITY: all arms route the final push through `self.append(new_value)`
+        // so that any existing validity bitmap is kept in sync. Previously the
+        // []const u8 arm pushed directly to self.values (missing the allocator arg
+        // AND the validity update), which caused a panic in isNull after any prior
+        // appendNull call.
         pub fn tryAppend(self: *Self, value: anytype) !void {
             if (comptime T == strings.String and @TypeOf(value) == []const u8) {
                 var new_value = try strings.String.init(self.allocator);
                 errdefer new_value.deinit();
                 try new_value.appendSlice(value);
-                try self.values.append(new_value);
+                try self.append(new_value);
             } else if (comptime T == strings.String and canBeSlice(@TypeOf(value))) {
                 var new_value = try strings.String.init(self.allocator);
                 errdefer new_value.deinit();
                 try new_value.appendSlice(value[0..]);
-                try self.values.append(self.allocator, new_value);
+                try self.append(new_value);
             } else if (comptime T == strings.String and @TypeOf(value) == strings.String) {
-                try self.values.append(self.allocator, value);
+                try self.append(value);
             } else {
                 @compileError("Type mismatch in tryAppend(), expected String but got " ++ @typeName(@TypeOf(value)));
             }
@@ -283,7 +297,7 @@ pub fn Series(comptime T: type) type {
                     var new_value = try strings.String.init(self.allocator);
                     errdefer new_value.deinit();
                     try new_value.appendSlice(item);
-                    try self.values.append(new_value);
+                    try self.append(new_value);
                 }
             } else {
                 @compileError("Type mismatch in tryAppendSlice(), expected slice of String but got " ++ @typeName(@TypeOf(slice)));

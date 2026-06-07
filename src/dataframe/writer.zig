@@ -15,6 +15,10 @@ pub const Writer = struct {
     io: std.Io,
     file_type: FileType,
     path: ?[]const u8,
+    /// Set to true when withPath() fails to duplicate the path string due to
+    /// OOM. save() surfaces this as error.OutOfMemory rather than the
+    /// misleading error.InvalidFilePath that would otherwise occur.
+    path_alloc_failed: bool,
 
     // CSV options
     delimiter: u8,
@@ -34,6 +38,7 @@ pub const Writer = struct {
             .io = io,
             .file_type = .csv,
             .path = null,
+            .path_alloc_failed = false,
             .delimiter = ',',
             .include_header = true,
             .json_format = .rows,
@@ -53,9 +58,22 @@ pub const Writer = struct {
         return self;
     }
 
+    /// Set the file path to write to. Returns `self` for chaining.
+    ///
+    /// If the path string cannot be duplicated (OOM), the failure is recorded
+    /// in `path_alloc_failed`. `save()` will then return `error.OutOfMemory`.
+    ///
+    /// The old path is freed only after the new one is secured, so a failed
+    /// allocation never discards the previously-valid path.
     pub fn withPath(self: *Self, path: []const u8) *Self {
+        const new_path = self.allocator.dupe(u8, path) catch {
+            self.path_alloc_failed = true;
+            return self;
+        };
+        // New path secured — now safe to release the old one.
         if (self.path) |old| self.allocator.free(old);
-        self.path = self.allocator.dupe(u8, path) catch null;
+        self.path = new_path;
+        self.path_alloc_failed = false;
         return self;
     }
 
@@ -106,6 +124,7 @@ pub const Writer = struct {
 
     /// Serialize and write to file at the configured path.
     pub fn save(self: *Self, df: *Dataframe) !void {
+        if (self.path_alloc_failed) return error.OutOfMemory;
         const data = try self.toString(df);
         defer self.allocator.free(data);
 

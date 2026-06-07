@@ -1,3 +1,10 @@
+//! Error conventions:
+//!   error.TypeNotNumeric — the column's element type cannot perform the
+//!     requested numeric aggregation (sum/mean/min/max/median/etc.). Matches
+//!     the convention used by BoxedSeries and nunique/median.
+//!   error.TypeMismatch — the caller's comptime argument type does not match
+//!     the column's element type (used by clip/replace/indicesWhere).
+
 const std = @import("std");
 const Allocator = @import("std").mem.Allocator;
 
@@ -191,7 +198,7 @@ pub fn GroupBy(comptime T: type) type {
                 .float32 => |s| try self.sumTypedDf(f32, s, result_df, key_series),
                 .float16 => |s| try self.sumTypedDf(f16, s, result_df, key_series),
                 .float64 => |s| try self.sumTypedDf(f64, s, result_df, key_series),
-                else => return error.TypeNotSummable,
+                else => return error.TypeNotNumeric,
             }
 
             return result_df;
@@ -235,7 +242,7 @@ pub fn GroupBy(comptime T: type) type {
                 .float32 => |s| try self.meanTypedDf(f32, s, result_df, key_series),
                 .float16 => |s| try self.meanTypedDf(f16, s, result_df, key_series),
                 .float64 => |s| try self.meanTypedDf(f64, s, result_df, key_series),
-                else => return error.TypeNotAverageable,
+                else => return error.TypeNotNumeric,
             }
 
             return result_df;
@@ -286,7 +293,7 @@ pub fn GroupBy(comptime T: type) type {
                 .float32 => |s| try self.minMaxTypedDf(f32, s, result_df, key_series, true),
                 .float16 => |s| try self.minMaxTypedDf(f16, s, result_df, key_series, true),
                 .float64 => |s| try self.minMaxTypedDf(f64, s, result_df, key_series, true),
-                else => return error.TypeNotComparable,
+                else => return error.TypeNotNumeric,
             }
 
             return result_df;
@@ -314,7 +321,7 @@ pub fn GroupBy(comptime T: type) type {
                 .float32 => |s| try self.minMaxTypedDf(f32, s, result_df, key_series, false),
                 .float16 => |s| try self.minMaxTypedDf(f16, s, result_df, key_series, false),
                 .float64 => |s| try self.minMaxTypedDf(f64, s, result_df, key_series, false),
-                else => return error.TypeNotComparable,
+                else => return error.TypeNotNumeric,
             }
 
             return result_df;
@@ -366,7 +373,7 @@ pub fn GroupBy(comptime T: type) type {
                 .float32 => |s| try self.stdDevTypedDf(f32, s, result_df, key_series),
                 .float16 => |s| try self.stdDevTypedDf(f16, s, result_df, key_series),
                 .float64 => |s| try self.stdDevTypedDf(f64, s, result_df, key_series),
-                else => return error.TypeNotAverageable,
+                else => return error.TypeNotNumeric,
             }
 
             return result_df;

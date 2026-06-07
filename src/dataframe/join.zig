@@ -118,13 +118,24 @@ fn joinTyped(
 
     // Add left columns
     for (left_df.series.items) |*ls| {
-        try addJoinedColumn(result_df, ls, &pairs, true, allocator);
+        try addJoinedColumn(result_df, ls, &pairs, true, allocator, null);
     }
 
-    // Add right columns (skip the join key to avoid duplication)
+    // Add right columns (skip the join key to avoid duplication).
+    // If a right column's name already exists in the result (added from the
+    // left side), suffix it with "_right" so both values are accessible and
+    // getSeries on the original name consistently returns the left column.
     for (right_df.series.items) |*rs| {
-        if (std.mem.eql(u8, rs.name(), on)) continue;
-        try addJoinedColumn(result_df, rs, &pairs, false, allocator);
+        const col_name = rs.name();
+        if (std.mem.eql(u8, col_name, on)) continue;
+        if (result_df.getSeries(col_name) != null) {
+            // Collision: rename right column to "{name}_right".
+            const renamed = try std.fmt.allocPrint(allocator, "{s}_right", .{col_name});
+            defer allocator.free(renamed);
+            try addJoinedColumn(result_df, rs, &pairs, false, allocator, renamed);
+        } else {
+            try addJoinedColumn(result_df, rs, &pairs, false, allocator, null);
+        }
     }
 
     return result_df;
@@ -136,13 +147,17 @@ fn addJoinedColumn(
     pairs: *const std.ArrayList(IndexPair),
     is_left: bool,
     allocator: Allocator,
+    /// When non-null, the result column is given this name instead of the
+    /// source column's original name (used to resolve duplicate column names
+    /// between left and right sides by appending the "_right" suffix).
+    override_name: ?[]const u8,
 ) !void {
     switch (source.*) {
         inline else => |s| {
             const ValType = @TypeOf(s.values.items[0]);
             var new_series = try Series(ValType).init(allocator);
             errdefer new_series.deinit();
-            try new_series.rename(s.name.toSlice());
+            try new_series.rename(override_name orelse s.name.toSlice());
 
             for (pairs.items) |pair| {
                 const idx = if (is_left) pair.left else pair.right;

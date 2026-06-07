@@ -49,6 +49,12 @@ pub const Dataframe = struct {
     }
 
     /// Returns the number of rows in the Dataframe.
+    ///
+    /// Invariant: all columns are expected to have equal length; this reports
+    /// the length of column 0 (or 0 when the frame has no columns). Building
+    /// blocks like addSeries/createSeries are permissive and can produce a
+    /// transiently ragged frame, so callers that mutate rows across columns
+    /// (e.g. dropRow) validate the invariant explicitly.
     pub fn height(self: *Self) usize {
         if (self.width() == 0) {
             return 0;
@@ -88,7 +94,16 @@ pub const Dataframe = struct {
     }
 
     /// Removes the row at the given index from all series in the Dataframe.
-    pub fn dropRow(self: *Self, index: usize) void {
+    /// Returns error.IndexOutOfBounds if `index >= height()`, or
+    /// error.RaggedDataframe if columns are not all the same length. Validation
+    /// happens before any column is mutated, so a rejected call is a no-op.
+    pub fn dropRow(self: *Self, index: usize) !void {
+        const h = self.height();
+        if (index >= h) return error.IndexOutOfBounds;
+        // All columns must share the same length before we mutate any of them.
+        for (self.series.items) |*item| {
+            if (item.len() != h) return error.RaggedDataframe;
+        }
         for (self.series.items) |*item| {
             item.dropRow(index);
         }
@@ -238,34 +253,68 @@ pub const Dataframe = struct {
 
     /// Group by multiple columns using a composite string key.
     /// Returns a BoxedGroupBy keyed by composite string. Caller must deinit.
-    /// The composite key column is added to the dataframe (named "_group_key").
-    /// Call dropSeries("_group_key") after you're done with the GroupBy if you want to clean it up.
+    ///
+    /// On the success path the composite key column ("_group_key") is appended
+    /// to the dataframe and the dataframe owns it; the returned GroupBy
+    /// references it. Call dropSeries("_group_key") once you are done with the
+    /// GroupBy to clean it up.
+    ///
+    /// On any error path the dataframe is left unchanged (no "_group_key"
+    /// column is added). Rows where ANY key column is null produce a null
+    /// composite key, which the single-key groupBy drops — matching the
+    /// single-column null-key policy rather than forming a "null" group.
     pub fn groupByMultiple(self: *Self, columns: []const []const u8) !BoxedGroupBy {
-        // Build composite key series
+        // Build composite key series. Until it is handed to the dataframe, this
+        // function owns it and the errdefer frees it. A single `moved` flag
+        // disarms that errdefer at the ownership transfer (append) so the
+        // dataframe's own deinit doesn't double-free.
         var composite = try Series(String).init(self.allocator);
-        errdefer composite.deinit();
+        var moved = false;
+        errdefer if (!moved) composite.deinit();
         try composite.rename("_group_key");
 
         for (0..self.height()) |row| {
+            // If any key component is null, the whole composite key is null so
+            // single-key groupBy drops the row (consistent null-key policy).
+            var any_null = false;
+            for (columns) |col_name| {
+                const s = self.getSeries(col_name) orelse return error.ColumnNotFound;
+                if (s.isNull(row)) {
+                    any_null = true;
+                    break;
+                }
+            }
+            if (any_null) {
+                try composite.appendNull();
+                continue;
+            }
+
             var key = try String.init(self.allocator);
             errdefer key.deinit();
             for (columns, 0..) |col_name, ci| {
                 if (ci > 0) try key.appendSlice("|");
-                var s = self.getSeries(col_name) orelse {
-                    composite.deinit();
-                    return error.ColumnNotFound;
-                };
+                // getSeries succeeded in the null pre-check above.
+                var s = self.getSeries(col_name).?;
                 var str_val = try s.asStringAt(row);
                 defer str_val.deinit();
                 try key.appendSlice(str_val.toSlice());
             }
-            try composite.values.append(self.allocator, key);
+            try composite.append(key);
         }
 
-        // Add composite to dataframe — it owns it, and GroupBy references it
+        // Transfer ownership to the dataframe — must be the last fallible step
+        // before groupBy. After this point the dataframe owns the column.
         try self.series.append(self.allocator, composite.toBoxedSeries());
+        moved = true;
 
-        return try self.groupBy("_group_key");
+        // groupBy can fail; if it does, leave self unchanged by dropping the
+        // column we just appended (defer-style cleanup keyed on success).
+        var grouped = false;
+        errdefer if (!grouped) self.dropSeries("_group_key");
+
+        const gb = try self.groupBy("_group_key");
+        grouped = true;
+        return gb;
     }
 
     pub const CsvWriteOptions = @import("csv_writer.zig").WriteOptions;
@@ -537,7 +586,8 @@ pub const Dataframe = struct {
     /// Returns a new Dataframe with rows [start..end). Caller owns the returned pointer.
     pub fn slice(self: *Self, start: usize, end: usize) !*Self {
         const actual_end = @min(end, self.height());
-        if (start >= actual_end) return Self.init(self.allocator);
+        // Empty / inverted range: keep all columns (schema), zero rows.
+        if (start >= actual_end) return self.filterByIndices(&.{});
         var indices = try std.ArrayList(usize).initCapacity(self.allocator, actual_end - start);
         defer indices.deinit(self.allocator);
         for (start..actual_end) |i| try indices.append(self.allocator, i);
@@ -573,7 +623,13 @@ pub const Dataframe = struct {
     pub fn print(self: *Self) !void {
         const max_rows = 100;
         const wwidth = self.width();
-        const hheight = self.height();
+
+        // Use the shortest column so a transiently ragged frame can't index OOB.
+        var hheight = self.height();
+        for (self.series.items) |*item| {
+            const l = item.len();
+            if (l < hheight) hheight = l;
+        }
 
         const print_rows = if (hheight > max_rows) max_rows else hheight;
 

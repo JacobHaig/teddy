@@ -248,9 +248,10 @@ fn inferColumnType(values: []const JsonValue) ColumnType {
     }
 
     if (has_string) return .string;
-    if (has_float or (has_int and has_float)) return .float;
-    if (has_int and has_float) return .float;
-    if (has_bool and !has_int and !has_float) return .boolean;
+    // Original had two branches: `has_float` and the redundant `has_int and has_float`
+    // (subsumed by the first). The duplicate is removed; the logic is identical.
+    if (has_float) return .float;
+    if (has_bool and !has_int) return .boolean;
     if (has_int) return .integer;
     return .string; // fallback
 }
@@ -271,8 +272,15 @@ fn buildDataframe(allocator: Allocator, col_names: []const []const u8, all_value
                     switch (v) {
                         .null => try s.appendNull(),
                         .integer => |n| try s.append(n),
-                        .float => |f| try s.append(@as(i64, @trunc(f))),
-                        else => try s.append(0),
+                        // Defensive: with current inference a column containing any
+                        // .float value is promoted to .float before this arm is
+                        // reached, so this branch is dead in practice. Kept correct
+                        // anyway: @trunc produces f64, so @intFromFloat is required.
+                        .float => |f| try s.append(@as(i64, @intFromFloat(@trunc(f)))),
+                        // Bools that end up in an integer column (e.g. mixed bool+int
+                        // inference): encode as 1/0 rather than always 0.
+                        .boolean => |b| try s.append(@intFromBool(b)),
+                        .string => try s.append(0),
                     }
                 }
                 try df.addSeries(s.toBoxedSeries());
@@ -309,7 +317,23 @@ fn buildDataframe(allocator: Allocator, col_names: []const []const u8, all_value
                     switch (v) {
                         .null => try s.appendNull(),
                         .string => |str| try s.append(try String.fromSlice(allocator, str)),
-                        else => try s.append(try String.fromSlice(allocator, "")),
+                        // B2b: non-string scalars in a mixed column are stringified
+                        // rather than silently dropped as "". allocPrint produces an
+                        // owned buffer; String.fromSlice copies it, so we free the
+                        // intermediate buffer immediately after.
+                        .integer => |n| {
+                            const buf = try std.fmt.allocPrint(allocator, "{d}", .{n});
+                            defer allocator.free(buf);
+                            try s.append(try String.fromSlice(allocator, buf));
+                        },
+                        .float => |f| {
+                            const buf = try std.fmt.allocPrint(allocator, "{d}", .{f});
+                            defer allocator.free(buf);
+                            try s.append(try String.fromSlice(allocator, buf));
+                        },
+                        .boolean => |b| {
+                            try s.append(try String.fromSlice(allocator, if (b) "true" else "false"));
+                        },
                     }
                 }
                 try df.addSeries(s.toBoxedSeries());

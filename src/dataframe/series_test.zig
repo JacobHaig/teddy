@@ -169,6 +169,75 @@ test "Series: appendNull with strings" {
     try std.testing.expect(s.isNull(1));
 }
 
+// ---- B3 regression tests (Phase 12) ----
+
+test "Series B3: tryAppend with runtime []const u8 slice compiles and works" {
+    // Exercises the []const u8 arm of tryAppend which previously called
+    // self.values.append(new_value) — missing the allocator arg AND skipping
+    // the validity update. Both bugs are gone now.
+    const allocator = std.testing.allocator;
+    var s = try Series(strings.String).init(allocator);
+    defer s.deinit();
+
+    // Force a runtime slice (not a string literal comptime type).
+    var buf: [5]u8 = "hello".*;
+    const runtime_slice: []const u8 = buf[0..];
+    try s.tryAppend(runtime_slice);
+
+    try std.testing.expectEqual(@as(usize, 1), s.len());
+    try std.testing.expectEqualStrings("hello", s.values.items[0].toSlice());
+    try std.testing.expect(!s.isNull(0));
+}
+
+test "Series B3: tryAppendSlice works" {
+    const allocator = std.testing.allocator;
+    var s = try Series(strings.String).init(allocator);
+    defer s.deinit();
+
+    const items: []const []const u8 = &.{ "foo", "bar", "baz" };
+    try s.tryAppendSlice(items);
+
+    try std.testing.expectEqual(@as(usize, 3), s.len());
+    try std.testing.expectEqualStrings("foo", s.values.items[0].toSlice());
+    try std.testing.expectEqualStrings("bar", s.values.items[1].toSlice());
+    try std.testing.expectEqualStrings("baz", s.values.items[2].toSlice());
+}
+
+test "Series B3: tryAppend after appendNull keeps validity consistent (no panic)" {
+    // This is the exact scenario that caused a panic before the fix:
+    // appendNull initialises the validity bitmap with length = values.len,
+    // but the old tryAppend pushed a value WITHOUT appending true to the bitmap,
+    // causing values.len > validity.len and an out-of-bounds access in isNull.
+    const allocator = std.testing.allocator;
+    var s = try Series(strings.String).init(allocator);
+    defer s.deinit();
+
+    try s.tryAppend("first");          // no bitmap yet
+    try s.appendNull();                // bitmap initialised: [true, false]
+    try s.tryAppend("third");          // must push true to bitmap → [true, false, true]
+
+    try std.testing.expectEqual(@as(usize, 3), s.len());
+    try std.testing.expect(!s.isNull(0)); // "first"
+    try std.testing.expect(s.isNull(1));  // null
+    try std.testing.expect(!s.isNull(2)); // "third" — this would panic before fix
+    try std.testing.expectEqualStrings("third", s.values.items[2].toSlice());
+}
+
+test "Series B3: tryAppendSlice after appendNull keeps validity consistent" {
+    const allocator = std.testing.allocator;
+    var s = try Series(strings.String).init(allocator);
+    defer s.deinit();
+
+    try s.appendNull();
+    const items: []const []const u8 = &.{ "a", "b" };
+    try s.tryAppendSlice(items);
+
+    try std.testing.expectEqual(@as(usize, 3), s.len());
+    try std.testing.expect(s.isNull(0));
+    try std.testing.expect(!s.isNull(1));
+    try std.testing.expect(!s.isNull(2));
+}
+
 test "Series: filterByIndices preserves validity" {
     const allocator = std.testing.allocator;
     var s = try Series(i32).init(allocator);
@@ -222,6 +291,23 @@ test "Series: asStringAt returns 'null' for null slot" {
 
     try std.testing.expectEqualStrings("10", v0.toSlice());
     try std.testing.expectEqualStrings("null", v1.toSlice());
+}
+
+test "Series: asStringAt round-trips a long String value (no fixed-buffer cap)" {
+    const allocator = std.testing.allocator;
+    var s = try Series(String).init(allocator);
+    defer s.deinit();
+
+    // 300 chars — exceeds the 128-byte scalar buffer that previously capped
+    // the String arm and produced error.NoSpaceLeft.
+    var long: [300]u8 = undefined;
+    @memset(&long, 'x');
+    try s.append(try String.fromSlice(allocator, &long));
+
+    var v = try s.asStringAt(0);
+    defer v.deinit();
+    try std.testing.expectEqual(@as(usize, 300), v.toSlice().len);
+    try std.testing.expectEqualStrings(&long, v.toSlice());
 }
 
 // --- dropRow validity Tests ---

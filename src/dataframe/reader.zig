@@ -22,6 +22,10 @@ pub const Reader = struct {
     delimiter: u8,
     has_header: bool,
     skip_rows: usize,
+    /// Set to true when withPath() fails to duplicate the path string due to
+    /// OOM. load() surfaces this as error.OutOfMemory rather than silently
+    /// falling through to error.InvalidFilePath later.
+    path_alloc_failed: bool,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io) !*Self {
         const reader_ptr = try allocator.create(Reader);
@@ -34,6 +38,7 @@ pub const Reader = struct {
         reader_ptr.delimiter = ',';
         reader_ptr.has_header = true;
         reader_ptr.skip_rows = 0;
+        reader_ptr.path_alloc_failed = false;
 
         return reader_ptr;
     }
@@ -50,20 +55,34 @@ pub const Reader = struct {
         return self;
     }
 
+    /// Set the file path to read from. Returns `self` for chaining.
+    ///
+    /// If the path string cannot be duplicated (OOM), the failure is recorded
+    /// in `path_alloc_failed`. `load()` will then return `error.OutOfMemory`
+    /// rather than the misleading `error.InvalidFilePath` that would otherwise
+    /// occur when `self.path` is still null.
+    ///
+    /// The previous path (if any) is freed only after the new one is secured,
+    /// so a failed allocation never leaves the reader without a valid path.
     pub fn withPath(self: *Self, path: []const u8) *Self {
-        // Copy string into new owned string
-        const newPath: []u8 = self.allocator.alloc(u8, path.len) catch return self;
-        std.mem.copyForwards(u8, newPath, path);
+        // Duplicate first; only replace on success.
+        const new_path: []u8 = self.allocator.alloc(u8, path.len) catch {
+            self.path_alloc_failed = true;
+            return self;
+        };
+        std.mem.copyForwards(u8, new_path, path);
 
         // Change slash direction based on os
         if (builtin.target.os.tag == .windows) {
-            std.mem.replaceScalar(u8, newPath, '/', '\\');
+            std.mem.replaceScalar(u8, new_path, '/', '\\');
         } else {
-            std.mem.replaceScalar(u8, newPath, '\\', '/');
+            std.mem.replaceScalar(u8, new_path, '\\', '/');
         }
 
-        self.path = newPath;
-        // std.debug.print("{?s}", .{self.path});
+        // Now it is safe to free the old path and install the new one.
+        if (self.path) |old| self.allocator.free(old);
+        self.path = new_path;
+        self.path_alloc_failed = false;
         return self;
     }
 
@@ -86,6 +105,7 @@ pub const Reader = struct {
     // Returns a new dataframe with the loaded data
     // Ownership of the dataframe is transferred to the caller
     pub fn load(self: *Self) !*dataframe.Dataframe {
+        if (self.path_alloc_failed) return error.OutOfMemory;
         return switch (self.file_type) {
             .csv => self.readCsv(),
             .json => self.readJson(),

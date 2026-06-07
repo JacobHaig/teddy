@@ -88,7 +88,7 @@ test "Dataframe: init, width, height, createSeries, addSeries, dropSeries, dropR
 
     df.dropSeries("col1");
     try std.testing.expect(df.width() == 1);
-    df.dropRow(1);
+    try df.dropRow(1);
     try std.testing.expect(df.height() == 2);
 }
 
@@ -1055,4 +1055,140 @@ test "Dataframe: pipeline — nulls, cast, shift, diff, clip, replace, groupby, 
 
     // 13. nunique on categories
     try std.testing.expectEqual(@as(usize, 3), try df3.getSeries("cat").?.int32.nunique(allocator));
+}
+
+// --- Phase 12 Unit A regression tests ---
+
+test "Dataframe: groupByMultiple unknown column leaves frame unchanged (no double-free)" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var state = try df.createSeries(String);
+    try state.rename("state");
+    try state.tryAppend("NJ");
+    try state.tryAppend("PA");
+
+    const w0 = df.width();
+    // "nope" does not exist → ColumnNotFound. The testing allocator would
+    // catch a double-free of the in-progress composite key column.
+    try std.testing.expectError(error.ColumnNotFound, df.groupByMultiple(&[_][]const u8{ "state", "nope" }));
+    // Failure must not mutate the frame (no leftover "_group_key").
+    try std.testing.expectEqual(w0, df.width());
+    try std.testing.expect(df.getSeries("_group_key") == null);
+}
+
+test "Dataframe: groupByMultiple drops rows with a null key component" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var state = try df.createSeries(String);
+    try state.rename("state");
+    try state.append(try String.fromSlice(allocator, "NJ"));
+    try state.append(try String.fromSlice(allocator, "PA"));
+    try state.append(try String.fromSlice(allocator, "NJ"));
+
+    var city = try df.createSeries(String);
+    try city.rename("city");
+    try city.append(try String.fromSlice(allocator, "Riverside"));
+    try city.appendNull(); // null component → this row must be dropped
+    try city.append(try String.fromSlice(allocator, "Riverside"));
+
+    var gb = try df.groupByMultiple(&[_][]const u8{ "state", "city" });
+    defer gb.deinit();
+
+    var counts = try gb.count();
+    defer counts.deinit();
+
+    // Only NJ|Riverside (2 rows) forms a group; the null-city row is dropped.
+    try std.testing.expectEqual(@as(usize, 1), counts.height());
+}
+
+test "Dataframe: groupByMultiple success adds _group_key (mutation contract)" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var state = try df.createSeries(String);
+    try state.rename("state");
+    try state.tryAppend("NJ");
+    try state.tryAppend("NJ");
+
+    var city = try df.createSeries(String);
+    try city.rename("city");
+    try city.tryAppend("Riverside");
+    try city.tryAppend("Riverside");
+
+    var gb = try df.groupByMultiple(&[_][]const u8{ "state", "city" });
+    defer gb.deinit();
+
+    // Documented success-path mutation: the composite key column is present.
+    try std.testing.expect(df.getSeries("_group_key") != null);
+}
+
+test "Dataframe: dropRow out of bounds errors" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var col = try df.createSeries(i32);
+    try col.rename("x");
+    try col.append(1);
+    try col.append(2);
+
+    try std.testing.expectError(error.IndexOutOfBounds, df.dropRow(2));
+    try std.testing.expectError(error.IndexOutOfBounds, df.dropRow(99));
+    // Valid row still works.
+    try df.dropRow(0);
+    try std.testing.expectEqual(@as(usize, 1), df.height());
+}
+
+test "Dataframe: dropRow on ragged frame errors before mutating" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    // Hand-build a ragged frame: addSeries is permissive.
+    var a = try Series(i32).init(allocator);
+    try a.rename("a");
+    try a.append(1);
+    try a.append(2);
+    try a.append(3);
+    try df.addSeries(a.toBoxedSeries());
+
+    var b = try Series(i32).init(allocator);
+    try b.rename("b");
+    try b.append(10);
+    try b.append(20); // only 2 rows → ragged vs column "a" (3 rows)
+    try df.addSeries(b.toBoxedSeries());
+
+    try std.testing.expectError(error.RaggedDataframe, df.dropRow(0));
+    // No column was mutated.
+    try std.testing.expectEqual(@as(usize, 3), df.getSeries("a").?.len());
+    try std.testing.expectEqual(@as(usize, 2), df.getSeries("b").?.len());
+}
+
+test "Dataframe: slice with empty/inverted range preserves schema" {
+    const allocator = std.testing.allocator;
+    var df = try Dataframe.init(allocator);
+    defer df.deinit();
+
+    var x = try df.createSeries(i32);
+    try x.rename("x");
+    try x.append(1);
+    try x.append(2);
+    try x.append(3);
+
+    var y = try df.createSeries(i32);
+    try y.rename("y");
+    try y.append(10);
+    try y.append(20);
+    try y.append(30);
+
+    // Inverted range → zero rows but all columns retained.
+    var s = try df.slice(5, 2);
+    defer s.deinit();
+    try std.testing.expectEqual(@as(usize, 2), s.width());
+    try std.testing.expectEqual(@as(usize, 0), s.height());
 }

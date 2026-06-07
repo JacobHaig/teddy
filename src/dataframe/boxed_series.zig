@@ -518,12 +518,8 @@ pub const BoxedSeries = union(enum) {
                 }
             },
         }
-        // If we get here, no branch matched the requested type T
-        std.debug.print("filter type mismatch: column \"{s}\" has type {s}, but filter was called with type {s}\n", .{
-            self.name(),
-            self.typeName(),
-            @typeName(T),
-        });
+        // If we get here, no branch matched the requested type T.
+        // Library code must not write stderr for an error it returns.
         return error.TypeMismatch;
     }
 

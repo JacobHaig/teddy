@@ -206,3 +206,60 @@ test "json_reader: ndjson mixed int and float promotes to float" {
     defer df.deinit();
     try std.testing.expectEqual(@as(usize, 2), df.height());
 }
+
+// ---- B2 regression tests (Phase 12) ----
+
+test "json_reader B2b: mixed int+string column stringifies the integer" {
+    // [1, "a"] must produce a String column with values "1" and "a",
+    // not "" and "a" (the previous silent data loss).
+    const allocator = std.testing.allocator;
+    var df = try json_reader.parse(allocator, "[{\"v\":1},{\"v\":\"a\"}]", .{});
+    defer df.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), df.height());
+    const col = df.getSeries("v") orelse return error.ColumnNotFound;
+    // Inferred as string because one value is a string.
+    try std.testing.expect(col.* == .string);
+    try std.testing.expectEqualStrings("1", col.string.values.items[0].toSlice());
+    try std.testing.expectEqualStrings("a", col.string.values.items[1].toSlice());
+}
+
+test "json_reader B2b: mixed bool+string column stringifies the bool" {
+    const allocator = std.testing.allocator;
+    var df = try json_reader.parse(allocator, "[{\"v\":true},{\"v\":\"x\"}]", .{});
+    defer df.deinit();
+
+    const col = df.getSeries("v") orelse return error.ColumnNotFound;
+    try std.testing.expect(col.* == .string);
+    try std.testing.expectEqualStrings("true", col.string.values.items[0].toSlice());
+    try std.testing.expectEqualStrings("x", col.string.values.items[1].toSlice());
+}
+
+test "json_reader B2b: mixed float+string column stringifies the float" {
+    const allocator = std.testing.allocator;
+    var df = try json_reader.parse(allocator, "[{\"v\":3.14},{\"v\":\"pi\"}]", .{});
+    defer df.deinit();
+
+    const col = df.getSeries("v") orelse return error.ColumnNotFound;
+    try std.testing.expect(col.* == .string);
+    // The stringified float must not be empty.
+    try std.testing.expect(col.string.values.items[0].toSlice().len > 0);
+    try std.testing.expectEqualStrings("pi", col.string.values.items[1].toSlice());
+}
+
+test "json_reader B2 int arm: bool values in integer column encode as 1/0" {
+    // A column that has bool + int values is inferred as .integer.
+    // The bool arm must produce @intFromBool(b) (1/0), not a constant 0.
+    // We verify true→1 and false→0 distinctly.
+    const allocator = std.testing.allocator;
+    // Force inference: bool + integer = integer column.
+    var df = try json_reader.parse(allocator, "[{\"v\":true},{\"v\":false},{\"v\":2}]", .{});
+    defer df.deinit();
+
+    const col = df.getSeries("v") orelse return error.ColumnNotFound;
+    // bool+int → integer column
+    try std.testing.expect(col.* == .int64);
+    try std.testing.expectEqual(@as(i64, 1), col.int64.values.items[0]); // true → 1
+    try std.testing.expectEqual(@as(i64, 0), col.int64.values.items[1]); // false → 0
+    try std.testing.expectEqual(@as(i64, 2), col.int64.values.items[2]); // int stays
+}

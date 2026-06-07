@@ -321,3 +321,78 @@ test "join: matched row with null value cell stays null" {
     try std.testing.expectEqual(@as(i64, 10), v_col.int64.values.items[0]);
     try std.testing.expect(v_col.int64.isNull(1));
 }
+
+// ---- B6 regression tests (Phase 12) ----
+
+test "join B6: duplicate non-key column renamed to _right" {
+    // left {k, v}, right {k, v} — v collides.
+    // Result must have "v" (left values) and "v_right" (right values).
+    const allocator = std.testing.allocator;
+
+    var left = try Dataframe.init(allocator);
+    defer left.deinit();
+    var lk = try left.createSeries(i32);
+    try lk.rename("k");
+    try lk.append(1);
+    try lk.append(2);
+    var lv = try left.createSeries(i64);
+    try lv.rename("v");
+    try lv.append(10);
+    try lv.append(20);
+
+    var right = try Dataframe.init(allocator);
+    defer right.deinit();
+    var rk = try right.createSeries(i32);
+    try rk.rename("k");
+    try rk.append(1);
+    try rk.append(2);
+    var rv = try right.createSeries(i64);
+    try rv.rename("v");
+    try rv.append(100);
+    try rv.append(200);
+
+    var result = try join(allocator, left, right, "k", .inner);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), result.height());
+
+    // "v" must be present and contain LEFT values.
+    const v_col = result.getSeries("v") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(i64, 10), v_col.int64.values.items[0]);
+    try std.testing.expectEqual(@as(i64, 20), v_col.int64.values.items[1]);
+
+    // "v_right" must be present and contain RIGHT values.
+    const v_right = result.getSeries("v_right") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(i64, 100), v_right.int64.values.items[0]);
+    try std.testing.expectEqual(@as(i64, 200), v_right.int64.values.items[1]);
+}
+
+test "join B6: no collision — names unchanged" {
+    // left {k, a}, right {k, b} — no collision; both names unchanged.
+    const allocator = std.testing.allocator;
+
+    var left = try Dataframe.init(allocator);
+    defer left.deinit();
+    var lk = try left.createSeries(i32);
+    try lk.rename("k");
+    try lk.append(1);
+    var la = try left.createSeries(i64);
+    try la.rename("a");
+    try la.append(10);
+
+    var right = try Dataframe.init(allocator);
+    defer right.deinit();
+    var rk = try right.createSeries(i32);
+    try rk.rename("k");
+    try rk.append(1);
+    var rb = try right.createSeries(i64);
+    try rb.rename("b");
+    try rb.append(99);
+
+    var result = try join(allocator, left, right, "k", .inner);
+    defer result.deinit();
+
+    try std.testing.expect(result.getSeries("a") != null);
+    try std.testing.expect(result.getSeries("b") != null);
+    try std.testing.expect(result.getSeries("b_right") == null);
+}
