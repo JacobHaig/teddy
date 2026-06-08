@@ -263,3 +263,83 @@ test "json_reader B2 int arm: bool values in integer column encode as 1/0" {
     try std.testing.expectEqual(@as(i64, 0), col.int64.values.items[1]); // false → 0
     try std.testing.expectEqual(@as(i64, 2), col.int64.values.items[2]); // int stays
 }
+
+// ---- Phase 7 (JSON reader fixes) ----
+
+test "json_reader P7: auto-detect rows from leading bracket" {
+    const allocator = std.testing.allocator;
+    var df = try json_reader.parse(allocator, "[{\"a\":1}]", .{});
+    defer df.deinit();
+    try std.testing.expectEqual(@as(usize, 1), df.height());
+    try std.testing.expectEqual(@as(usize, 1), df.width());
+    try std.testing.expect(df.getSeries("a") != null);
+}
+
+test "json_reader P7: auto-detect columns from single object" {
+    const allocator = std.testing.allocator;
+    var df = try json_reader.parse(allocator, "{\"a\":[1,2]}", .{});
+    defer df.deinit();
+    try std.testing.expectEqual(@as(usize, 2), df.height());
+    try std.testing.expectEqual(@as(usize, 1), df.width());
+}
+
+test "json_reader P7: auto-detect ndjson from two brace lines" {
+    const allocator = std.testing.allocator;
+    var df = try json_reader.parse(allocator, "{\"a\":1}\n{\"a\":2}", .{});
+    defer df.deinit();
+    try std.testing.expectEqual(@as(usize, 2), df.height());
+    try std.testing.expectEqual(@as(usize, 1), df.width());
+}
+
+test "json_reader P7: force columns format on single object" {
+    const allocator = std.testing.allocator;
+    var df = try json_reader.parse(allocator, "{\"a\":[1,2,3]}", .{ .format = .columns });
+    defer df.deinit();
+    try std.testing.expectEqual(@as(usize, 3), df.height());
+    try std.testing.expectEqual(@as(usize, 1), df.width());
+}
+
+test "json_reader P7: pretty-printed columns object is not misdetected as ndjson" {
+    // A single columns object split across lines, but only ONE leading '{'.
+    // Must detect columns, not ndjson.
+    const allocator = std.testing.allocator;
+    var df = try json_reader.parse(allocator, "{\n  \"a\": [1, 2],\n  \"b\": [3, 4]\n}", .{});
+    defer df.deinit();
+    try std.testing.expectEqual(@as(usize, 2), df.height());
+    try std.testing.expectEqual(@as(usize, 2), df.width());
+    try std.testing.expect(df.getSeries("a") != null);
+    try std.testing.expect(df.getSeries("b") != null);
+}
+
+test "json_reader P7: escaped object key becomes correct column name" {
+    // {"a\"b": 1} -> column named exactly a"b (3 bytes: a, doublequote, b).
+    const allocator = std.testing.allocator;
+    var df = try json_reader.parse(allocator, "[{\"a\\\"b\": 1}]", .{});
+    defer df.deinit();
+    try std.testing.expectEqual(@as(usize, 1), df.width());
+    const col = df.getSeries("a\"b") orelse return error.ColumnNotFound;
+    try std.testing.expect(col.* == .int64);
+    try std.testing.expectEqual(@as(i64, 1), col.int64.values.items[0]);
+}
+
+test "json_reader P7: integer beyond i64 range falls back to float64" {
+    const allocator = std.testing.allocator;
+    var df = try json_reader.parse(allocator, "[{\"n\": 123456789012345678901234567890}]", .{});
+    defer df.deinit();
+    const col = df.getSeries("n") orelse return error.ColumnNotFound;
+    try std.testing.expectEqualStrings("f64", col.typeName());
+    const v = col.float64.values.items[0];
+    try std.testing.expect(std.math.isFinite(v));
+    try std.testing.expect(v > 1e29);
+}
+
+test "json_reader P7: backspace and formfeed escapes unescape" {
+    // "a\bc\fd" -> bytes a, 0x08, c, 0x0C, d.
+    const allocator = std.testing.allocator;
+    var df = try json_reader.parse(allocator, "[{\"s\": \"a\\bc\\fd\"}]", .{});
+    defer df.deinit();
+    const col = df.getSeries("s") orelse return error.ColumnNotFound;
+    try std.testing.expect(col.* == .string);
+    const bytes = col.string.values.items[0].toSlice();
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 'a', 0x08, 'c', 0x0C, 'd' }, bytes);
+}

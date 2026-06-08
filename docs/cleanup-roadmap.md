@@ -96,9 +96,15 @@ spec: Decimal = i256 (precision ≤ 76); INT96 decodes to Timestamp(nanos) with
 opt-in INT96 re-emit; VARIANT/GEO → `Raw` fallback; nested types → separate
 spec (6d-2b).
 
-### Phase 7 — JSON reader/serialization fixes ⬜
-- Fix `.auto => unreachable` type inference (`json_reader.zig:31`).
-- Finish remaining reader/serialization gaps.
+### Phase 7 — JSON reader/serialization fixes ✅ (2026-06-08; mostly absorbed by Phase 12 B2)
+- Fixed `.auto => unreachable` by construction (detectFormat returns a
+  no-auto `DetectedFormat`; dispatch is exhaustive).
+- Hardened detectFormat (brace-line count, not a `\n{` substring heuristic).
+- Object keys are now unescaped + owned (`{"a\"b":1}` → correct column name).
+- Integer literals beyond i64 fall back to f64 instead of erroring.
+- `\b`/`\f` string escapes decoded. Remaining gap (documented): `\uXXXX`
+  unicode escapes emit raw; reading nested JSON values (arrays/objects as
+  row values) into `Nested` is its own future feature.
 
 ### Phase 8 — Native Zig serialization format (new) ⬜
 - Ergonomic, 1:1, no-processing on-disk format mirroring the in-memory
