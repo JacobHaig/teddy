@@ -1,7 +1,7 @@
 """Generate Parquet test fixtures used by the Zig test suite.
 
 Requires pyarrow:  python3 -m pip install pyarrow
-Run from the repo root:  python3 src_py/gen_fixtures.py
+Run from the repo root:  python3 validation/gen_fixtures.py
 
 Regenerates the pyarrow-generated fixtures under data/. Note that
 data/addresses.parquet and data/addresses_snappy.parquet are externally

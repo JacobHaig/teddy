@@ -1,0 +1,77 @@
+REGRESSION REPORT — 63 cataloged entr(ies) across all stages
+(read/transforms/sort = teddy-vs-pyarrow divergences; round-trips = fidelity catalog)
+
+== READ == (0) 0 divergences expected
+
+== TRANSFORMS == (5) sum/mean/min/max mismatches
+  col=c_i64 kind=transform_mean arrow=8.2 teddy=-0.2
+  col=c_u8 kind=transform_sum arrow=391 teddy=OVERFLOW (native-width accumulator panics; pyarrow widens)
+  col=c_u16 kind=transform_sum arrow=65799 teddy=OVERFLOW (native-width accumulator panics; pyarrow widens)
+  col=c_u32 kind=transform_sum arrow=8294967303 teddy=OVERFLOW (native-width accumulator panics; pyarrow widens)
+  col=c_u64 kind=transform_sum arrow=18000000000000000000 teddy=OVERFLOW (native-width accumulator panics; pyarrow widens)
+
+== SORT == (0) nulls-last parity expected (teddy == pyarrow); any entry is a regression
+
+== TDF_ROUNDTRIP == (0) lossless contract — should be 0; any entry is a REAL BUG
+
+== CSV_ROUNDTRIP == (29) per-column: original_type -> reread_type (sample)
+  col=c_bool kind=csv_roundtrip arrow=bool teddy=String (sample="true")
+  col=c_i8 kind=csv_roundtrip arrow=i8 teddy=i64 (sample="1")
+  col=c_i16 kind=csv_roundtrip arrow=i16 teddy=i64 (sample="1")
+  col=c_i32 kind=csv_roundtrip arrow=i32 teddy=i64 (sample="1")
+  col=c_i64 kind=csv_roundtrip arrow=i64 teddy=i64 (sample="42")
+  col=c_u8 kind=csv_roundtrip arrow=u8 teddy=i64 (sample="1")
+  col=c_u16 kind=csv_roundtrip arrow=u16 teddy=i64 (sample="1")
+  col=c_u32 kind=csv_roundtrip arrow=u32 teddy=i64 (sample="1")
+  col=c_u64 kind=csv_roundtrip arrow=u64 teddy=f64 (sample="1")
+  col=c_f32 kind=csv_roundtrip arrow=f32 teddy=f64 (sample="1.5")
+  col=c_f64 kind=csv_roundtrip arrow=f64 teddy=f64 (sample="1.5")
+  col=c_f16 kind=csv_roundtrip arrow=f16 teddy=f64 (sample="1.5")
+  col=c_str kind=csv_roundtrip arrow=String teddy=String (sample="alpha")
+  col=c_binary kind=csv_roundtrip arrow=Binary teddy=String (sample="0001ff")
+  col=c_fixed kind=csv_roundtrip arrow=FixedBytes teddy=String (sample="61626364")
+  col=c_date kind=csv_roundtrip arrow=Date teddy=String (sample="1970-01-01")
+  col=c_time32 kind=csv_roundtrip arrow=Time teddy=String (sample="00:00:00.001")
+  col=c_time64 kind=csv_roundtrip arrow=Time teddy=String (sample="00:00:00.000001")
+  col=c_ts_utc kind=csv_roundtrip arrow=Timestamp teddy=String (sample="1970-01-01T00:00:00.000001000Z")
+  col=c_ts_naive kind=csv_roundtrip arrow=Timestamp teddy=String (sample="1970-01-01T00:00:00.001000000")
+  col=c_ts_ns kind=csv_roundtrip arrow=Timestamp teddy=String (sample="1970-01-01T00:00:00.000000001Z")
+  col=c_dec9 kind=csv_roundtrip arrow=Decimal teddy=f64 (sample="1234567.89")
+  col=c_dec38 kind=csv_roundtrip arrow=Decimal teddy=f64 (sample="1234567890123456900000000000")
+  col=c_uuid kind=csv_roundtrip arrow=Uuid teddy=String (sample="01234567-89ab-cdef-0123-456789abcdef")
+  col=c_list kind=csv_roundtrip arrow=Nested teddy=String (sample="[1, 2]")
+  col=c_struct kind=csv_roundtrip arrow=Nested teddy=String (sample="{1, "x"}")
+  col=c_map kind=csv_roundtrip arrow=Nested teddy=String (sample="{"a": 1, "b": 2}")
+  col=c_list_struct kind=csv_roundtrip arrow=Nested teddy=String (sample="[{1}, {2}]")
+  col=c_list_list kind=csv_roundtrip arrow=Nested teddy=String (sample="[[1], [2, 3]]")
+
+== JSON_ROUNDTRIP == (29) per-column: original_type -> reread_type (sample)
+  col=c_bool kind=json_roundtrip arrow=bool teddy=String (sample="true")
+  col=c_i8 kind=json_roundtrip arrow=i8 teddy=i64 (sample="1")
+  col=c_i16 kind=json_roundtrip arrow=i16 teddy=i64 (sample="1")
+  col=c_i32 kind=json_roundtrip arrow=i32 teddy=i64 (sample="1")
+  col=c_i64 kind=json_roundtrip arrow=i64 teddy=i64 (sample="42")
+  col=c_u8 kind=json_roundtrip arrow=u8 teddy=i64 (sample="1")
+  col=c_u16 kind=json_roundtrip arrow=u16 teddy=i64 (sample="1")
+  col=c_u32 kind=json_roundtrip arrow=u32 teddy=i64 (sample="1")
+  col=c_u64 kind=json_roundtrip arrow=u64 teddy=f64 (sample="1")
+  col=c_f32 kind=json_roundtrip arrow=f32 teddy=f64 (sample="1.5")
+  col=c_f64 kind=json_roundtrip arrow=f64 teddy=f64 (sample="1.5")
+  col=c_f16 kind=json_roundtrip arrow=f16 teddy=f64 (sample="1.5")
+  col=c_str kind=json_roundtrip arrow=String teddy=String (sample="alpha")
+  col=c_binary kind=json_roundtrip arrow=Binary teddy=String (sample="0001ff")
+  col=c_fixed kind=json_roundtrip arrow=FixedBytes teddy=String (sample="61626364")
+  col=c_date kind=json_roundtrip arrow=Date teddy=String (sample="1970-01-01")
+  col=c_time32 kind=json_roundtrip arrow=Time teddy=String (sample="00:00:00.001")
+  col=c_time64 kind=json_roundtrip arrow=Time teddy=String (sample="00:00:00.000001")
+  col=c_ts_utc kind=json_roundtrip arrow=Timestamp teddy=String (sample="1970-01-01T00:00:00.000001000Z")
+  col=c_ts_naive kind=json_roundtrip arrow=Timestamp teddy=String (sample="1970-01-01T00:00:00.001000000")
+  col=c_ts_ns kind=json_roundtrip arrow=Timestamp teddy=String (sample="1970-01-01T00:00:00.000000001Z")
+  col=c_dec9 kind=json_roundtrip arrow=Decimal teddy=String (sample="1234567.89")
+  col=c_dec38 kind=json_roundtrip arrow=Decimal teddy=String (sample="1234567890123456789012345678.0123456789")
+  col=c_uuid kind=json_roundtrip arrow=Uuid teddy=String (sample="01234567-89ab-cdef-0123-456789abcdef")
+  col=c_list kind=json_roundtrip arrow=Nested teddy=parse failed: InvalidJson
+  col=c_struct kind=json_roundtrip arrow=Nested teddy=parse failed: InvalidJson
+  col=c_map kind=json_roundtrip arrow=Nested teddy=parse failed: InvalidJson
+  col=c_list_struct kind=json_roundtrip arrow=Nested teddy=parse failed: InvalidJson
+  col=c_list_list kind=json_roundtrip arrow=Nested teddy=parse failed: InvalidJson

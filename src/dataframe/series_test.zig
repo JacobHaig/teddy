@@ -162,6 +162,30 @@ test "Series: sum" {
     try std.testing.expectEqual(@as(i32, 60), s.sum());
 }
 
+test "BoxedSeries: sumChecked on an int column (instantiates the inline int arm)" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(10);
+    try s.append(20);
+    try s.append(30);
+
+    var boxed = s.toBoxedSeries();
+    // Exercises the .int8..isize inline prong — a compile error before the fix.
+    try std.testing.expectEqual(@as(f64, 60), try boxed.sumChecked());
+}
+
+test "BoxedSeries: sumChecked errors on integer overflow" {
+    const allocator = std.testing.allocator;
+    var s = try Series(u8).init(allocator);
+    defer s.deinit();
+    try s.append(200);
+    try s.append(200); // 400 > u8 max (255) -> overflow
+
+    var boxed = s.toBoxedSeries();
+    try std.testing.expectError(error.Overflow, boxed.sumChecked());
+}
+
 test "Series: min and max" {
     const allocator = std.testing.allocator;
     var s = try Series(i32).init(allocator);
@@ -1507,6 +1531,35 @@ test "Series(f16): argSort" {
     try std.testing.expectEqual(@as(usize, 1), indices.items[0]);
     try std.testing.expectEqual(@as(usize, 2), indices.items[1]);
     try std.testing.expectEqual(@as(usize, 0), indices.items[2]);
+}
+
+test "Series: argSort places nulls LAST (ascending)" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(3); // idx 0
+    try s.appendNull(); // idx 1 (null)
+    try s.append(1); // idx 2
+
+    var idx = try s.argSort(allocator, true);
+    defer idx.deinit(allocator);
+    // non-nulls sorted ascending {1@2, 3@0} then null@1 last.
+    try std.testing.expectEqualSlices(usize, &.{ 2, 0, 1 }, idx.items);
+}
+
+test "Series: argSort places nulls LAST (descending)" {
+    const allocator = std.testing.allocator;
+    var s = try Series(i32).init(allocator);
+    defer s.deinit();
+    try s.append(3); // idx 0
+    try s.appendNull(); // idx 1 (null)
+    try s.append(1); // idx 2
+
+    var idx = try s.argSort(allocator, false);
+    defer idx.deinit(allocator);
+    // non-nulls sorted descending {3@0, 1@2} then null@1 last (na_position
+    // stays 'last' regardless of direction).
+    try std.testing.expectEqualSlices(usize, &.{ 0, 2, 1 }, idx.items);
 }
 
 test "Series(f16): getTypeAsString is Float16" {

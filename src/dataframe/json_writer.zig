@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 const Dataframe = @import("dataframe.zig").Dataframe;
 const String = @import("strings.zig").String;
 const BoxedSeries = @import("boxed_series.zig").BoxedSeries;
+const writeNestedJson = @import("nested_json.zig").writeNestedJson;
 
 pub const JsonFormat = enum { rows, columns, ndjson };
 
@@ -83,6 +84,15 @@ fn appendJsonValue(buf: *std.ArrayList(u8), allocator: Allocator, series: *Boxed
         try buf.appendSlice(allocator, "null");
         return;
     }
+    // Nested columns render via the dedicated valid-JSON walker, which names
+    // struct fields from the column's SchemaNode (Nested.format is positional
+    // — `{1,"x"}` — and not valid JSON, so it must NOT be used here).
+    if (series.* == .nested) {
+        const s = series.nested;
+        const node: ?*const @import("parquet").types.SchemaNode = s.meta.schema;
+        try writeNestedJson(buf, allocator, &s.values.items[row], node);
+        return;
+    }
     if (isStringSeries(series)) {
         var str = try series.asStringAt(row);
         defer str.deinit();
@@ -112,9 +122,8 @@ fn isStringSeries(series: *BoxedSeries) bool {
         .uuid => true,
         // Interval renders as human-readable text — must be quoted.
         .interval => true,
-        // Nested.format emits REAL JSON (objects/arrays/numbers/null) plus
-        // already-quoted scalars (strings/dates/etc.) — it must NOT be wrapped
-        // in extra quotes. Route through asStringAt raw (false), unquoted.
+        // Nested is handled by appendJsonValue's dedicated writeNestedJson
+        // branch BEFORE this function is consulted; it never reaches here.
         .nested => false,
         else => false,
     };

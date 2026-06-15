@@ -1,0 +1,905 @@
+{
+  "fixture": "data/validation/alltypes.parquet",
+  "num_rows": 6,
+  "columns": [
+    {
+      "name": "c_bool",
+      "arrow_type": "bool",
+      "expected_teddy_type": "bool",
+      "cells": [
+        {
+          "v": "1"
+        },
+        {
+          "null": true
+        },
+        {
+          "v": "0"
+        },
+        {
+          "v": "1"
+        },
+        {
+          "v": "0"
+        },
+        {
+          "v": "1"
+        }
+      ]
+    },
+    {
+      "name": "c_i8",
+      "arrow_type": "int8",
+      "expected_teddy_type": "i8",
+      "cells": [
+        {
+          "v": "1"
+        },
+        {
+          "null": true
+        },
+        {
+          "v": "-128"
+        },
+        {
+          "v": "127"
+        },
+        {
+          "v": "0"
+        },
+        {
+          "v": "-1"
+        }
+      ]
+    },
+    {
+      "name": "c_i16",
+      "arrow_type": "int16",
+      "expected_teddy_type": "i16",
+      "cells": [
+        {
+          "v": "1"
+        },
+        {
+          "null": true
+        },
+        {
+          "v": "-32768"
+        },
+        {
+          "v": "32767"
+        },
+        {
+          "v": "0"
+        },
+        {
+          "v": "-1"
+        }
+      ]
+    },
+    {
+      "name": "c_i32",
+      "arrow_type": "int32",
+      "expected_teddy_type": "i32",
+      "cells": [
+        {
+          "v": "1"
+        },
+        {
+          "null": true
+        },
+        {
+          "v": "-2147483648"
+        },
+        {
+          "v": "2147483647"
+        },
+        {
+          "v": "0"
+        },
+        {
+          "v": "-1"
+        }
+      ]
+    },
+    {
+      "name": "c_i64",
+      "arrow_type": "int64",
+      "expected_teddy_type": "i64",
+      "cells": [
+        {
+          "v": "42"
+        },
+        {
+          "null": true
+        },
+        {
+          "v": "-9223372036854775808"
+        },
+        {
+          "v": "9223372036854775807"
+        },
+        {
+          "v": "0"
+        },
+        {
+          "v": "-1"
+        }
+      ]
+    },
+    {
+      "name": "c_u8",
+      "arrow_type": "uint8",
+      "expected_teddy_type": "u8",
+      "cells": [
+        {
+          "v": "1"
+        },
+        {
+          "null": true
+        },
+        {
+          "v": "0"
+        },
+        {
+          "v": "255"
+        },
+        {
+          "v": "128"
+        },
+        {
+          "v": "7"
+        }
+      ]
+    },
+    {
+      "name": "c_u16",
+      "arrow_type": "uint16",
+      "expected_teddy_type": "u16",
+      "cells": [
+        {
+          "v": "1"
+        },
+        {
+          "null": true
+        },
+        {
+          "v": "0"
+        },
+        {
+          "v": "65535"
+        },
+        {
+          "v": "256"
+        },
+        {
+          "v": "7"
+        }
+      ]
+    },
+    {
+      "name": "c_u32",
+      "arrow_type": "uint32",
+      "expected_teddy_type": "u32",
+      "cells": [
+        {
+          "v": "1"
+        },
+        {
+          "null": true
+        },
+        {
+          "v": "0"
+        },
+        {
+          "v": "4294967295"
+        },
+        {
+          "v": "4000000000"
+        },
+        {
+          "v": "7"
+        }
+      ]
+    },
+    {
+      "name": "c_u64",
+      "arrow_type": "uint64",
+      "expected_teddy_type": "u64",
+      "cells": [
+        {
+          "v": "1"
+        },
+        {
+          "null": true
+        },
+        {
+          "v": "0"
+        },
+        {
+          "v": "18446744073709551615"
+        },
+        {
+          "v": "18000000000000000000"
+        },
+        {
+          "v": "7"
+        }
+      ]
+    },
+    {
+      "name": "c_f32",
+      "arrow_type": "float",
+      "expected_teddy_type": "f32",
+      "cells": [
+        {
+          "v": 1.5
+        },
+        {
+          "null": true
+        },
+        {
+          "v": -0.25
+        },
+        {
+          "v": 3.5
+        },
+        {
+          "v": 0.0
+        },
+        {
+          "v": 100.125
+        }
+      ]
+    },
+    {
+      "name": "c_f64",
+      "arrow_type": "double",
+      "expected_teddy_type": "f64",
+      "cells": [
+        {
+          "v": 1.5
+        },
+        {
+          "null": true
+        },
+        {
+          "v": -0.25
+        },
+        {
+          "v": 3.140625
+        },
+        {
+          "v": 0.0
+        },
+        {
+          "v": 10000000000.0
+        }
+      ]
+    },
+    {
+      "name": "c_f16",
+      "arrow_type": "halffloat",
+      "expected_teddy_type": "f16",
+      "cells": [
+        {
+          "v": 1.5
+        },
+        {
+          "null": true
+        },
+        {
+          "v": -0.25
+        },
+        {
+          "v": 0.5
+        },
+        {
+          "v": 0.0
+        },
+        {
+          "v": 2.0
+        }
+      ]
+    },
+    {
+      "name": "c_str",
+      "arrow_type": "string",
+      "expected_teddy_type": "String",
+      "cells": [
+        {
+          "v": "alpha"
+        },
+        {
+          "null": true
+        },
+        {
+          "v": ""
+        },
+        {
+          "v": "h\u00e9llo"
+        },
+        {
+          "v": "tab\there"
+        },
+        {
+          "v": "z"
+        }
+      ]
+    },
+    {
+      "name": "c_binary",
+      "arrow_type": "binary",
+      "expected_teddy_type": "Binary",
+      "cells": [
+        {
+          "v": "0001ff"
+        },
+        {
+          "null": true
+        },
+        {
+          "v": ""
+        },
+        {
+          "v": "deadbeef"
+        },
+        {
+          "v": "ff00"
+        },
+        {
+          "v": "6162"
+        }
+      ]
+    },
+    {
+      "name": "c_fixed",
+      "arrow_type": "fixed_size_binary[4]",
+      "expected_teddy_type": "FixedBytes",
+      "cells": [
+        {
+          "v": "61626364"
+        },
+        {
+          "null": true
+        },
+        {
+          "v": "00000000"
+        },
+        {
+          "v": "ffffffff"
+        },
+        {
+          "v": "7778797a"
+        },
+        {
+          "v": "30313233"
+        }
+      ]
+    },
+    {
+      "name": "c_date",
+      "arrow_type": "date32[day]",
+      "expected_teddy_type": "Date",
+      "cells": [
+        {
+          "v": "0"
+        },
+        {
+          "null": true
+        },
+        {
+          "v": "1"
+        },
+        {
+          "v": "-1"
+        },
+        {
+          "v": "18262"
+        },
+        {
+          "v": "19000"
+        }
+      ]
+    },
+    {
+      "name": "c_time32",
+      "arrow_type": "time32[ms]",
+      "expected_teddy_type": "Time",
+      "cells": [
+        {
+          "v": "1000000"
+        },
+        {
+          "null": true
+        },
+        {
+          "v": "0"
+        },
+        {
+          "v": "1000000000"
+        },
+        {
+          "v": "86399999000000"
+        },
+        {
+          "v": "3600000000000"
+        }
+      ]
+    },
+    {
+      "name": "c_time64",
+      "arrow_type": "time64[us]",
+      "expected_teddy_type": "Time",
+      "cells": [
+        {
+          "v": "1000"
+        },
+        {
+          "null": true
+        },
+        {
+          "v": "0"
+        },
+        {
+          "v": "1000000"
+        },
+        {
+          "v": "86399999999000"
+        },
+        {
+          "v": "3600000000000"
+        }
+      ]
+    },
+    {
+      "name": "c_ts_utc",
+      "arrow_type": "timestamp[us, tz=UTC]",
+      "expected_teddy_type": "Timestamp",
+      "cells": [
+        {
+          "v": "1000:1"
+        },
+        {
+          "null": true
+        },
+        {
+          "v": "0:1"
+        },
+        {
+          "v": "-1000:1"
+        },
+        {
+          "v": "1600000000000000000:1"
+        },
+        {
+          "v": "1700000000000000000:1"
+        }
+      ]
+    },
+    {
+      "name": "c_ts_naive",
+      "arrow_type": "timestamp[ms]",
+      "expected_teddy_type": "Timestamp",
+      "cells": [
+        {
+          "v": "1000000:0"
+        },
+        {
+          "null": true
+        },
+        {
+          "v": "0:0"
+        },
+        {
+          "v": "-1000000:0"
+        },
+        {
+          "v": "1600000000000000000:0"
+        },
+        {
+          "v": "1700000000000000000:0"
+        }
+      ]
+    },
+    {
+      "name": "c_ts_ns",
+      "arrow_type": "timestamp[ns, tz=UTC]",
+      "expected_teddy_type": "Timestamp",
+      "cells": [
+        {
+          "v": "1:1"
+        },
+        {
+          "null": true
+        },
+        {
+          "v": "0:1"
+        },
+        {
+          "v": "-1:1"
+        },
+        {
+          "v": "1600000000000000000:1"
+        },
+        {
+          "v": "1700000000000000000:1"
+        }
+      ]
+    },
+    {
+      "name": "c_dec9",
+      "arrow_type": "decimal128(9, 2)",
+      "expected_teddy_type": "Decimal",
+      "cells": [
+        {
+          "v": "123456789:2"
+        },
+        {
+          "null": true
+        },
+        {
+          "v": "-1:2"
+        },
+        {
+          "v": "0:2"
+        },
+        {
+          "v": "999999999:2"
+        },
+        {
+          "v": "-999999999:2"
+        }
+      ]
+    },
+    {
+      "name": "c_dec38",
+      "arrow_type": "decimal128(38, 10)",
+      "expected_teddy_type": "Decimal",
+      "cells": [
+        {
+          "v": "12345678901234567890123456780123456789:10"
+        },
+        {
+          "null": true
+        },
+        {
+          "v": "-1:10"
+        },
+        {
+          "v": "0:10"
+        },
+        {
+          "v": "10000000000:10"
+        },
+        {
+          "v": "-10000000000:10"
+        }
+      ]
+    },
+    {
+      "name": "c_uuid",
+      "arrow_type": "extension<arrow.uuid>",
+      "expected_teddy_type": "Uuid",
+      "cells": [
+        {
+          "v": "0123456789abcdef0123456789abcdef"
+        },
+        {
+          "null": true
+        },
+        {
+          "v": "00000000000000000000000000000000"
+        },
+        {
+          "v": "ffffffffffffffffffffffffffffffff"
+        },
+        {
+          "v": "11111111111111111111111111111111"
+        },
+        {
+          "v": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "name": "c_list",
+      "arrow_type": "list<item: int64>",
+      "expected_teddy_type": "Nested",
+      "cells": [
+        {
+          "v": [
+            "1",
+            "2"
+          ]
+        },
+        {
+          "null": true
+        },
+        {
+          "v": []
+        },
+        {
+          "v": [
+            "3"
+          ]
+        },
+        {
+          "v": [
+            "4",
+            "5",
+            "6"
+          ]
+        },
+        {
+          "v": [
+            null,
+            "7"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "c_struct",
+      "arrow_type": "struct<a: int64, b: string>",
+      "expected_teddy_type": "Nested",
+      "cells": [
+        {
+          "v": [
+            "1",
+            "x"
+          ]
+        },
+        {
+          "null": true
+        },
+        {
+          "v": [
+            "2",
+            null
+          ]
+        },
+        {
+          "v": [
+            "-3",
+            "z"
+          ]
+        },
+        {
+          "v": [
+            "0",
+            ""
+          ]
+        },
+        {
+          "v": [
+            "9",
+            "q"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "c_map",
+      "arrow_type": "map<string, int64>",
+      "expected_teddy_type": "Nested",
+      "cells": [
+        {
+          "v": [
+            [
+              "a",
+              "1"
+            ],
+            [
+              "b",
+              "2"
+            ]
+          ]
+        },
+        {
+          "null": true
+        },
+        {
+          "v": []
+        },
+        {
+          "v": [
+            [
+              "c",
+              null
+            ]
+          ]
+        },
+        {
+          "v": [
+            [
+              "d",
+              "4"
+            ]
+          ]
+        },
+        {
+          "v": [
+            [
+              "e",
+              "5"
+            ],
+            [
+              "f",
+              "6"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "c_list_struct",
+      "arrow_type": "list<item: struct<x: int64>>",
+      "expected_teddy_type": "Nested",
+      "cells": [
+        {
+          "v": [
+            [
+              "1"
+            ],
+            [
+              "2"
+            ]
+          ]
+        },
+        {
+          "null": true
+        },
+        {
+          "v": []
+        },
+        {
+          "v": [
+            [
+              "3"
+            ]
+          ]
+        },
+        {
+          "v": [
+            [
+              null
+            ]
+          ]
+        },
+        {
+          "v": [
+            [
+              "9"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "c_list_list",
+      "arrow_type": "list<item: list<item: int64>>",
+      "expected_teddy_type": "Nested",
+      "cells": [
+        {
+          "v": [
+            [
+              "1"
+            ],
+            [
+              "2",
+              "3"
+            ]
+          ]
+        },
+        {
+          "null": true
+        },
+        {
+          "v": [
+            []
+          ]
+        },
+        {
+          "v": [
+            [
+              "4"
+            ]
+          ]
+        },
+        {
+          "v": [
+            null,
+            [
+              "5"
+            ]
+          ]
+        },
+        {
+          "v": [
+            [
+              "6",
+              "7"
+            ]
+          ]
+        }
+      ]
+    }
+  ],
+  "transforms": {
+    "c_i8": {
+      "sum": -1.0,
+      "mean": -0.2,
+      "min": -128.0,
+      "max": 127.0
+    },
+    "c_i16": {
+      "sum": -1.0,
+      "mean": -0.2,
+      "min": -32768.0,
+      "max": 32767.0
+    },
+    "c_i32": {
+      "sum": -1.0,
+      "mean": -0.2,
+      "min": -2147483648.0,
+      "max": 2147483647.0,
+      "sort_asc_indices": [
+        2,
+        5,
+        4,
+        0,
+        3,
+        1
+      ]
+    },
+    "c_i64": {
+      "sum": 40.0,
+      "mean": 8.2,
+      "min": -9.223372036854776e+18,
+      "max": 9.223372036854776e+18
+    },
+    "c_u8": {
+      "sum": 391.0,
+      "mean": 78.2,
+      "min": 0.0,
+      "max": 255.0
+    },
+    "c_u16": {
+      "sum": 65799.0,
+      "mean": 13159.8,
+      "min": 0.0,
+      "max": 65535.0
+    },
+    "c_u32": {
+      "sum": 8294967303.0,
+      "mean": 1658993460.6,
+      "min": 0.0,
+      "max": 4294967295.0
+    },
+    "c_u64": {
+      "sum": 1.8e+19,
+      "mean": 7.289348814741911e+18,
+      "min": 0.0,
+      "max": 1.8446744073709552e+19
+    },
+    "c_f32": {
+      "sum": 104.875,
+      "mean": 20.975,
+      "min": -0.25,
+      "max": 100.125
+    },
+    "c_f64": {
+      "sum": 10000000004.390625,
+      "mean": 2000000000.878125,
+      "min": -0.25,
+      "max": 10000000000.0
+    },
+    "c_f16": {
+      "sum": 3.75,
+      "mean": 0.75,
+      "min": -0.25,
+      "max": 2.0
+    }
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "fixture": "data/validation/int96.parquet",
+  "num_rows": 3,
+  "columns": [
+    {
+      "name": "c_ts_int96",
+      "arrow_type": "timestamp[ns] (INT96 on wire)",
+      "expected_teddy_type": "Timestamp",
+      "cells": [
+        {
+          "v": "1609459200000000000:0"
+        },
+        {
+          "v": "1623760200000000000:0"
+        },
+        {
+          "v": "1646276583000000000:0"
+        }
+      ]
+    }
+  ],
+  "transforms": {}
+}

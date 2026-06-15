@@ -522,9 +522,19 @@ pub fn Series(comptime T: type) type {
             const items = self.values.items;
             const Context = struct {
                 items_ptr: []const T,
+                series: *Self,
                 asc: bool,
 
                 pub fn lessThan(ctx: @This(), a_idx: usize, b_idx: usize) bool {
+                    // Nulls always sort LAST regardless of direction (pandas
+                    // na_position='last'): a non-null precedes a null; two
+                    // nulls keep stable-ish order (neither precedes the other).
+                    const a_null = ctx.series.isNull(a_idx);
+                    const b_null = ctx.series.isNull(b_idx);
+                    if (a_null or b_null) {
+                        if (a_null and b_null) return false;
+                        return !a_null; // non-null (a) precedes null (b)
+                    }
                     const a = ctx.items_ptr[a_idx];
                     const b = ctx.items_ptr[b_idx];
                     if (comptime hasMethod(T, "order")) {
@@ -541,7 +551,7 @@ pub fn Series(comptime T: type) type {
                     }
                 }
             };
-            std.mem.sortUnstable(usize, indices.items, Context{ .items_ptr = items, .asc = ascending }, Context.lessThan);
+            std.mem.sortUnstable(usize, indices.items, Context{ .items_ptr = items, .series = self, .asc = ascending }, Context.lessThan);
             return indices;
         }
 

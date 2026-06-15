@@ -104,7 +104,9 @@ spec (6d-2b).
 - Integer literals beyond i64 fall back to f64 instead of erroring.
 - `\b`/`\f` string escapes decoded. Remaining gap (documented): `\uXXXX`
   unicode escapes emit raw; reading nested JSON values (arrays/objects as
-  row values) into `Nested` is its own future feature.
+  row values) into `Nested` is its own future feature. (Phase 9.2 added the
+  WRITE side: `Series(Nested)` columns now serialize to valid JSON via
+  `nested_json.zig`; READ-back reconstruction remains the future feature.)
 
 ### Phase 8 — Native Zig serialization format (TDF) ✅ (2026-06-15)
 - Ergonomic, 1:1, uncompressed, lossless on-disk format mirroring the
@@ -120,12 +122,19 @@ spec (6d-2b).
   hardened to the parquet-reader bar (checked casts, bounds, validated
   enums, depth-bounded recursion — never panics).
 
-### Phase 9 — Python↔Zig regression framework (new, large) ⬜
-- Reorganize `src_py/` into a proper folder (e.g. `validation/`).
-- Harness: transform in pandas → same transform in Teddy → diff results.
-- Expand the pandas helper into fixture-generation + parity-checking basis.
+### Phase 9 — Python↔Zig regression framework (new, large) ✅ (2026-06-15)
+- Reorganize `src_py/` into a proper folder (`validation/`). ✅ (9.0)
+- Harness: transform in pyarrow → same transform in Teddy → diff results.
+  ✅ (9.1 transforms + round-trip stages)
 - `data/` fixtures stay as-is (intentional test inputs).
-- Break into sub-phases when reached.
+- **9.2 — divergence triage + lock-in** ✅: fixed the three behavior decisions
+  (`sumChecked` inline prongs + native-width `sum()` kept; `argSort` nulls-last
+  parity; Nested → valid JSON via `nested_json.zig`), then converted the soft
+  report into an ENFORCED allowlist + committed CSV/JSON fidelity matrix in
+  `src/dataframe/regression_test.zig`. Every justified divergence and its
+  rationale is documented in [`docs/validation-divergences.md`](validation-divergences.md);
+  the test now fails on any new/stale divergence, any fidelity-matrix change,
+  any TDF round-trip loss, or invalid Nested JSON.
 
 ### Phase 13 — Nested parquet WRITE (new, from 6d-2b scope decision) ⬜
 - def/rep level generation from `Nested` row trees + nested schema emission

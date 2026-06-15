@@ -19,6 +19,7 @@ Decisions locked in during the cleanup planning (2026-06-01), see [[cleanup-road
 - **New native Zig serialization format** wanted: ergonomic, 1:1 with in-memory
   structures, save/load with no processing, uncompressed by default.
 - **Python helper becomes a regression-testing framework:** same transformation
-  in pandas vs Teddy, compare results. `src_py/` to be reorganized.
+  in pyarrow vs Teddy, compare results. `src_py/` reorganized into `validation/`
+  (Phase 9.0).
 - **Generated data files in `data/`** (e.g. addresses_out.csv) are intentional
   test fixtures — keep them.

@@ -273,8 +273,8 @@ pub const BoxedSeries = union(enum) {
     /// Checked sum as f64. Returns error.Overflow if any integer accumulation overflows.
     pub fn sumChecked(self: *Self) !f64 {
         return switch (self.*) {
-            .int8, .int16, .int32, .int64, .int128, .isize => |s| @as(f64, @floatFromInt(try s.sumChecked())),
-            .uint8, .uint16, .uint32, .uint64, .uint128, .usize => |s| @as(f64, @floatFromInt(try s.sumChecked())),
+            inline .int8, .int16, .int32, .int64, .int128, .isize => |s| @as(f64, @floatFromInt(try s.sumChecked())),
+            inline .uint8, .uint16, .uint32, .uint64, .uint128, .usize => |s| @as(f64, @floatFromInt(try s.sumChecked())),
             inline .float32, .float16 => |s| @as(f64, try s.sumChecked()),
             .float64 => |s| try s.sumChecked(),
             else => error.TypeNotNumeric,
