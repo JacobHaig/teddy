@@ -106,10 +106,19 @@ spec (6d-2b).
   unicode escapes emit raw; reading nested JSON values (arrays/objects as
   row values) into `Nested` is its own future feature.
 
-### Phase 8 — Native Zig serialization format (new) ⬜
-- Ergonomic, 1:1, no-processing on-disk format mirroring the in-memory
-  dataframe/series structure. Save & load without transformation, uncompressed
-  by default. Design pass (layout, versioning, null bitmap, schema header) first.
+### Phase 8 — Native Zig serialization format (TDF) ✅ (2026-06-15)
+- Ergonomic, 1:1, uncompressed, lossless on-disk format mirroring the
+  in-memory dataframe. Round-trips ALL 16 column types incl. Nested,
+  Decimal precision/scale, Timestamp origin, Raw annotations, FixedBytes
+  width — the only teddy format that does. `FileType.tdf`, `.tdf` extension.
+- `src/dataframe/native_format.zig` (writeToString/parse); spec
+  `docs/superpowers/specs/2026-06-08-phase-8-native-format-design.md`;
+  canonical on-disk reference `docs/tdf-format.md`. 29 round-trip +
+  malformed-input tests incl. a parquet→TDF→render end-to-end.
+- Magic "TEDDYDF1" + format_version u16; reserved `flags` u16 is the
+  future compression hook (no version bump needed). Untrusted-input
+  hardened to the parquet-reader bar (checked casts, bounds, validated
+  enums, depth-bounded recursion — never panics).
 
 ### Phase 9 — Python↔Zig regression framework (new, large) ⬜
 - Reorganize `src_py/` into a proper folder (e.g. `validation/`).

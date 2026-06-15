@@ -28,9 +28,11 @@ groupByMultiple double-free). **PHASE 6 COMPLETE 2026-06-07**: 6d-2b nested
 types landed (read-side LIST/MAP/STRUCT via SchemaNode trees + Dremel
 assembly into the recursive Nested value type; spec
 docs/superpowers/specs/2026-06-07-parquet-nested-types-design.md; nested
-WRITE deferred to new Phase 13). Remaining: Phase 7 JSON fixes (partly
-absorbed by Phase 12 B2), Phase 8 native serialization format, Phase 9
-Python↔Zig regression framework, Phase 13 nested write.
+WRITE deferred to new Phase 13). **Phase 7 ✅** (JSON reader hardening, 2026-06-08) and **Phase 8 ✅** (native
+TDF serialization format, 2026-06-15: lossless 1:1 on-disk format for all 16
+column types incl. Nested; src/dataframe/native_format.zig; docs/tdf-format.md)
+done. Remaining: Phase 9 Python↔Zig regression framework, Phase 13 nested
+parquet write.
 
 **Why:** owner wants the codebase "up to snuff" — remove template cruft, finish
 half-implemented IO, add validation.

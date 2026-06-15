@@ -23,4 +23,5 @@ comptime {
     _ = @import("nested.zig");
     _ = @import("nested_assembly.zig");
     _ = @import("parquet_test.zig");
+    _ = @import("native_format_test.zig");
 }

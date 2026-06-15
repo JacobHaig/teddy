@@ -118,6 +118,7 @@ pub const Writer = struct {
                     .emit_int96 = self.emit_int96,
                 });
             },
+            .tdf => @import("native_format.zig").writeToString(self.allocator, df),
             else => error.UnsupportedFileType,
         };
     }

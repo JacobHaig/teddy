@@ -9,6 +9,7 @@ pub const FileType = union(enum) {
     csv,
     json,
     parquet,
+    tdf,
 };
 
 pub const Reader = struct {
@@ -110,6 +111,7 @@ pub const Reader = struct {
             .csv => self.readCsv(),
             .json => self.readJson(),
             .parquet => self.readParquet(),
+            .tdf => self.readTdf(),
             else => error.FileDoesNotExist,
         };
     }
@@ -153,5 +155,16 @@ pub const Reader = struct {
         defer result.deinit();
 
         return try parquet_adapter.toDataframe(self.allocator, &result);
+    }
+
+    fn readTdf(self: *Self) !*dataframe.Dataframe {
+        const filename = self.path orelse return error.InvalidFilePath;
+
+        const cwd = std.Io.Dir.cwd();
+        const content = try cwd.readFileAlloc(self.io, filename, self.allocator, .unlimited);
+        defer self.allocator.free(content);
+
+        const native_format = @import("native_format.zig");
+        return try native_format.parse(self.allocator, content);
     }
 };
