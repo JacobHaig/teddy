@@ -96,6 +96,24 @@ pub const PlainEncoder = struct {
 /// bytes; for bit_width 1..8 that is exactly one byte. Adjacent equal levels
 /// coalesce into one run; differing values start new runs.
 pub fn encodeRleLevels(allocator: Allocator, levels: []const u1, out: *std.ArrayList(u8)) !void {
+    // Thin wrapper over the generalized encoder at bit_width 1. Widen u1 → u32;
+    // the generalized path produces byte-identical output for bit_width 1.
+    if (levels.len == 0) return;
+    var widened = try allocator.alloc(u32, levels.len);
+    defer allocator.free(widened);
+    for (levels, 0..) |l, i| widened[i] = l;
+    try encodeRleLevelsW(allocator, 1, widened, out);
+}
+
+/// Generalized RLE-runs-only level encoder for arbitrary bit widths (def/rep
+/// levels in nested columns). Each RLE run is `varint(run_len << 1)` (low bit 0
+/// marks an RLE run) followed by the run's value written LE in
+/// `ceil(bit_width/8)` bytes — one byte for bit_width 1..8 (all realistic
+/// nesting depths), up to 4 bytes for bit_width up to 32. This is the exact
+/// inverse of the reader's RleBitPackedDecoder at the same bit width. Adjacent
+/// equal levels coalesce into one run; differing values start a new run.
+pub fn encodeRleLevelsW(allocator: Allocator, bit_width: u8, levels: []const u32, out: *std.ArrayList(u8)) !void {
+    const val_bytes: usize = (@as(usize, bit_width) + 7) / 8;
     var i: usize = 0;
     while (i < levels.len) {
         const run_val = levels[i];
@@ -108,8 +126,12 @@ pub fn encodeRleLevels(allocator: Allocator, levels: []const u1, out: *std.Array
             header >>= 7;
         }
         try out.append(allocator, @intCast(header));
-        // Run value: 1 byte for bit_width <= 8 (levels are 0/1).
-        try out.append(allocator, @intFromBool(run_val == 1));
+        // Run value: ceil(bit_width/8) bytes, little-endian.
+        var v = run_val;
+        for (0..val_bytes) |_| {
+            try out.append(allocator, @intCast(v & 0xFF));
+            v >>= 8;
+        }
         i += run_len;
     }
 }

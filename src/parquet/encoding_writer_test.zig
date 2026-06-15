@@ -1,6 +1,7 @@
 const std = @import("std");
 const PlainEncoder = @import("encoding_writer.zig").PlainEncoder;
 const encodeRleLevels = @import("encoding_writer.zig").encodeRleLevels;
+const encodeRleLevelsW = @import("encoding_writer.zig").encodeRleLevelsW;
 const PlainDecoder = @import("encoding_reader.zig").PlainDecoder;
 const RleBitPackedDecoder = @import("encoding_reader.zig").RleBitPackedDecoder;
 
@@ -169,4 +170,58 @@ test "encodeRleLevels: empty input emits nothing" {
     defer out.deinit(allocator);
     try encodeRleLevels(allocator, &.{}, &out);
     try std.testing.expectEqual(@as(usize, 0), out.items.len);
+}
+
+// ============================================================
+// encodeRleLevelsW (generalized level encoder)
+// ============================================================
+
+test "encodeRleLevelsW: bit_width 1 matches old encoder exactly" {
+    const allocator = std.testing.allocator;
+    const cases = [_][]const u1{
+        &[_]u1{ 1, 1, 1 },
+        &[_]u1{ 1, 0, 1 },
+        &[_]u1{ 0, 0, 0, 1, 1, 0, 1 },
+        &[_]u1{1},
+        &[_]u1{0},
+    };
+    for (cases) |levels| {
+        var old_out = std.ArrayList(u8).empty;
+        defer old_out.deinit(allocator);
+        try encodeRleLevels(allocator, levels, &old_out);
+
+        var widened = try allocator.alloc(u32, levels.len);
+        defer allocator.free(widened);
+        for (levels, 0..) |l, i| widened[i] = l;
+        var new_out = std.ArrayList(u8).empty;
+        defer new_out.deinit(allocator);
+        try encodeRleLevelsW(allocator, 1, widened, &new_out);
+
+        try std.testing.expectEqualSlices(u8, old_out.items, new_out.items);
+    }
+}
+
+test "encodeRleLevelsW: bit_width 2 round-trips through RleBitPackedDecoder" {
+    const allocator = std.testing.allocator;
+    const levels = [_]u32{ 0, 1, 2, 2, 3 };
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(allocator);
+    try encodeRleLevelsW(allocator, 2, &levels, &out);
+
+    var dec = RleBitPackedDecoder.init(out.items, 2);
+    const decoded = try dec.readBatch(levels.len, allocator);
+    defer allocator.free(decoded);
+    for (levels, 0..) |lvl, i| {
+        try std.testing.expectEqual(lvl, decoded[i]);
+    }
+}
+
+test "encodeRleLevelsW: bit_width 2 coalesces equal runs" {
+    const allocator = std.testing.allocator;
+    const levels = [_]u32{ 2, 2, 2 };
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(allocator);
+    try encodeRleLevelsW(allocator, 2, &levels, &out);
+    // single run: varint(3<<1)=0x06, then value 2 in 1 byte (ceil(2/8)=1).
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0x06, 0x02 }, out.items);
 }

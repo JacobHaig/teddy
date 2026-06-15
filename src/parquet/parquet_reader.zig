@@ -294,7 +294,42 @@ fn buildNode(
     node.children = children;
     node.max_def = my_def;
     node.max_rep = my_rep;
+    // Retain the group's converted/logical annotations (e.g. a LIST group's
+    // converted_type=.list / modern .list logical, or MAP's). Reads classify by
+    // STRUCTURE so this does not change read behavior, but it makes the
+    // SchemaNode complete so flattenSchemaTree reproduces conformant LIST/MAP
+    // annotations on write. Harmless on plain STRUCT groups (both null).
+    node.converted = elem.converted_type;
+    node.logical = elem.logical_type;
+    node.type_length = elem.type_length;
+    node.scale = elem.scale;
+    node.precision = elem.precision;
     return node;
+}
+
+/// Inverse of `buildSchemaTree`: serialize a SchemaNode subtree into the flat,
+/// PRE-ORDER `SchemaElement` list parquet stores (node first, then each child
+/// recursively). Group nodes carry `num_children`; leaves carry the physical
+/// type / annotations and a null `num_children`. Names are BORROWED from the
+/// node (SchemaElement.name is `[]const u8`), so the produced slice must not
+/// outlive `node`. The returned slice is allocator-owned (free with
+/// `allocator.free`); the elements themselves hold no separate allocations.
+pub fn flattenSchemaTree(allocator: Allocator, node: *const types.SchemaNode, out: *std.ArrayList(metadata.SchemaElement)) !void {
+    const is_leaf = node.isLeaf();
+    try out.append(allocator, .{
+        .type_ = node.physical,
+        .type_length = node.type_length,
+        .repetition_type = node.repetition,
+        .name = node.name,
+        .num_children = if (is_leaf) null else @intCast(node.children.len),
+        .converted_type = node.converted,
+        .scale = node.scale,
+        .precision = node.precision,
+        .logical_type = node.logical,
+    });
+    for (node.children) |*child| {
+        try flattenSchemaTree(allocator, child, out);
+    }
 }
 
 /// Collect every leaf of the schema tree (flat + nested) in leaf_index order,
@@ -797,6 +832,74 @@ test "buildSchemaTree: STRUCT → a max_def 1, b max_def 2, both max_rep 0" {
     try std.testing.expectEqual(@as(?usize, 1), s.fieldIndex("b"));
 }
 
+test "flattenSchemaTree: inverse of buildSchemaTree on a nested LIST schema" {
+    const allocator = std.testing.allocator;
+    // root → optional group l (list) { repeated group list { optional int64 element } }
+    const schema = [_]metadata.SchemaElement{
+        .{ .name = "root", .num_children = 1 },
+        .{ .name = "l", .repetition_type = .optional, .num_children = 1, .converted_type = .list },
+        .{ .name = "list", .repetition_type = .repeated, .num_children = 1 },
+        .{ .name = "element", .type_ = .int64, .repetition_type = .optional },
+    };
+    var tree = try buildSchemaTree(allocator, &schema);
+    defer tree.deinit(allocator);
+
+    var out = std.ArrayList(metadata.SchemaElement).empty;
+    defer out.deinit(allocator);
+    try flattenSchemaTree(allocator, &tree, &out);
+
+    try std.testing.expectEqual(schema.len, out.items.len);
+    for (schema, 0..) |want, i| {
+        const got = out.items[i];
+        try std.testing.expectEqualStrings(want.name, got.name);
+        try std.testing.expectEqual(want.type_, got.type_);
+        // buildSchemaTree defaults a missing repetition_type to .required, so
+        // the flattened root surfaces .required (input left it null).
+        const want_rep = want.repetition_type orelse .required;
+        try std.testing.expectEqual(want_rep, got.repetition_type.?);
+        // num_children: groups carry it, leaves are null. The input root/groups
+        // carry it; the input leaf carries null — matches.
+        try std.testing.expectEqual(want.num_children, got.num_children);
+    }
+    // buildSchemaTree now retains converted_type/logical_type on GROUP nodes
+    // too (Phase 13.1 read-side fix), so the LIST marker resurfaces on flatten —
+    // this is what makes written nested files spec-conformant.
+    try std.testing.expectEqual(types.ConvertedType.list, out.items[1].converted_type.?);
+    // The leaf's own physical type round-trips:
+    try std.testing.expectEqual(types.PhysicalType.int64, out.items[3].type_.?);
+}
+
+test "flattenSchemaTree: buildSchemaTree(flatten(tree)) reproduces the tree (STRUCT)" {
+    const allocator = std.testing.allocator;
+    const schema = [_]metadata.SchemaElement{
+        .{ .name = "root", .num_children = 1 },
+        .{ .name = "s", .repetition_type = .optional, .num_children = 2 },
+        .{ .name = "a", .type_ = .int64, .repetition_type = .required },
+        .{ .name = "b", .type_ = .byte_array, .repetition_type = .optional },
+    };
+    var tree = try buildSchemaTree(allocator, &schema);
+    defer tree.deinit(allocator);
+
+    var out = std.ArrayList(metadata.SchemaElement).empty;
+    defer out.deinit(allocator);
+    try flattenSchemaTree(allocator, &tree, &out);
+
+    var tree2 = try buildSchemaTree(allocator, out.items);
+    defer tree2.deinit(allocator);
+
+    // Same shape and per-leaf levels.
+    try std.testing.expectEqualStrings(tree.name, tree2.name);
+    try std.testing.expectEqual(tree.children.len, tree2.children.len);
+    const s1 = tree.children[0];
+    const s2 = tree2.children[0];
+    try std.testing.expectEqualStrings(s1.name, s2.name);
+    try std.testing.expectEqual(s1.children.len, s2.children.len);
+    try std.testing.expectEqual(s1.children[0].max_def, s2.children[0].max_def);
+    try std.testing.expectEqual(s1.children[1].max_def, s2.children[1].max_def);
+    try std.testing.expectEqual(s1.children[0].physical, s2.children[0].physical);
+    try std.testing.expectEqual(s1.children[1].physical, s2.children[1].physical);
+}
+
 test "buildSchemaTree: num_children overrun → CorruptFile" {
     const allocator = std.testing.allocator;
     // root claims 2 children but only 1 follows.
@@ -1009,13 +1112,13 @@ test "P2: corrupt v1 def-level length prefix returns CorruptPageData (not panic)
     // body begins with the 4-byte LE def-level length prefix.
     const vals = [_]i64{ 10, 0, 30 };
     const valid = [_]bool{ true, false, true };
-    const cols = [_]column_writer.ColumnData{.{
+    const cols = [_]parquet_writer.WriteColumn{.{ .flat = .{
         .name = "x",
         .physical_type = .int64,
         .int64s = &vals,
         .num_values = 3,
         .validity = &valid,
-    }};
+    } }};
     const output = try parquet_writer.writeParquet(allocator, &cols, .{});
     defer allocator.free(output);
 

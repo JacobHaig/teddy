@@ -136,14 +136,33 @@ spec (6d-2b).
   the test now fails on any new/stale divergence, any fidelity-matrix change,
   any TDF round-trip loss, or invalid Nested JSON.
 
-### Phase 13 — Nested parquet WRITE (new, from 6d-2b scope decision) ⬜
-- def/rep level generation from `Nested` row trees + nested schema emission
-  (tree-shaped SchemaElements with num_children) + per-leaf chunk writing.
-  Comparable in size to the 6d-2b read work. Until then nested columns write
-  as a clean `error.UnsupportedNestedWrite`.
-- Also from the 6d-2b review: columnar nested representation if perf ever
-  matters; file-order column interleaving for mixed nested+flat reads
-  (nested columns currently surface after flat ones).
+### Phase 13 — Nested parquet WRITE ✅ (2026-06-15)
+- Shredding (inverse Dremel, `src/dataframe/nested_shred.zig`): walks each
+  `Nested` row tree against its `SchemaNode` and emits per-leaf (def, rep,
+  present-values) streams — the exact inverse of 6d-2b assembly (the four
+  assembly pins invert byte-identically).
+- Writer infra: generalized RLE level encoder (`encodeRleLevelsW`,
+  bit-width-aware); `flattenSchemaTree` (inverse of buildSchemaTree);
+  `WriteColumn` union + `writeParquet([]WriteColumn)` (a top-level column can
+  expand to a schema subtree + many leaf chunks); nested-leaf page body
+  `[rep][def][values]` matching the reader's read order.
+- Read-side completeness fix: `buildNode` now retains LIST/MAP group
+  annotations on `SchemaNode` (reads unaffected — classify by structure), so
+  written files carry spec `converted_type`/`logical_type` on group nodes and
+  are pyarrow-conformant (verified: pyarrow reads teddy's nested output with
+  identical schema + data).
+- Round-trips: nested_kinds + nested_smoke (mixed flat+nested) →
+  parquet → df identical; regression framework gains an enforced
+  PARQUET_ROUNDTRIP parity stage. `error.UnsupportedNestedWrite` removed;
+  hand-built Nested without a schema → `error.NestedWriteRequiresSchema`
+  (schema synthesis from bare values deferred).
+- Also fixed (pre-existing): per-leaf `path_in_schema`/encodings backing was
+  aliasing the last loop iteration's stack locals — now per-leaf allocated.
+- Deferred follow-ups: schema synthesis from bare Nested values; narrow-int
+  FLAT write (i8/u8/i16/u16/u32/u64/i128/u128/isize/usize still
+  `error.UnsupportedType` — pre-existing, unrelated to nesting); columnar
+  nested representation if perf matters; file-order interleaving for mixed
+  nested+flat reads.
 
 ---
 

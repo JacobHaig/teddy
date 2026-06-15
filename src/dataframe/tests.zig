@@ -22,6 +22,7 @@ comptime {
     _ = @import("interval.zig");
     _ = @import("nested.zig");
     _ = @import("nested_assembly.zig");
+    _ = @import("nested_shred.zig");
     _ = @import("nested_json.zig");
     _ = @import("parquet_test.zig");
     _ = @import("native_format_test.zig");

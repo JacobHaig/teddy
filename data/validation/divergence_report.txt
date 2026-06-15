@@ -75,3 +75,5 @@ REGRESSION REPORT — 63 cataloged entr(ies) across all stages
   col=c_map kind=json_roundtrip arrow=Nested teddy=parse failed: InvalidJson
   col=c_list_struct kind=json_roundtrip arrow=Nested teddy=parse failed: InvalidJson
   col=c_list_list kind=json_roundtrip arrow=Nested teddy=parse failed: InvalidJson
+
+== PARQUET_ROUNDTRIP == (0) df -> parquet -> df parity (nested + scalar) — should be 0; any entry is a REAL BUG

@@ -40,7 +40,7 @@ const REPORT = "data/validation/divergence_report.txt";
 /// genuine divergences (teddy vs pyarrow); round-trip entries are CATALOG rows
 /// (always recorded — a fidelity matrix of "what survives each format"), except
 /// TDF which is a lossless contract (any tdf_roundtrip entry is a real bug).
-const Stage = enum { read, transforms, sort, tdf_roundtrip, csv_roundtrip, json_roundtrip };
+const Stage = enum { read, transforms, sort, tdf_roundtrip, csv_roundtrip, json_roundtrip, parquet_roundtrip };
 
 const DivergenceKind = enum {
     // read stage
@@ -60,6 +60,8 @@ const DivergenceKind = enum {
     tdf_roundtrip,
     csv_roundtrip,
     json_roundtrip,
+    // parquet round-trip (nested columns): parity contract — any entry is a bug.
+    parquet_roundtrip,
 };
 
 const Divergence = struct {
@@ -282,6 +284,9 @@ test "regression: read-stage parity vs pyarrow golden (soft report)" {
     try runTdfRoundtrip(allocator, &divergences, df, golden_columns, golden_num_rows);
     try runCsvRoundtrip(allocator, &divergences, df);
     try runJsonRoundtrip(allocator, &divergences, df);
+    // Parquet round-trip (df → parquet → df): a PARITY contract for the nested
+    // columns (and the scalar columns too). Any divergence is a real bug.
+    try runParquetRoundtrip(allocator, &divergences, df);
 
     // --- emit report (stderr + file) ---
     try writeReport(allocator, divergences.items);
@@ -335,7 +340,7 @@ const known_divergences = [_]KnownDivergence{
 fn isAllowlistStage(stage: Stage) bool {
     return switch (stage) {
         .read, .transforms, .sort => true,
-        .tdf_roundtrip, .csv_roundtrip, .json_roundtrip => false,
+        .tdf_roundtrip, .csv_roundtrip, .json_roundtrip, .parquet_roundtrip => false,
     };
 }
 
@@ -350,6 +355,18 @@ fn enforceAllowlist(divs: []const Divergence) !void {
                 .{ d.column, d.arrow_repr, d.teddy_repr },
             );
             return error.TdfRoundtripRegression;
+        }
+    }
+
+    // parquet_roundtrip is a PARITY contract (df → parquet → df): any entry is a
+    // real bug. Nested columns must round-trip exactly.
+    for (divs) |d| {
+        if (d.stage == .parquet_roundtrip) {
+            std.debug.print(
+                "PARQUET ROUNDTRIP (parity violated): col={s} arrow={s} teddy={s}\n",
+                .{ d.column, d.arrow_repr, d.teddy_repr },
+            );
+            return error.ParquetRoundtripRegression;
         }
     }
 
@@ -737,6 +754,120 @@ fn runTdfRoundtrip(
     }
 }
 
+/// Parquet round-trip (df → parquet → df): a PARITY contract. Writes the frame,
+/// reads it back, and compares each NESTED column by per-row isNull + asStringAt
+/// (the headline proof that shredding inverts assembly on the wire). Scalar
+/// columns already round-trip via the read/tdf stages; the nested columns
+/// (c_list/c_struct/c_map/c_list_struct/c_list_list) are the new contract and
+/// must be at 0 divergences.
+fn runParquetRoundtrip(
+    allocator: std.mem.Allocator,
+    divs: *std.ArrayList(Divergence),
+    df: *Dataframe,
+) !void {
+    // Select ONLY the nested columns into a sub-frame: the alltypes fixture has
+    // narrow-int columns the parquet writer doesn't accept yet (error.Unsupported
+    // Type), so writing the whole frame would fail before reaching the nested
+    // ones. The nested columns are the parity contract here.
+    const nested_cols = [_][]const u8{ "c_list", "c_struct", "c_map", "c_list_struct", "c_list_list" };
+    var present = std.ArrayList([]const u8).empty;
+    defer present.deinit(allocator);
+    for (nested_cols) |name| {
+        if (df.getSeries(name) != null) try present.append(allocator, name);
+    }
+    if (present.items.len == 0) return; // not this fixture
+
+    var sub = try df.select(present.items);
+    defer sub.deinit();
+
+    var cols = adapter.fromDataframe(allocator, sub, .{}) catch |err| {
+        try divs.append(allocator, .{
+            .stage = .parquet_roundtrip,
+            .column = "<frame>",
+            .row = -1,
+            .kind = .parquet_roundtrip,
+            .arrow_repr = try allocator.dupe(u8, "write"),
+            .teddy_repr = try std.fmt.allocPrint(allocator, "fromDataframe failed: {s}", .{@errorName(err)}),
+        });
+        return;
+    };
+    defer cols.deinit();
+
+    const bytes = parquet.writeParquet(allocator, cols.columns, .{}) catch |err| {
+        try divs.append(allocator, .{
+            .stage = .parquet_roundtrip,
+            .column = "<frame>",
+            .row = -1,
+            .kind = .parquet_roundtrip,
+            .arrow_repr = try allocator.dupe(u8, "write"),
+            .teddy_repr = try std.fmt.allocPrint(allocator, "writeParquet failed: {s}", .{@errorName(err)}),
+        });
+        return;
+    };
+    defer allocator.free(bytes);
+
+    var result = try parquet.readParquet(allocator, bytes);
+    defer result.deinit();
+    var rt = try adapter.toDataframe(allocator, &result);
+    defer rt.deinit();
+
+    // The nested columns are the parity contract. Compare each by isNull +
+    // asStringAt across all rows.
+    for (present.items) |name| {
+        const a = df.getSeries(name) orelse continue; // not in this fixture
+        const b = rt.getSeries(name) orelse {
+            try divs.append(allocator, .{
+                .stage = .parquet_roundtrip,
+                .column = name,
+                .row = -1,
+                .kind = .parquet_roundtrip,
+                .arrow_repr = try allocator.dupe(u8, "present"),
+                .teddy_repr = try allocator.dupe(u8, "MISSING after round-trip"),
+            });
+            continue;
+        };
+        if (a.len() != b.len()) {
+            try divs.append(allocator, .{
+                .stage = .parquet_roundtrip,
+                .column = name,
+                .row = -1,
+                .kind = .parquet_roundtrip,
+                .arrow_repr = try std.fmt.allocPrint(allocator, "len={d}", .{a.len()}),
+                .teddy_repr = try std.fmt.allocPrint(allocator, "len={d}", .{b.len()}),
+            });
+            continue;
+        }
+        for (0..a.len()) |row| {
+            if (a.isNull(row) != b.isNull(row)) {
+                try divs.append(allocator, .{
+                    .stage = .parquet_roundtrip,
+                    .column = name,
+                    .row = @intCast(row),
+                    .kind = .parquet_roundtrip,
+                    .arrow_repr = try allocator.dupe(u8, if (a.isNull(row)) "null" else "non-null"),
+                    .teddy_repr = try allocator.dupe(u8, if (b.isNull(row)) "null" else "non-null"),
+                });
+                continue;
+            }
+            if (a.isNull(row)) continue;
+            var sa = try a.asStringAt(row);
+            defer sa.deinit();
+            var sb = try b.asStringAt(row);
+            defer sb.deinit();
+            if (!std.mem.eql(u8, sa.toSlice(), sb.toSlice())) {
+                try divs.append(allocator, .{
+                    .stage = .parquet_roundtrip,
+                    .column = name,
+                    .row = @intCast(row),
+                    .kind = .parquet_roundtrip,
+                    .arrow_repr = try allocator.dupe(u8, sa.toSlice()),
+                    .teddy_repr = try allocator.dupe(u8, sb.toSlice()),
+                });
+            }
+        }
+    }
+}
+
 /// CSV is lossy / re-typing. We do NOT assert equality; instead we CATALOG what
 /// each original column round-trips to: original teddy type -> re-read teddy
 /// type + a sample value of the re-read column (row 0). This yields the
@@ -981,6 +1112,8 @@ fn writeReport(allocator: std.mem.Allocator, divs: []const Divergence) !void {
     try writeSection(w, divs, .csv_roundtrip, "CSV_ROUNDTRIP", "per-column: original_type -> reread_type (sample)");
     try w.writeByte('\n');
     try writeSection(w, divs, .json_roundtrip, "JSON_ROUNDTRIP", "per-column: original_type -> reread_type (sample)");
+    try w.writeByte('\n');
+    try writeSection(w, divs, .parquet_roundtrip, "PARQUET_ROUNDTRIP", "df -> parquet -> df parity (nested + scalar) — should be 0; any entry is a REAL BUG");
 
     const report = aw.written();
     // stderr

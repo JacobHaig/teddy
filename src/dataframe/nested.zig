@@ -1,7 +1,8 @@
 //! Nested column value type (Phase 6d-2b): one row of a LIST/MAP/STRUCT
 //! parquet column as an owned, typed tree. Struct fields are positional —
-//! names live in the column's SchemaNode (Series(Nested).meta). Nested
-//! columns are READ-side only; writing returns error.UnsupportedNestedWrite.
+//! names live in the column's SchemaNode (Series(Nested).meta). As of Phase
+//! 13.1 nested columns also WRITE back to parquet (shredding, nested_shred.zig),
+//! requiring the column to carry its SchemaNode (else NestedWriteRequiresSchema).
 
 const std = @import("std");
 const strings = @import("strings.zig");

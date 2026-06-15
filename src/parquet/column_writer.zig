@@ -6,6 +6,16 @@ const ThriftWriter = @import("thrift_writer.zig").ThriftWriter;
 const encoding_writer = @import("encoding_writer.zig");
 const PlainEncoder = encoding_writer.PlainEncoder;
 const encodeRleLevels = encoding_writer.encodeRleLevels;
+const encodeRleLevelsW = encoding_writer.encodeRleLevelsW;
+
+/// RLE/bit-packed bit width for a level stream whose maximum value is
+/// `max_level`: ceil(log2(max_level + 1)). Mirrors the reader's `levelBitWidth`
+/// in column_reader.zig — max 0 → 0, 1 → 1 (flat byte-identical), 2/3 → 2, etc.
+/// The writer MUST use the same widths the reader decodes with.
+fn levelBitWidth(max_level: u8) u8 {
+    if (max_level == 0) return 0;
+    return @intCast(@as(u8, 8) - @as(u8, @clz(max_level)));
+}
 const snappy = @import("snappy.zig");
 
 // ============================================================
@@ -45,6 +55,17 @@ pub const ColumnData = struct {
     /// level section and only present values are encoded. Same convention as
     /// ParquetColumn.validity and Series.validity. Length must equal num_values.
     validity: ?[]const bool = null,
+    /// Nested-leaf mode. When `def_levels != null` this is a leaf of a
+    /// LIST/MAP/STRUCT subtree: the page body carries raw def/rep level streams
+    /// (NOT the flat `validity` placeholder expansion). `rep_levels` is present
+    /// only when `max_rep > 0`. The typed value arrays hold ONLY present values
+    /// (the shredder filters by def == max_def). Mutually exclusive with
+    /// `validity` (the flat-optional path). `num_values` for a nested leaf is the
+    /// TOTAL level count (== def_levels.len), which is what the reader reads.
+    rep_levels: ?[]const u32 = null,
+    def_levels: ?[]const u32 = null,
+    max_rep: u8 = 0,
+    max_def: u8 = 0,
 };
 
 /// Index i is present (true) when there is no validity bitmap or validity[i].
@@ -155,7 +176,34 @@ pub fn writeColumn(allocator: Allocator, col: ColumnData, codec: types.Compressi
     var body = std.ArrayList(u8).empty;
     defer body.deinit(allocator);
 
-    if (col.validity) |valid| {
+    if (col.def_levels) |def_levels| {
+        // Nested-leaf body. v1 read order (column_reader.zig): rep levels first
+        // when max_rep > 0 ([4B LE rep_len][rep RLE @ levelBitWidth(max_rep)]),
+        // then def levels ([4B LE def_len][def RLE @ levelBitWidth(max_def)]),
+        // then PLAIN values (present-only, already encoded above). Each level
+        // section is length-prefixed and RLE-encoded; the reader reads
+        // num_values_in_page (== def_levels.len) levels from each.
+        if (col.max_rep > 0) {
+            const rep_levels = col.rep_levels orelse return error.MissingRepLevels;
+            var rep_bytes = std.ArrayList(u8).empty;
+            defer rep_bytes.deinit(allocator);
+            try encodeRleLevelsW(allocator, levelBitWidth(col.max_rep), rep_levels, &rep_bytes);
+
+            var rep_prefix: [4]u8 = undefined;
+            std.mem.writeInt(u32, &rep_prefix, @intCast(rep_bytes.items.len), .little);
+            try body.appendSlice(allocator, &rep_prefix);
+            try body.appendSlice(allocator, rep_bytes.items);
+        }
+
+        var def_bytes = std.ArrayList(u8).empty;
+        defer def_bytes.deinit(allocator);
+        try encodeRleLevelsW(allocator, levelBitWidth(col.max_def), def_levels, &def_bytes);
+
+        var def_prefix: [4]u8 = undefined;
+        std.mem.writeInt(u32, &def_prefix, @intCast(def_bytes.items.len), .little);
+        try body.appendSlice(allocator, &def_prefix);
+        try body.appendSlice(allocator, def_bytes.items);
+    } else if (col.validity) |valid| {
         var levels = try allocator.alloc(u1, valid.len);
         defer allocator.free(levels);
         for (valid, 0..) |present, i| levels[i] = @intFromBool(present);

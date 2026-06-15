@@ -11,7 +11,10 @@ pub const readParquet = reader.readParquet;
 // Re-export writer API
 pub const writeParquet = writer_mod.writeParquet;
 pub const WriteOptions = writer_mod.WriteOptions;
+pub const WriteColumn = writer_mod.WriteColumn;
 pub const ColumnData = @import("column_writer.zig").ColumnData;
+pub const flattenSchemaTree = reader.flattenSchemaTree;
+pub const SchemaElement = @import("metadata.zig").SchemaElement;
 
 // Re-export public types
 pub const types = @import("types.zig");

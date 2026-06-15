@@ -31,8 +31,13 @@ docs/superpowers/specs/2026-06-07-parquet-nested-types-design.md; nested
 WRITE deferred to new Phase 13). **Phase 7 ✅** (JSON reader hardening, 2026-06-08) and **Phase 8 ✅** (native
 TDF serialization format, 2026-06-15: lossless 1:1 on-disk format for all 16
 column types incl. Nested; src/dataframe/native_format.zig; docs/tdf-format.md)
-done. Remaining: Phase 9 Python↔Zig regression framework, Phase 13 nested
-parquet write.
+done. **Phase 9 ✅** (regression framework, 2026-06-15) and **Phase 13 ✅** (nested
+parquet WRITE — inverse-Dremel shredding in src/dataframe/nested_shred.zig;
+teddy now reads AND writes nested parquet, pyarrow-conformant) done.
+**ALL ROADMAP PHASES COMPLETE.** Deferred follow-ups only: schema synthesis
+from bare Nested values; narrow-int FLAT parquet write (i8/u8/… still
+UnsupportedType — pre-existing); columnar nested perf; file-order interleaving
+for mixed nested+flat reads.
 
 **Why:** owner wants the codebase "up to snuff" — remove template cruft, finish
 half-implemented IO, add validation.

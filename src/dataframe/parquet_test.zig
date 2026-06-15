@@ -1302,7 +1302,89 @@ test "nested: nested_kinds.parquet per-row rendering + accessors" {
     try std.testing.expectEqual(@as(i64, 1), e0.value.int);
 }
 
-test "nested: writing a nested df returns error.UnsupportedNestedWrite" {
+// ============================================================
+// Nested WRITE round-trips (Phase 13.1): parquet → df → parquet → df.
+// ============================================================
+
+/// Read a parquet file → df → write → read → df2, asserting each named nested
+/// column round-trips identically (typeName, num_rows, per-row isNull +
+/// asStringAt). The HEADLINE proof that shredding inverts assembly on the wire.
+fn assertNestedRoundTrip(allocator: std.mem.Allocator, path: []const u8, names: []const []const u8) !void {
+    const cwd = std.Io.Dir.cwd();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const file_data = try cwd.readFileAlloc(io, path, allocator, .unlimited);
+    defer allocator.free(file_data);
+
+    var result = try parquet.readParquet(allocator, file_data);
+    defer result.deinit();
+    var df = try adapter.toDataframe(allocator, &result);
+    defer df.deinit();
+
+    var cols = try adapter.fromDataframe(allocator, df, .{});
+    defer cols.deinit();
+    const output = try parquet.writeParquet(allocator, cols.columns, .{});
+    defer allocator.free(output);
+
+    var result2 = try parquet.readParquet(allocator, output);
+    defer result2.deinit();
+    var df2 = try adapter.toDataframe(allocator, &result2);
+    defer df2.deinit();
+
+    for (names) |name| {
+        const a = df.getSeries(name) orelse return error.ColumnNotFound;
+        const b = df2.getSeries(name) orelse return error.ColumnNotFound;
+        try std.testing.expectEqualStrings(a.typeName(), b.typeName());
+        try std.testing.expectEqualStrings("Nested", b.typeName());
+        try std.testing.expectEqual(a.len(), b.len());
+        for (0..a.len()) |i| {
+            try std.testing.expectEqual(a.isNull(i), b.isNull(i));
+            var sa = try a.asStringAt(i);
+            defer sa.deinit();
+            var sb = try b.asStringAt(i);
+            defer sb.deinit();
+            try std.testing.expectEqualStrings(sa.toSlice(), sb.toSlice());
+        }
+    }
+}
+
+test "nested write: nested_kinds.parquet round-trips identically" {
+    try assertNestedRoundTrip(std.testing.allocator, "data/nested_kinds.parquet", &.{ "l", "ls", "sl", "ll", "m" });
+}
+
+test "nested write: nested_smoke.parquet (mixed flat+nested) round-trips" {
+    // Proves flat + nested leaves coexist in one written file.
+    const allocator = std.testing.allocator;
+    try assertNestedRoundTrip(allocator, "data/nested_smoke.parquet", &.{ "l", "s" });
+
+    // And the flat columns survive too.
+    const cwd = std.Io.Dir.cwd();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const file_data = try cwd.readFileAlloc(io, "data/nested_smoke.parquet", allocator, .unlimited);
+    defer allocator.free(file_data);
+    var result = try parquet.readParquet(allocator, file_data);
+    defer result.deinit();
+    var df = try adapter.toDataframe(allocator, &result);
+    defer df.deinit();
+    var cols = try adapter.fromDataframe(allocator, df, .{});
+    defer cols.deinit();
+    const output = try parquet.writeParquet(allocator, cols.columns, .{});
+    defer allocator.free(output);
+    var result2 = try parquet.readParquet(allocator, output);
+    defer result2.deinit();
+    var df2 = try adapter.toDataframe(allocator, &result2);
+    defer df2.deinit();
+    const fb = df2.getSeries("flat_before") orelse return error.ColumnNotFound;
+    const fa = df2.getSeries("flat_after") orelse return error.ColumnNotFound;
+    try std.testing.expectEqual(@as(i64, 1), fb.int64.values.items[0]);
+    try std.testing.expectEqual(@as(i64, 3), fb.int64.values.items[2]);
+    var s0 = try fa.asStringAt(0);
+    defer s0.deinit();
+    try std.testing.expectEqualStrings("p", s0.toSlice());
+}
+
+test "nested write: LIST group carries converted_type .list (conformance)" {
+    // After writing, re-read the schema and verify the written LIST group is
+    // spec-annotated (the read-side group-annotation fix → flatten emits it).
     const allocator = std.testing.allocator;
     const cwd = std.Io.Dir.cwd();
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -1313,8 +1395,42 @@ test "nested: writing a nested df returns error.UnsupportedNestedWrite" {
     defer result.deinit();
     var df = try adapter.toDataframe(allocator, &result);
     defer df.deinit();
+    var cols = try adapter.fromDataframe(allocator, df, .{});
+    defer cols.deinit();
+    const output = try parquet.writeParquet(allocator, cols.columns, .{});
+    defer allocator.free(output);
 
-    try std.testing.expectError(error.UnsupportedNestedWrite, adapter.fromDataframe(allocator, df, .{}));
+    var result2 = try parquet.readParquet(allocator, output);
+    defer result2.deinit();
+    const tree = result2.schema_tree orelse return error.NoSchemaTree;
+    // Find the top-level "l" child (list<int64>) and assert its group annotation.
+    var found = false;
+    for (tree.children) |*child| {
+        if (std.mem.eql(u8, child.name, "l")) {
+            const is_list = (child.converted == .list) or
+                (child.logical != null and child.logical.? == .list);
+            try std.testing.expect(is_list);
+            found = true;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "nested write: a Series(Nested) without meta.schema errors NestedWriteRequiresSchema" {
+    const allocator = std.testing.allocator;
+    const dataframe = @import("dataframe.zig");
+    const Nested = @import("nested.zig").Nested;
+
+    var df = try dataframe.Dataframe.init(allocator);
+    defer df.deinit();
+    var s = try df.createSeries(Nested);
+    try s.rename("bare");
+    // A hand-built list value, but NO meta.schema set.
+    var items = try allocator.alloc(Nested, 1);
+    items[0] = .{ .int = 7 };
+    try s.append(.{ .list = .{ .allocator = allocator, .items = items } });
+
+    try std.testing.expectError(error.NestedWriteRequiresSchema, adapter.fromDataframe(allocator, df, .{}));
 }
 
 /// Read → toDataframe on possibly-corrupt bytes; both outcomes are acceptable

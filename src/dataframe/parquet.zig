@@ -16,6 +16,7 @@ const BoxedSeries = @import("boxed_series.zig").BoxedSeries;
 const Nested = @import("nested.zig").Nested;
 const Series = series_mod.Series;
 const assembly = @import("nested_assembly.zig");
+const shred = @import("nested_shred.zig");
 const parquet = @import("parquet");
 
 // ============================================================
@@ -561,9 +562,10 @@ fn addRawColumn(allocator: Allocator, df: *dataframe.Dataframe, col: *const parq
 // ============================================================
 
 pub const ColumnData = parquet.ColumnData;
+pub const WriteColumn = parquet.WriteColumn;
 
 pub const DataframeColumns = struct {
-    columns: []ColumnData,
+    columns: []WriteColumn,
     /// Owns every scratch allocation made while converting (slice arrays,
     /// numeric buffers, encoded byte values). Inner slices borrowed from
     /// Series values (String/Raw bytes) are NOT arena-owned and are not freed.
@@ -587,8 +589,10 @@ pub fn fromDataframe(allocator: Allocator, df: *dataframe.Dataframe, opts: Adapt
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
     const scratch = arena.allocator();
-    const cols = try scratch.alloc(ColumnData, df.width());
+    const cols = try scratch.alloc(WriteColumn, df.width());
     for (df.series.items, 0..) |*boxed, i| {
+        // boxedToColumnData returns the WriteColumn directly: flat arms wrap
+        // `.flat`, the nested arm shreds → `.nested` (schema subtree + leaves).
         cols[i] = try boxedToColumnData(scratch, boxed, opts);
     }
     return .{ .columns = cols, .arena = arena };
@@ -624,7 +628,78 @@ fn firstValid(s: anytype) ?usize {
 // a harmless dummy entry that writeColumn drops), so first-value-wins metadata
 // is derived from the first NON-NULL value (firstValid) to avoid placeholder
 // hijack.
-fn boxedToColumnData(scratch: Allocator, boxed: *BoxedSeries, opts: AdapterWriteOptions) !ColumnData {
+/// Convert a BoxedSeries to a WriteColumn. The `.nested` arm shreds the
+/// column's Nested values against its SchemaNode (Series(Nested).meta.schema)
+/// into per-leaf def/rep/value streams + a flattened schema subtree → a
+/// `.nested` WriteColumn. Every other arm is flat → `.flat`.
+fn boxedToColumnData(scratch: Allocator, boxed: *BoxedSeries, opts: AdapterWriteOptions) !WriteColumn {
+    if (boxed.* == .nested) {
+        return shredNestedColumn(scratch, boxed.nested);
+    }
+    return .{ .flat = try boxedToFlatColumnData(scratch, boxed, opts) };
+}
+
+/// Shred a Series(Nested) into the `.nested` WriteColumn payload. Requires the
+/// series to carry its SchemaNode (it always does for a parquet-read column);
+/// a hand-built column without one → error.NestedWriteRequiresSchema.
+fn shredNestedColumn(
+    scratch: Allocator,
+    s: anytype,
+) !WriteColumn {
+    const schema = s.meta.schema orelse return error.NestedWriteRequiresSchema;
+    const num_rows = s.values.items.len;
+    const validity = if (s.validity) |v| v.items else null;
+
+    // Shred → per-leaf (def, rep, value) streams (scratch/arena-backed).
+    const leaf_streams = try shred.shredColumn(scratch, schema, s.values.items, validity, num_rows);
+
+    // Flatten the schema subtree (pre-order, borrowed names). The top element's
+    // name must be the COLUMN name; addNestedColumns stored the schema child's
+    // own name as the node name, which IS the column name — but a hand-built
+    // tree might differ, so force the series name onto the top element.
+    var elems = std.ArrayList(parquet.SchemaElement).empty;
+    try parquet.flattenSchemaTree(scratch, schema, &elems);
+    if (elems.items.len > 0) elems.items[0].name = s.name.toSlice();
+
+    // One ColumnData per leaf. def/rep are u16 ArrayLists → []const u32 (the
+    // writer's contract). num_values = the level count (def.len).
+    const leaf_cols = try scratch.alloc(ColumnData, leaf_streams.len);
+    for (leaf_streams, 0..) |*ls, i| {
+        const node = ls.node;
+        const def32 = try scratch.alloc(u32, ls.def.items.len);
+        for (ls.def.items, 0..) |d, j| def32[j] = d;
+        const rep32 = try scratch.alloc(u32, ls.rep.items.len);
+        for (ls.rep.items, 0..) |r, j| rep32[j] = r;
+
+        var cd = ColumnData{
+            .name = node.name,
+            .physical_type = node.physical.?,
+            .converted_type = node.converted,
+            .logical_type = node.logical,
+            .type_length = node.type_length,
+            .scale = node.scale,
+            .precision = node.precision,
+            .num_values = ls.def.items.len,
+            .def_levels = def32,
+            .rep_levels = if (node.max_rep > 0) rep32 else null,
+            .max_def = node.max_def,
+            .max_rep = node.max_rep,
+        };
+        switch (ls.values) {
+            .int32s => |*v| cd.int32s = v.items,
+            .int64s => |*v| cd.int64s = v.items,
+            .floats => |*v| cd.floats = v.items,
+            .doubles => |*v| cd.doubles = v.items,
+            .booleans => |*v| cd.booleans = v.items,
+            .byte_arrays => |*v| cd.byte_arrays = v.items,
+        }
+        leaf_cols[i] = cd;
+    }
+
+    return .{ .nested = .{ .schema = elems.items, .leaves = leaf_cols, .num_rows = num_rows } };
+}
+
+fn boxedToFlatColumnData(scratch: Allocator, boxed: *BoxedSeries, opts: AdapterWriteOptions) !ColumnData {
     return switch (boxed.*) {
         .int32 => |s| .{
             .name = s.name.toSlice(),
@@ -751,13 +826,9 @@ fn boxedToColumnData(scratch: Allocator, boxed: *BoxedSeries, opts: AdapterWrite
             _ = s;
             break :blk error.UnsupportedType;
         },
-        // Nested columns are READ-side only: writing requires nested schema
-        // emission + def/rep level generation, which is a separate roadmap
-        // item. This error is permanent until nested write lands.
-        .nested => |s| blk: {
-            _ = s;
-            break :blk error.UnsupportedNestedWrite;
-        },
+        // Nested is dispatched by boxedToColumnData before this flat helper is
+        // called (→ shredNestedColumn), so it never reaches here.
+        .nested => unreachable,
         .date => |s| blk: {
             // DATE re-emits as INT32 + both annotations (modern field 10 and
             // legacy converted_type), matching what pyarrow writes.
