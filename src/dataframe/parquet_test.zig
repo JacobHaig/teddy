@@ -1445,6 +1445,368 @@ fn expectNoPanicNested(allocator: std.mem.Allocator, data: []const u8) void {
     df.deinit();
 }
 
+// ============================================================
+// Narrow integer round-trip tests (Phase 6d-2a write impl).
+//
+// For each type T:
+//   build a hand-rolled Series(T) with boundary values + one null,
+//   write to parquet, read back, convert to dataframe, assert:
+//     - typeName() == expected type name
+//     - values are identical (including boundary / full-range values)
+//     - isNull pattern matches
+//
+// Critical assertions: u32 with a value > i32::MAX, u64 with a value
+// > i64::MAX — these prove the bitcast reinterpretation round-trips.
+// ============================================================
+
+test "narrow int roundtrip: i8 (boundary values + null)" {
+    // i8: -128, 127, null → INT32 physical + INT_8/integer{8,true} annotations.
+    const allocator = std.testing.allocator;
+    const dataframe_mod = @import("dataframe.zig");
+
+    var df = try dataframe_mod.Dataframe.init(allocator);
+    defer df.deinit();
+
+    var s = try df.createSeries(i8);
+    try s.rename("c_i8");
+    try s.append(-128);
+    try s.append(127);
+    try s.appendNull();
+    try s.append(0);
+
+    var cols = try adapter.fromDataframe(allocator, df, .{});
+    defer cols.deinit();
+    const output = try parquet.writeParquet(allocator, cols.columns, .{});
+    defer allocator.free(output);
+
+    // Wire: INT32 physical with both annotations
+    var result = try parquet.readParquet(allocator, output);
+    defer result.deinit();
+    try std.testing.expectEqual(parquet.PhysicalType.int32, result.columns[0].physical_type);
+    try std.testing.expectEqual(parquet.ConvertedType.int_8, result.columns[0].converted_type.?);
+    const lt = result.columns[0].logical_type orelse return error.MissingLogicalType;
+    try std.testing.expect(lt == .integer);
+    try std.testing.expectEqual(@as(i8, 8), lt.integer.bit_width);
+    try std.testing.expect(lt.integer.is_signed);
+
+    // Re-read as i8 dataframe column
+    var df2 = try adapter.toDataframe(allocator, &result);
+    defer df2.deinit();
+    const col = df2.getSeries("c_i8") orelse return error.ColumnNotFound;
+    try std.testing.expectEqualStrings("i8", col.typeName());
+    try std.testing.expectEqual(@as(usize, 4), col.len());
+
+    try std.testing.expect(!col.isNull(0));
+    try std.testing.expect(!col.isNull(1));
+    try std.testing.expect(col.isNull(2));
+    try std.testing.expect(!col.isNull(3));
+
+    try std.testing.expectEqual(@as(i8, -128), col.int8.values.items[0]);
+    try std.testing.expectEqual(@as(i8, 127), col.int8.values.items[1]);
+    try std.testing.expectEqual(@as(i8, 0), col.int8.values.items[3]);
+}
+
+test "narrow int roundtrip: i16 (boundary values + null)" {
+    // i16: -32768, 32767, null → INT32 + INT_16/integer{16,true}.
+    const allocator = std.testing.allocator;
+    const dataframe_mod = @import("dataframe.zig");
+
+    var df = try dataframe_mod.Dataframe.init(allocator);
+    defer df.deinit();
+
+    var s = try df.createSeries(i16);
+    try s.rename("c_i16");
+    try s.append(-32768);
+    try s.append(32767);
+    try s.appendNull();
+
+    var cols = try adapter.fromDataframe(allocator, df, .{});
+    defer cols.deinit();
+    const output = try parquet.writeParquet(allocator, cols.columns, .{});
+    defer allocator.free(output);
+
+    var result = try parquet.readParquet(allocator, output);
+    defer result.deinit();
+    try std.testing.expectEqual(parquet.PhysicalType.int32, result.columns[0].physical_type);
+    try std.testing.expectEqual(parquet.ConvertedType.int_16, result.columns[0].converted_type.?);
+    const lt = result.columns[0].logical_type orelse return error.MissingLogicalType;
+    try std.testing.expect(lt == .integer);
+    try std.testing.expectEqual(@as(i8, 16), lt.integer.bit_width);
+    try std.testing.expect(lt.integer.is_signed);
+
+    var df2 = try adapter.toDataframe(allocator, &result);
+    defer df2.deinit();
+    const col = df2.getSeries("c_i16") orelse return error.ColumnNotFound;
+    try std.testing.expectEqualStrings("i16", col.typeName());
+    try std.testing.expectEqual(@as(i16, -32768), col.int16.values.items[0]);
+    try std.testing.expectEqual(@as(i16, 32767), col.int16.values.items[1]);
+    try std.testing.expect(col.isNull(2));
+}
+
+test "narrow int roundtrip: u8 (boundary values + null)" {
+    // u8: 0, 255, null → INT32 + UINT_8/integer{8,false}.
+    const allocator = std.testing.allocator;
+    const dataframe_mod = @import("dataframe.zig");
+
+    var df = try dataframe_mod.Dataframe.init(allocator);
+    defer df.deinit();
+
+    var s = try df.createSeries(u8);
+    try s.rename("c_u8");
+    try s.append(0);
+    try s.append(255);
+    try s.appendNull();
+
+    var cols = try adapter.fromDataframe(allocator, df, .{});
+    defer cols.deinit();
+    const output = try parquet.writeParquet(allocator, cols.columns, .{});
+    defer allocator.free(output);
+
+    var result = try parquet.readParquet(allocator, output);
+    defer result.deinit();
+    try std.testing.expectEqual(parquet.PhysicalType.int32, result.columns[0].physical_type);
+    try std.testing.expectEqual(parquet.ConvertedType.uint_8, result.columns[0].converted_type.?);
+    const lt = result.columns[0].logical_type orelse return error.MissingLogicalType;
+    try std.testing.expect(lt == .integer);
+    try std.testing.expect(!lt.integer.is_signed);
+
+    var df2 = try adapter.toDataframe(allocator, &result);
+    defer df2.deinit();
+    const col = df2.getSeries("c_u8") orelse return error.ColumnNotFound;
+    try std.testing.expectEqualStrings("u8", col.typeName());
+    try std.testing.expectEqual(@as(u8, 0), col.uint8.values.items[0]);
+    try std.testing.expectEqual(@as(u8, 255), col.uint8.values.items[1]);
+    try std.testing.expect(col.isNull(2));
+}
+
+test "narrow int roundtrip: u16 (boundary values + null)" {
+    // u16: 0, 65535, null → INT32 + UINT_16/integer{16,false}.
+    const allocator = std.testing.allocator;
+    const dataframe_mod = @import("dataframe.zig");
+
+    var df = try dataframe_mod.Dataframe.init(allocator);
+    defer df.deinit();
+
+    var s = try df.createSeries(u16);
+    try s.rename("c_u16");
+    try s.append(0);
+    try s.append(65535);
+    try s.appendNull();
+
+    var cols = try adapter.fromDataframe(allocator, df, .{});
+    defer cols.deinit();
+    const output = try parquet.writeParquet(allocator, cols.columns, .{});
+    defer allocator.free(output);
+
+    var result = try parquet.readParquet(allocator, output);
+    defer result.deinit();
+    try std.testing.expectEqual(parquet.PhysicalType.int32, result.columns[0].physical_type);
+    try std.testing.expectEqual(parquet.ConvertedType.uint_16, result.columns[0].converted_type.?);
+    const lt = result.columns[0].logical_type orelse return error.MissingLogicalType;
+    try std.testing.expect(lt == .integer);
+    try std.testing.expect(!lt.integer.is_signed);
+
+    var df2 = try adapter.toDataframe(allocator, &result);
+    defer df2.deinit();
+    const col = df2.getSeries("c_u16") orelse return error.ColumnNotFound;
+    try std.testing.expectEqualStrings("u16", col.typeName());
+    try std.testing.expectEqual(@as(u16, 0), col.uint16.values.items[0]);
+    try std.testing.expectEqual(@as(u16, 65535), col.uint16.values.items[1]);
+    try std.testing.expect(col.isNull(2));
+}
+
+test "narrow int roundtrip: u32 full-range (value > i32::MAX)" {
+    // CRITICAL: 4_000_000_000 > i32::MAX (2_147_483_647). The bitcast path
+    // must preserve the bit pattern so it round-trips intact. Without @bitCast
+    // this would trap or wrap. Also tests a null.
+    const allocator = std.testing.allocator;
+    const dataframe_mod = @import("dataframe.zig");
+
+    var df = try dataframe_mod.Dataframe.init(allocator);
+    defer df.deinit();
+
+    var s = try df.createSeries(u32);
+    try s.rename("c_u32");
+    try s.append(0);
+    try s.append(4_000_000_000); // > i32::MAX — the critical assertion
+    try s.append(2_147_483_647); // i32::MAX — valid in both signed/unsigned
+    try s.appendNull();
+
+    var cols = try adapter.fromDataframe(allocator, df, .{});
+    defer cols.deinit();
+    const output = try parquet.writeParquet(allocator, cols.columns, .{});
+    defer allocator.free(output);
+
+    var result = try parquet.readParquet(allocator, output);
+    defer result.deinit();
+    try std.testing.expectEqual(parquet.PhysicalType.int32, result.columns[0].physical_type);
+    try std.testing.expectEqual(parquet.ConvertedType.uint_32, result.columns[0].converted_type.?);
+    const lt = result.columns[0].logical_type orelse return error.MissingLogicalType;
+    try std.testing.expect(lt == .integer);
+    try std.testing.expectEqual(@as(i8, 32), lt.integer.bit_width);
+    try std.testing.expect(!lt.integer.is_signed);
+
+    var df2 = try adapter.toDataframe(allocator, &result);
+    defer df2.deinit();
+    const col = df2.getSeries("c_u32") orelse return error.ColumnNotFound;
+    try std.testing.expectEqualStrings("u32", col.typeName());
+    try std.testing.expectEqual(@as(usize, 4), col.len());
+
+    try std.testing.expect(!col.isNull(0));
+    try std.testing.expect(!col.isNull(1));
+    try std.testing.expect(!col.isNull(2));
+    try std.testing.expect(col.isNull(3));
+
+    try std.testing.expectEqual(@as(u32, 0), col.uint32.values.items[0]);
+    try std.testing.expectEqual(@as(u32, 4_000_000_000), col.uint32.values.items[1]); // critical
+    try std.testing.expectEqual(@as(u32, 2_147_483_647), col.uint32.values.items[2]);
+}
+
+test "narrow int roundtrip: u64 full-range (value > i64::MAX)" {
+    // CRITICAL: 18_000_000_000_000_000_000 > i64::MAX (9_223_372_036_854_775_807).
+    // Bitcast path must preserve the bit pattern.
+    const allocator = std.testing.allocator;
+    const dataframe_mod = @import("dataframe.zig");
+
+    var df = try dataframe_mod.Dataframe.init(allocator);
+    defer df.deinit();
+
+    var s = try df.createSeries(u64);
+    try s.rename("c_u64");
+    try s.append(0);
+    try s.append(18_000_000_000_000_000_000); // > i64::MAX — the critical assertion
+    try s.appendNull();
+
+    var cols = try adapter.fromDataframe(allocator, df, .{});
+    defer cols.deinit();
+    const output = try parquet.writeParquet(allocator, cols.columns, .{});
+    defer allocator.free(output);
+
+    var result = try parquet.readParquet(allocator, output);
+    defer result.deinit();
+    try std.testing.expectEqual(parquet.PhysicalType.int64, result.columns[0].physical_type);
+    try std.testing.expectEqual(parquet.ConvertedType.uint_64, result.columns[0].converted_type.?);
+    const lt = result.columns[0].logical_type orelse return error.MissingLogicalType;
+    try std.testing.expect(lt == .integer);
+    try std.testing.expectEqual(@as(i8, 64), lt.integer.bit_width);
+    try std.testing.expect(!lt.integer.is_signed);
+
+    var df2 = try adapter.toDataframe(allocator, &result);
+    defer df2.deinit();
+    const col = df2.getSeries("c_u64") orelse return error.ColumnNotFound;
+    try std.testing.expectEqualStrings("u64", col.typeName());
+    try std.testing.expectEqual(@as(usize, 3), col.len());
+
+    try std.testing.expect(!col.isNull(0));
+    try std.testing.expect(!col.isNull(1));
+    try std.testing.expect(col.isNull(2));
+
+    try std.testing.expectEqual(@as(u64, 0), col.uint64.values.items[0]);
+    try std.testing.expectEqual(@as(u64, 18_000_000_000_000_000_000), col.uint64.values.items[1]); // critical
+}
+
+test "narrow int roundtrip: isize → i64 on wire (no annotation)" {
+    // isize is teddy-internal; maps to plain INT64 (no annotation).
+    // On re-read comes back as i64. isize→i64 narrowing is documented.
+    const allocator = std.testing.allocator;
+    const dataframe_mod = @import("dataframe.zig");
+
+    var df = try dataframe_mod.Dataframe.init(allocator);
+    defer df.deinit();
+
+    var s = try df.createSeries(isize);
+    try s.rename("c_isize");
+    try s.append(-100);
+    try s.append(9_000_000_000);
+    try s.appendNull();
+
+    var cols = try adapter.fromDataframe(allocator, df, .{});
+    defer cols.deinit();
+    const output = try parquet.writeParquet(allocator, cols.columns, .{});
+    defer allocator.free(output);
+
+    var result = try parquet.readParquet(allocator, output);
+    defer result.deinit();
+    // Plain INT64 with no annotation (isize has no parquet identity)
+    try std.testing.expectEqual(parquet.PhysicalType.int64, result.columns[0].physical_type);
+    try std.testing.expectEqual(@as(?parquet.ConvertedType, null), result.columns[0].converted_type);
+    try std.testing.expectEqual(@as(?parquet.LogicalType, null), result.columns[0].logical_type);
+
+    // Re-reads as i64 (isize narrows to i64 on write)
+    var df2 = try adapter.toDataframe(allocator, &result);
+    defer df2.deinit();
+    const col = df2.getSeries("c_isize") orelse return error.ColumnNotFound;
+    try std.testing.expectEqualStrings("i64", col.typeName());
+    try std.testing.expectEqual(@as(i64, -100), col.int64.values.items[0]);
+    try std.testing.expectEqual(@as(i64, 9_000_000_000), col.int64.values.items[1]);
+    try std.testing.expect(col.isNull(2));
+}
+
+test "narrow int roundtrip: usize → u64 on wire (UINT_64 annotation)" {
+    // usize maps to INT64 + UINT_64/integer{64,false}. On re-read comes back
+    // as u64 (value-preserving on 64-bit targets). usize→u64 conversion is documented.
+    const allocator = std.testing.allocator;
+    const dataframe_mod = @import("dataframe.zig");
+
+    var df = try dataframe_mod.Dataframe.init(allocator);
+    defer df.deinit();
+
+    var s = try df.createSeries(usize);
+    try s.rename("c_usize");
+    try s.append(0);
+    try s.append(18_000_000_000_000_000_000); // > i64::MAX — exercises bitcast
+    try s.appendNull();
+
+    var cols = try adapter.fromDataframe(allocator, df, .{});
+    defer cols.deinit();
+    const output = try parquet.writeParquet(allocator, cols.columns, .{});
+    defer allocator.free(output);
+
+    var result = try parquet.readParquet(allocator, output);
+    defer result.deinit();
+    try std.testing.expectEqual(parquet.PhysicalType.int64, result.columns[0].physical_type);
+    try std.testing.expectEqual(parquet.ConvertedType.uint_64, result.columns[0].converted_type.?);
+
+    // Re-reads as u64 (usize round-trips as u64)
+    var df2 = try adapter.toDataframe(allocator, &result);
+    defer df2.deinit();
+    const col = df2.getSeries("c_usize") orelse return error.ColumnNotFound;
+    try std.testing.expectEqualStrings("u64", col.typeName());
+    try std.testing.expectEqual(@as(u64, 0), col.uint64.values.items[0]);
+    try std.testing.expectEqual(@as(u64, 18_000_000_000_000_000_000), col.uint64.values.items[1]);
+    try std.testing.expect(col.isNull(2));
+}
+
+test "narrow int roundtrip: i128 still returns UnsupportedType" {
+    // Parquet has no 128-bit integer physical type. Confirm UnsupportedType.
+    const allocator = std.testing.allocator;
+    const dataframe_mod = @import("dataframe.zig");
+
+    var df = try dataframe_mod.Dataframe.init(allocator);
+    defer df.deinit();
+
+    var s = try df.createSeries(i128);
+    try s.rename("c_i128");
+    try s.append(42);
+
+    try std.testing.expectError(error.UnsupportedType, adapter.fromDataframe(allocator, df, .{}));
+}
+
+test "narrow int roundtrip: u128 still returns UnsupportedType" {
+    // Parquet has no 128-bit integer physical type. Confirm UnsupportedType.
+    const allocator = std.testing.allocator;
+    const dataframe_mod = @import("dataframe.zig");
+
+    var df = try dataframe_mod.Dataframe.init(allocator);
+    defer df.deinit();
+
+    var s = try df.createSeries(u128);
+    try s.rename("c_u128");
+    try s.append(42);
+
+    try std.testing.expectError(error.UnsupportedType, adapter.fromDataframe(allocator, df, .{}));
+}
+
 test "malformed: nested assembly never panics over corrupted nested fixtures" {
     const allocator = std.testing.allocator;
     const cwd = std.Io.Dir.cwd();

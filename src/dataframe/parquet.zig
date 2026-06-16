@@ -786,43 +786,175 @@ fn boxedToFlatColumnData(scratch: Allocator, boxed: *BoxedSeries, opts: AdapterW
                 .validity = if (s.validity) |v| v.items else null,
             };
         },
-        .isize => |s| blk: {
-            _ = s;
-            break :blk error.UnsupportedType;
-        },
+        // ----------------------------------------------------------------
+        // Narrow integer write arms — exact inverse of the read side.
+        //
+        // Signed narrow (i8/i16): sign-extend to i32 via @as(i32, v).
+        //   Both modern logical integer annotation AND legacy converted_type
+        //   are emitted (pyarrow does the same; resolveKind checks logical
+        //   first, so this is robust + conformant).
+        //
+        // Small unsigned (u8/u16): values fit in i32 without reinterpretation;
+        //   use @as(i32, v) (zero-extends). Same dual annotation.
+        //
+        // Full-range unsigned (u32): full-range values overflow i32 when
+        //   treated as signed, so we @bitCast(v) to reinterpret the bit
+        //   pattern. The read side reverses with @bitCast back to u32.
+        //
+        // u64: same bitcast logic, but physical INT64.
+        //
+        // isize: teddy-internal type with no parquet identity. We map it to
+        //   plain INT64 (no annotation). On re-read it comes back as i64
+        //   (narrowing from isize). Document: isize narrows to i64 on write;
+        //   cross-platform roundtrip to isize is not guaranteed.
+        //
+        // usize: map to INT64 with UINT_64 annotation via bitcast, same as
+        //   u64. On re-read it comes back as u64. Document: usize round-trips
+        //   as u64 (value-preserving on 64-bit targets).
+        //
+        // i128/u128: parquet has no 128-bit integer physical type. INT96 is a
+        //   deprecated 12-byte timestamp format, not a general integer — it
+        //   cannot losslessly represent all 128-bit values. Fabricating a
+        //   non-conformant encoding is out of scope; return UnsupportedType.
+        // ----------------------------------------------------------------
+
         .int8 => |s| blk: {
-            _ = s;
-            break :blk error.UnsupportedType;
+            const n = s.values.items.len;
+            const buf = try scratch.alloc(i32, n);
+            for (s.values.items, 0..) |v, j| buf[j] = @as(i32, v);
+            break :blk .{
+                .name = s.name.toSlice(),
+                .physical_type = .int32,
+                .converted_type = .int_8,
+                .logical_type = .{ .integer = .{ .bit_width = 8, .is_signed = true } },
+                .int32s = buf,
+                .num_values = n,
+                .validity = if (s.validity) |v| v.items else null,
+            };
         },
         .int16 => |s| blk: {
-            _ = s;
-            break :blk error.UnsupportedType;
+            const n = s.values.items.len;
+            const buf = try scratch.alloc(i32, n);
+            for (s.values.items, 0..) |v, j| buf[j] = @as(i32, v);
+            break :blk .{
+                .name = s.name.toSlice(),
+                .physical_type = .int32,
+                .converted_type = .int_16,
+                .logical_type = .{ .integer = .{ .bit_width = 16, .is_signed = true } },
+                .int32s = buf,
+                .num_values = n,
+                .validity = if (s.validity) |v| v.items else null,
+            };
         },
         .uint8 => |s| blk: {
-            _ = s;
-            break :blk error.UnsupportedType;
+            const n = s.values.items.len;
+            const buf = try scratch.alloc(i32, n);
+            for (s.values.items, 0..) |v, j| buf[j] = @as(i32, v);
+            break :blk .{
+                .name = s.name.toSlice(),
+                .physical_type = .int32,
+                .converted_type = .uint_8,
+                .logical_type = .{ .integer = .{ .bit_width = 8, .is_signed = false } },
+                .int32s = buf,
+                .num_values = n,
+                .validity = if (s.validity) |v| v.items else null,
+            };
         },
         .uint16 => |s| blk: {
-            _ = s;
-            break :blk error.UnsupportedType;
+            const n = s.values.items.len;
+            const buf = try scratch.alloc(i32, n);
+            for (s.values.items, 0..) |v, j| buf[j] = @as(i32, v);
+            break :blk .{
+                .name = s.name.toSlice(),
+                .physical_type = .int32,
+                .converted_type = .uint_16,
+                .logical_type = .{ .integer = .{ .bit_width = 16, .is_signed = false } },
+                .int32s = buf,
+                .num_values = n,
+                .validity = if (s.validity) |v| v.items else null,
+            };
         },
         .uint32 => |s| blk: {
-            _ = s;
-            break :blk error.UnsupportedType;
+            // Full u32 range overflows i32 when cast directly; reinterpret the
+            // bit pattern so the sign bit is preserved on the wire. The read
+            // side reverses with @bitCast(i32) -> u32.
+            const n = s.values.items.len;
+            const buf = try scratch.alloc(i32, n);
+            for (s.values.items, 0..) |v, j| buf[j] = @as(i32, @bitCast(v));
+            break :blk .{
+                .name = s.name.toSlice(),
+                .physical_type = .int32,
+                .converted_type = .uint_32,
+                .logical_type = .{ .integer = .{ .bit_width = 32, .is_signed = false } },
+                .int32s = buf,
+                .num_values = n,
+                .validity = if (s.validity) |v| v.items else null,
+            };
         },
         .uint64 => |s| blk: {
-            _ = s;
-            break :blk error.UnsupportedType;
+            // Full u64 range overflows i64; bitcast the bit pattern onto i64.
+            // The read side reverses with @bitCast(i64) -> u64.
+            const n = s.values.items.len;
+            const buf = try scratch.alloc(i64, n);
+            for (s.values.items, 0..) |v, j| buf[j] = @as(i64, @bitCast(v));
+            break :blk .{
+                .name = s.name.toSlice(),
+                .physical_type = .int64,
+                .converted_type = .uint_64,
+                .logical_type = .{ .integer = .{ .bit_width = 64, .is_signed = false } },
+                .int64s = buf,
+                .num_values = n,
+                .validity = if (s.validity) |v| v.items else null,
+            };
+        },
+        .isize => |s| blk: {
+            // isize is a teddy-internal type with no parquet identity. We emit
+            // it as plain INT64 (no annotation). On re-read the column comes
+            // back as i64. isize narrows to i64 on write; cross-platform
+            // roundtrip back to isize is not guaranteed.
+            const n = s.values.items.len;
+            const buf = try scratch.alloc(i64, n);
+            for (s.values.items, 0..) |v, j| buf[j] = @as(i64, @intCast(v));
+            break :blk .{
+                .name = s.name.toSlice(),
+                .physical_type = .int64,
+                .int64s = buf,
+                .num_values = n,
+                .validity = if (s.validity) |v| v.items else null,
+            };
+        },
+        .usize => |s| blk: {
+            // usize round-trips as u64 (value-preserving on 64-bit targets).
+            // Bitcast to i64 for the INT64 physical; annotated UINT_64 so the
+            // read side maps it to u64 (not isize). On re-read it comes back
+            // as u64, not usize — cross-platform roundtrip to usize is not
+            // guaranteed.
+            const n = s.values.items.len;
+            const buf = try scratch.alloc(i64, n);
+            for (s.values.items, 0..) |v, j| buf[j] = @as(i64, @bitCast(@as(u64, v)));
+            break :blk .{
+                .name = s.name.toSlice(),
+                .physical_type = .int64,
+                .converted_type = .uint_64,
+                .logical_type = .{ .integer = .{ .bit_width = 64, .is_signed = false } },
+                .int64s = buf,
+                .num_values = n,
+                .validity = if (s.validity) |v| v.items else null,
+            };
         },
         .uint128 => |s| blk: {
+            // Parquet has no 128-bit integer physical type. INT96 is a
+            // deprecated 12-byte timestamp, not a general integer, and cannot
+            // losslessly represent all 128-bit values. Fabricating a
+            // non-conformant encoding is out of scope.
             _ = s;
             break :blk error.UnsupportedType;
         },
         .int128 => |s| blk: {
-            _ = s;
-            break :blk error.UnsupportedType;
-        },
-        .usize => |s| blk: {
+            // Parquet has no 128-bit integer physical type. INT96 is a
+            // deprecated 12-byte timestamp, not a general integer, and cannot
+            // losslessly represent all 128-bit values. Fabricating a
+            // non-conformant encoding is out of scope.
             _ = s;
             break :blk error.UnsupportedType;
         },

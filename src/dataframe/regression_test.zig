@@ -755,23 +755,36 @@ fn runTdfRoundtrip(
 }
 
 /// Parquet round-trip (df → parquet → df): a PARITY contract. Writes the frame,
-/// reads it back, and compares each NESTED column by per-row isNull + asStringAt
-/// (the headline proof that shredding inverts assembly on the wire). Scalar
-/// columns already round-trip via the read/tdf stages; the nested columns
-/// (c_list/c_struct/c_map/c_list_struct/c_list_list) are the new contract and
-/// must be at 0 divergences.
+/// reads it back, and compares:
+///   - Nested columns (c_list/c_struct/c_map/c_list_struct/c_list_list): per-row
+///     isNull + asStringAt — the headline proof that shredding inverts assembly.
+///   - Scalar numeric columns (c_i8..c_i64, c_u8..c_u64, c_f32, c_f64, c_f16):
+///     per-row isNull + asStringAt. Now that narrow-int write is implemented,
+///     these must also be at 0 divergences.
+/// Any divergence is a real bug. Float columns (c_f32/c_f64/c_f16) use
+/// asStringAt which renders via the standard decimal formatter — this is
+/// semantically exact for parquet round-trips (IEEE 754 bit-exact on wire).
 fn runParquetRoundtrip(
     allocator: std.mem.Allocator,
     divs: *std.ArrayList(Divergence),
     df: *Dataframe,
 ) !void {
-    // Select ONLY the nested columns into a sub-frame: the alltypes fixture has
-    // narrow-int columns the parquet writer doesn't accept yet (error.Unsupported
-    // Type), so writing the whole frame would fail before reaching the nested
-    // ones. The nested columns are the parity contract here.
+    // Select the columns we want to round-trip. Nested columns require their
+    // schema subtree; scalar numerics are straightforward. We exclude
+    // i128/u128 (UnsupportedType), isize/usize (internal; no standard parquet
+    // identity), and complex types that have their own round-trip coverage.
+    // The column selection is based on what's actually in the alltypes fixture.
+    const scalar_numeric_cols = [_][]const u8{
+        "c_i8", "c_i16", "c_i32", "c_i64",
+        "c_u8", "c_u16", "c_u32", "c_u64",
+        "c_f32", "c_f64", "c_f16",
+    };
     const nested_cols = [_][]const u8{ "c_list", "c_struct", "c_map", "c_list_struct", "c_list_list" };
     var present = std.ArrayList([]const u8).empty;
     defer present.deinit(allocator);
+    for (scalar_numeric_cols) |name| {
+        if (df.getSeries(name) != null) try present.append(allocator, name);
+    }
     for (nested_cols) |name| {
         if (df.getSeries(name) != null) try present.append(allocator, name);
     }
@@ -811,8 +824,11 @@ fn runParquetRoundtrip(
     var rt = try adapter.toDataframe(allocator, &result);
     defer rt.deinit();
 
-    // The nested columns are the parity contract. Compare each by isNull +
-    // asStringAt across all rows.
+    // Compare each column (scalar numeric + nested) by isNull + asStringAt
+    // across all rows. Scalar types re-resolve to the same teddy type after
+    // the round-trip (e.g. c_i8 → i8, c_u32 → u32). Nested columns are the
+    // original parity contract (shredding must invert assembly). Any divergence
+    // is a real bug — this is a 0-tolerance contract for all included columns.
     for (present.items) |name| {
         const a = df.getSeries(name) orelse continue; // not in this fixture
         const b = rt.getSeries(name) orelse {
