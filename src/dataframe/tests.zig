@@ -27,4 +27,6 @@ comptime {
     _ = @import("parquet_test.zig");
     _ = @import("native_format_test.zig");
     _ = @import("regression_test.zig");
+    _ = @import("testdata.zig");
+    _ = @import("operations_test.zig");
 }

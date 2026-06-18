@@ -44,6 +44,31 @@ pub fn build(b: *std.Build) void {
         run_cmd.addArgs(args);
     }
 
+    // Benchmark executable (Phase 14.0). Mirrors the `run` wiring. NOT part of
+    // the `test` step (timing is noisy; correctness is the gate). Real numbers
+    // require -Doptimize=ReleaseFast.
+    const bench_exe = b.addExecutable(.{
+        .name = "teddy-bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/bench/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "teddy", .module = dataframe_mod },
+            },
+        }),
+    });
+
+    b.installArtifact(bench_exe);
+
+    const bench_step = b.step("bench", "Run the benchmark harness (use -Doptimize=ReleaseFast for real numbers)");
+    const bench_cmd = b.addRunArtifact(bench_exe);
+    bench_cmd.step.dependOn(b.getInstallStep());
+    bench_step.dependOn(&bench_cmd.step);
+    if (b.args) |args| {
+        bench_cmd.addArgs(args);
+    }
+
     const mod_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/dataframe/tests.zig"),

@@ -166,6 +166,37 @@ spec (6d-2b).
 
 ---
 
+### Phase 14 — Benchmark harness + broad operations regression suite ✅ (2026-06-18)
+Foundation for the performance work (mandate: document before/after timings
+with a % delta; regression-test over wide data; an assertable op suite).
+- `src/dataframe/testdata.zig` — deterministic seeded dataframe generator
+  (broad type mix, controlled null density), reused by bench + tests.
+- `zig build bench` (`src/bench/main.zig`) — `std.time.Timer`, warmup +
+  median-of-K over generated data; `--json` captures a baseline, `--baseline`
+  prints per-op `before | after | Δ%`. `docs/benchmarks.md` documents the
+  methodology + the captured initial baseline (the "before" for all perf
+  work). Run ReleaseFast for real numbers; NOT in the test gate.
+- `src/dataframe/operations_test.zig` — invariant/property suite over WIDE
+  data (50k rows × seeds {1,7} × null_rate {0,0.15}) covering every dataframe
+  op (sort/filter/groupBy/join/cum*/cast/dropNulls/fillNull/head-tail-slice/
+  concat/unique/valueCounts/deepCopy/shift/diff/clip/replace/describe +
+  TDF/parquet/CSV round-trip identities). Arena-backed for speed (gate stays
+  ~27s); one leak-canary on the testing allocator. This is the correctness
+  net guarding all future optimizations.
+- Discovered pre-existing issues (documented in the suite, for the backlog):
+  `Dataframe.castSafe(col, Target)` is uncompilable via boxed dispatch (the
+  inline-else instantiates a lossy castSafe arm → comptime error; runtime
+  `cast`/`castLossy` are the usable path); `cumProd` panics on integer
+  overflow in debug builds (documented behavior).
+
+### Future direction (chosen 2026-06-18; no fixed roadmap — pick per session)
+DataFrame operations breadth (multi-key sort, pivot, window/rolling, concat/
+union, inter-column arithmetic, expressions, String methods); parquet write
+quality (dictionary encoding, statistics → predicate pushdown, DataPageV2,
+gzip/zstd/lz4); performance (each change measured via `zig build bench`
+before/after in docs/benchmarks.md, guarded by operations_test.zig); deferred
+follow-ups (Nested-write schema synthesis, nested JSON read, \uXXXX escapes).
+
 ## Hardening Track (from the 2026-06-04 full-project review)
 
 Findings, file:line detail, and rationale live in

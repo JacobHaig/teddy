@@ -8,6 +8,11 @@ const BoxedSeries = @import("boxed_series.zig").BoxedSeries;
 const BoxedGroupBy = @import("boxed_groupby.zig").BoxedGroupBy;
 pub const Reader = @import("reader.zig").Reader;
 pub const Writer = @import("writer.zig").Writer;
+
+/// Phase 14.0 seeded data generator + bench round-trip helpers, re-exported so
+/// the `bench` executable (which imports this module as "teddy") and the
+/// correctness suite share one generator. See src/dataframe/testdata.zig.
+pub const testdata = @import("testdata.zig");
 const GroupBy = @import("group.zig").GroupBy;
 
 pub const Dataframe = struct {
